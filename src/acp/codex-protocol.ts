@@ -3,7 +3,7 @@
  * stdio (the `jsonrpc` header is omitted on the wire, matching Codex).
  *
  * These are the SERVER-side shapes as spoken by Codex. They are translated into
- * the bot's internal, Kiro-shaped `SessionUpdate` events (see ./translate.ts)
+ * the bot's protocol-neutral `SessionUpdate` events (see ./translate.ts)
  * so the whole downstream render/runtime layer stays protocol-agnostic.
  *
  * @see openai/codex — codex-rs/app-server-protocol/src/protocol/v2.rs
@@ -27,12 +27,14 @@ export interface CodexInitializeResult {
   codexHome?: string;
 }
 
-// ── threads (≈ Kiro sessions) ────────────────────────────────────────────────
+// ── threads ──────────────────────────────────────────────────────────────────
 
 export interface CodexSandboxPolicy {
-  type: "read-only" | "workspace-write" | "danger-full-access";
+  type: "readOnly" | "workspaceWrite" | "dangerFullAccess" | "externalSandbox";
   writableRoots?: string[];
   networkAccess?: boolean;
+  excludeTmpdirEnvVar?: boolean;
+  excludeSlashTmp?: boolean;
 }
 
 export type CodexApprovalPolicy = "never" | "on-request" | "untrusted";
@@ -40,7 +42,8 @@ export type CodexApprovalPolicy = "never" | "on-request" | "untrusted";
 export interface CodexThreadStartParams {
   model?: string;
   cwd?: string;
-  sandboxPolicy?: CodexSandboxPolicy;
+  /** thread/start uses the compact SandboxMode enum, unlike turn/start. */
+  sandbox?: "read-only" | "workspace-write" | "danger-full-access";
 }
 
 export interface CodexThread {
@@ -56,7 +59,7 @@ export interface CodexThreadResumeParams {
   threadId: string;
 }
 
-// ── turns (≈ Kiro prompt/turn) ───────────────────────────────────────────────
+// ── turns ────────────────────────────────────────────────────────────────────
 
 export type CodexUserInput =
   | { type: "text"; text: string }
@@ -72,6 +75,10 @@ export interface CodexTurnStartParams {
   approvalPolicy?: CodexApprovalPolicy;
   sandboxPolicy?: CodexSandboxPolicy;
   clientUserMessageId?: string;
+  collaborationMode?: {
+    mode: "default" | "plan";
+    settings: { model: string; reasoning_effort: string | null; developer_instructions: string | null };
+  };
 }
 
 export type CodexTurnStatus = "inProgress" | "completed" | "interrupted" | "failed";
@@ -80,10 +87,22 @@ export interface CodexTurn {
   id: string;
   threadId?: string;
   status?: CodexTurnStatus;
-  error?: { message?: string; code?: number } | string;
+  error?: { message?: string; codexErrorInfo?: CodexErrorInfo; additionalDetails?: string | null } | string;
   items?: CodexItem[];
   [k: string]: unknown;
 }
+
+export type CodexErrorInfo =
+  | "contextWindowExceeded"
+  | "sessionBudgetExceeded"
+  | "usageLimitExceeded"
+  | "serverOverloaded"
+  | "unauthorized"
+  | "internalServerError"
+  | string
+  | { httpConnectionFailed?: { httpStatusCode?: number | null } }
+  | { responseStreamConnectionFailed?: { httpStatusCode?: number | null } }
+  | { responseStreamDisconnected?: { httpStatusCode?: number | null } };
 
 export interface CodexTurnResponse {
   turn: CodexTurn;
@@ -139,6 +158,18 @@ export interface CodexItem {
   server?: string;
   tool?: string;
   invocation?: { server?: string; tool?: string; arguments?: unknown };
+  arguments?: unknown;
+  result?: unknown;
+  error?: unknown;
+  // dynamicToolCall / collaboration items
+  namespace?: string | null;
+  senderThreadId?: string;
+  receiverThreadIds?: string[];
+  prompt?: string | null;
+  agentsStates?: Record<string, { status?: string; message?: string | null }>;
+  agentThreadId?: string;
+  agentPath?: string;
+  kind?: string;
   // webSearch / fileSearch
   query?: string;
   [k: string]: unknown;
@@ -190,7 +221,7 @@ export interface CodexTokenUsage {
 export interface CodexModelListResult {
   data?: CodexModelInfo[];
   models?: CodexModelInfo[];
-  nextCursor?: string;
+  nextCursor?: string | null;
 }
 
 export interface CodexModelInfo {
@@ -201,6 +232,53 @@ export interface CodexModelInfo {
   supportedReasoningEfforts?: string[];
   defaultReasoningEffort?: string;
   isDefault?: boolean;
+}
+
+export interface CodexCollaborationModeInfo {
+  name: string;
+  mode?: "default" | "plan" | null;
+  model?: string | null;
+  reasoning_effort?: string | null;
+}
+
+export interface CodexCollaborationModeListResult {
+  data?: CodexCollaborationModeInfo[];
+}
+
+export interface CodexSkillInfo {
+  name: string;
+  description?: string;
+  path?: string;
+  enabled?: boolean;
+}
+
+export interface CodexMcpServerStatus {
+  name: string;
+  tools?: Record<string, unknown>;
+  resources?: unknown[];
+  resourceTemplates?: unknown[];
+  authStatus?: unknown;
+}
+
+export interface CodexAccountInfo {
+  type: "apiKey" | "chatgpt" | "amazonBedrock";
+  email?: string | null;
+  planType?: string;
+}
+
+export interface CodexRateLimitWindow {
+  usedPercent: number;
+  windowDurationMins?: number | null;
+  resetsAt?: number | null;
+}
+
+export interface CodexRateLimitSnapshot {
+  limitId?: string | null;
+  limitName?: string | null;
+  primary?: CodexRateLimitWindow | null;
+  secondary?: CodexRateLimitWindow | null;
+  credits?: { hasCredits: boolean; unlimited: boolean; balance?: string | null } | null;
+  rateLimitReachedType?: string | null;
 }
 
 // ── server → client approval requests ────────────────────────────────────────

@@ -31,7 +31,7 @@ export function defaultSettings(): ChatSettings {
   return { reasoning: "medium" };
 }
 
-/** A decoded image to attach to a prompt as an ACP image content block. */
+/** A decoded image to attach to a Codex prompt. */
 export interface PromptImage {
   data: string; // base64-encoded bytes
   mimeType: string;

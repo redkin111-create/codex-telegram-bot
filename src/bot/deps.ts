@@ -5,6 +5,7 @@
 import type { Api } from "grammy";
 import type { AcpClient } from "../acp/client.js";
 import type { AccountManager } from "../app/accounts.js";
+import type { AccountRotator } from "./account-rotator.js";
 import type { SettingsStore } from "../app/settings-store.js";
 import type { AppConfig } from "../config.js";
 import type { SttService } from "../app/stt.js";
@@ -36,6 +37,7 @@ export interface BotDeps {
   stt: SttService;
   usage: UsageService;
   accounts: AccountManager;
+  accountRotator: AccountRotator;
 }
 
 /** Caches the last project list shown per chat for callback resolution. */

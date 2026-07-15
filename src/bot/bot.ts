@@ -35,6 +35,7 @@ import { registerRunning, switchAndShow } from "./handlers/running.js";
 import { registerSessions } from "./handlers/sessions.js";
 import { registerSessionKill } from "./handlers/session-kill.js";
 import { registerAccounts } from "./handlers/accounts.js";
+import { registerCapabilities } from "./handlers/capabilities.js";
 import { registerReauth } from "./handlers/auth.js";
 import { registerSystem } from "./handlers/system.js";
 import { registerTasks, registerWizardInput } from "./handlers/tasks.js";
@@ -95,6 +96,9 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
   const wizard = new TaskWizard(tasks);
   const statusPanel = new StatusPanel(bot.api, settings, registry);
   registry.setRefresher((chatId) => void statusPanel.refresh(chatId));
+  const usage = new UsageService(cfg.codexCliPath, acp);
+  const accounts = new AccountManager(cfg.dataDir);
+  const accountRotator = new AccountRotatorImpl(accounts, acp, usage);
 
   const deps: BotDeps = {
     api: bot.api,
@@ -116,12 +120,13 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
       model: cfg.sttModel,
       language: cfg.sttLanguage,
     }),
-    usage: new UsageService(cfg.codexCliPath),
-    accounts: new AccountManager(cfg.dataDir),
+    usage,
+    accounts,
+    accountRotator,
   };
 
   // Auto-rotate-on-give-up: let a stuck turn cycle through other saved logins.
-  registry.setAccountRotator(new AccountRotatorImpl(deps.accounts, acp, deps.usage));
+  registry.setAccountRotator(accountRotator);
 
   // Inline approvals: when NOT in trust-all mode, Codex asks before risky tools.
   const permissions = new PermissionService(bot.api, registry);
@@ -168,6 +173,7 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
   registerReauth(bot, deps);
   registerAccounts(bot, deps);
   registerUsage(bot, deps);
+  registerCapabilities(bot, deps);
   registerKill(bot, deps);
   registerMcp(bot, deps);
   registerTasks(bot, deps);

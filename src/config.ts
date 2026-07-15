@@ -13,8 +13,7 @@ import { fileURLToPath } from "node:url";
 export const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Canonical, path-independent home for this bot's `.env`, `logs/`, `data/` and
- *  the single-instance locks: `~/.codex/tg`. Kept separate from Kiro's `~/.kiro/tg`
- *  so a Codex bot and a Kiro bot can run side by side without colliding. */
+ *  single-instance locks: `~/.codex/tg`. */
 export const CANONICAL_DIR = join(homedir(), ".codex", "tg");
 
 /**
@@ -28,8 +27,7 @@ export const CANONICAL_DIR = join(homedir(), ".codex", "tg");
  *   5. the canonical `~/.codex/tg` home — the path-independent default, so a
  *      `.env` created once is loaded no matter where the bot is started from.
  *
- * Kiro's `KIRO_TG_*` variables are deliberately NOT consulted, so a Codex bot
- * and a Kiro bot sharing an environment never cross-contaminate configuration.
+ * Only the documented `CODEX_TG_*` variables are consulted.
  */
 export const INSTANCE_DIR = resolveInstanceDir();
 
@@ -39,8 +37,7 @@ export const ENV_PATH = join(INSTANCE_DIR, ".env");
 function resolveInstanceDir(): string {
   const flag = process.argv.indexOf("--instance");
   if (flag !== -1 && process.argv[flag + 1]) return resolve(process.argv[flag + 1]!);
-  // ONLY honour CODEX_TG_* — never Kiro's KIRO_TG_* — so a Codex bot and a Kiro
-  // bot sharing an environment stay fully isolated (no config cross-contamination).
+  // Only honour this bot's CODEX_TG_* environment variables.
   const envDir = process.env.CODEX_TG_DIR?.trim() || process.env.CODEX_TG_CWD?.trim();
   if (envDir) return resolve(expandHome(envDir));
   if (existsSync(join(process.cwd(), ".env"))) return process.cwd();

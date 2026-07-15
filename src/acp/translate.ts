@@ -1,5 +1,5 @@
 /**
- * Translate Codex app-server events into the bot's internal, Kiro-shaped
+ * Translate Codex app-server events into the bot's protocol-neutral
  * `SessionUpdate` events. Everything downstream (streamer, tool-call renderer,
  * file-summary, progress) consumes these — so the protocol swap is contained
  * entirely to the ACP layer.
@@ -97,10 +97,33 @@ export function itemToUpdates(item: CodexItem): SessionUpdate[] {
           kind: "other",
           status,
           title: name,
-          rawInput: { tool_name: name },
+          rawInput: { tool_name: name, server, tool, arguments: item.arguments ?? item.invocation?.arguments },
         },
       ];
     }
+
+    case "dynamicToolCall": {
+      const tool = str(item.tool) || "tool";
+      const name = item.namespace ? `${item.namespace}/${tool}` : tool;
+      return [{
+        sessionUpdate: "tool_call",
+        toolCallId: item.id,
+        kind: "other",
+        status,
+        title: name,
+        rawInput: { tool_name: name, arguments: item.arguments },
+      }];
+    }
+
+    case "collabAgentToolCall":
+      return [{
+        sessionUpdate: "tool_call",
+        toolCallId: item.id,
+        kind: "other",
+        status,
+        title: `Agent ${str(item.tool) || "collaboration"}`,
+        rawInput: { tool_name: "subagent", prompt: item.prompt, agents: item.receiverThreadIds },
+      }];
 
     case "webSearch":
       return [
@@ -184,4 +207,10 @@ export function turnErrorMessage(turn: CodexTurn | undefined): string {
   if (typeof e === "string") return e;
   if (e && typeof e === "object" && typeof e.message === "string") return e.message;
   return "";
+}
+
+/** Structured Codex error classification, when app-server supplies it. */
+export function turnErrorInfo(turn: CodexTurn | undefined): unknown {
+  const e = turn?.error;
+  return e && typeof e === "object" ? e.codexErrorInfo : undefined;
 }

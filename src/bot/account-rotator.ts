@@ -28,9 +28,12 @@ export interface AccountRotator {
   targets(): Promise<RotationTarget[]>;
   /** Make a saved account active (copy token + restart agent). Throws on error. */
   activate(id: string): Promise<void>;
+  /** Hold the process-global credential lock through switch, restart and use. */
+  runExclusive<T>(id: string, operation: () => Promise<T>): Promise<T>;
 }
 
 export class AccountRotatorImpl implements AccountRotator {
+  private activationTail: Promise<void> = Promise.resolve();
   constructor(
     private readonly accounts: AccountManager,
     private readonly acp: AcpClient,
@@ -44,12 +47,36 @@ export class AccountRotatorImpl implements AccountRotator {
   async targets(): Promise<RotationTarget[]> {
     const list = this.accounts.list();
     const acct = await this.usage.account().catch(() => undefined);
-    const activeId = this.accounts.matchActive(acct?.email || acct?.key)?.id;
+    const activeId = this.accounts.matchActive(acct?.key || acct?.email)?.id;
     return list.filter((a) => a.id !== activeId).map((a) => ({ id: a.id, label: a.label }));
   }
 
   async activate(id: string): Promise<void> {
+    return this.runExclusive(id, async () => undefined);
+  }
+
+  async runExclusive<T>(id: string, operation: () => Promise<T>): Promise<T> {
+    let release!: () => void;
+    const previous = this.activationTail;
+    this.activationTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      await this.activateExclusive(id);
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  private async activateExclusive(id: string): Promise<void> {
+    const rollback = await this.accounts.activeBytes();
     await this.accounts.switchTo(id);
-    await this.acp.restart();
+    try {
+      await this.acp.restart();
+    } catch (error) {
+      await this.accounts.restoreActive(rollback).catch(() => undefined);
+      await this.acp.restart().catch(() => undefined);
+      throw error;
+    }
   }
 }

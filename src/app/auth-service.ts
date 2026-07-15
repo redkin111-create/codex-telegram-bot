@@ -1,7 +1,7 @@
 /**
  * Codex authentication control for /reauth and /accounts.
  *
- * Codex signs in two ways, both far simpler than Kiro's AWS SSO device flow:
+ * Codex supports API-key and ChatGPT login flows:
  *   • ChatGPT  — `codex login` starts a local callback server and prints a URL
  *                to approve in a browser; we stream that URL to Telegram.
  *   • API key  — `codex login --api-key <key>` (non-interactive).

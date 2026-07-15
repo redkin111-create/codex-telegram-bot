@@ -124,6 +124,16 @@ export function keyFingerprint(auth: CodexAuth | undefined): string | undefined 
   return `apikey:${createHash("sha256").update(k).digest("hex").slice(0, 12)}`;
 }
 
+/** Stable account identity for ChatGPT workspaces, without storing raw tokens. */
+export function accountFingerprint(auth: CodexAuth | undefined): string | undefined {
+  if (!auth?.tokens?.access_token) return keyFingerprint(auth);
+  const direct = auth.tokens.account_id;
+  const claims = decodeJwtPayload(auth.tokens.id_token ?? "");
+  const namespaced = claims?.["https://api.openai.com/auth"] as Record<string, unknown> | undefined;
+  const accountId = direct || (typeof namespaced?.chatgpt_account_id === "string" ? namespaced.chatgpt_account_id : undefined);
+  return accountId ? `chatgpt:${createHash("sha256").update(accountId).digest("hex").slice(0, 16)}` : undefined;
+}
+
 /** A display label for an API-key login (masked), or undefined. */
 export function keyLabel(auth: CodexAuth | undefined): string | undefined {
   const k = auth?.OPENAI_API_KEY;

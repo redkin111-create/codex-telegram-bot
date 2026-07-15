@@ -1,5 +1,5 @@
 @echo off
-REM Easy launcher for the Kiro Telegram Bot (Windows).
+REM Easy launcher for the Codex Telegram Bot (Windows).
 cd /d "%~dp0"
 if not exist node_modules (
   echo Installing dependencies...

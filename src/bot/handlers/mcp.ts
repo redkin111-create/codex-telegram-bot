@@ -1,11 +1,11 @@
 /**
  * /mcp — inspect and control the Codex agent's MCP servers from Telegram.
  *
- *   • Lists every configured server with its enabled/disabled state, transport
- *     (stdio/http) and scope (global/workspace).
+ *   • Lists configured servers plus live status/tool/resource/auth inventory
+ *     reported by the running Codex app-server.
  *   • 🩺 Health-check runs a real MCP `initialize` handshake against each enabled
  *     server and reports which connected and which failed (and why).
- *   • 🔧 Enable/Disable toggles a server's `disabled` flag in its mcp.json. The
+ *   • 🔧 Enable/Disable toggles a server's `enabled` flag in config.toml. The
  *     change applies when the agent next loads servers, so a 🔄 Restart button
  *     is offered to apply it immediately.
  */
@@ -14,6 +14,7 @@ import type { BotDeps } from "../deps.js";
 import { listMcpServers, setMcpDisabled } from "../../mcp/config.js";
 import { probeAll } from "../../mcp/probe.js";
 import type { McpProbeResult, McpServer } from "../../mcp/types.js";
+import type { CodexMcpServerStatus } from "../../acp/codex-protocol.js";
 
 const PAGE_SIZE = 10;
 
@@ -34,7 +35,7 @@ function trunc(s: string, n: number): string {
 const TRANSPORT_ICON: Record<string, string> = { http: "\u{1F310}", stdio: "\u{1F5A5}\uFE0F", unknown: "\u2753" };
 
 /** Build the main MCP panel text + keyboard. */
-function mainPanel(list: McpServer[]): { text: string; kb: InlineKeyboard } {
+function mainPanel(list: McpServer[], live: CodexMcpServerStatus[]): { text: string; kb: InlineKeyboard } {
   const enabled = list.filter((s) => !s.disabled);
   const disabled = list.filter((s) => s.disabled);
   const lines = [`\u{1F9E9} MCP servers \u2014 ${list.length} total \u00B7 \u2705 ${enabled.length} enabled \u00B7 \u26D4 ${disabled.length} disabled`, ""];
@@ -46,11 +47,19 @@ function mainPanel(list: McpServer[]): { text: string; kb: InlineKeyboard } {
       const mark = s.disabled ? "\u26D4" : "\u2705";
       const ti = TRANSPORT_ICON[s.transport] ?? "";
       const scope = s.scope === "workspace" ? " \u00B7 ws" : "";
-      lines.push(`${mark} ${ti} ${trunc(s.name, 28)}${scope}`);
+      const status = live.find((x) => x.name === s.name);
+      const inventory = status
+        ? ` · ${Object.keys(status.tools ?? {}).length} tools · ${(status.resources?.length ?? 0) + (status.resourceTemplates?.length ?? 0)} resources${authText(status.authStatus)}`
+        : " · not loaded";
+      lines.push(`${mark} ${ti} ${trunc(s.name, 28)}${scope}${inventory}`);
     }
     if (list.length > LIST_CAP) lines.push(`\u2026and ${list.length - LIST_CAP} more (use \u{1F527} Enable/Disable to browse).`);
   }
-  lines.push("", "\u{1F9EA} Health-check runs a live connection test on enabled servers.");
+  const configNames = new Set(list.map((s) => s.name));
+  for (const status of live.filter((s) => !configNames.has(s.name)).slice(0, 10)) {
+    lines.push(`\u2705 \u{1F4E1} ${trunc(status.name, 28)} · app-server · ${Object.keys(status.tools ?? {}).length} tools${authText(status.authStatus)}`);
+  }
+  lines.push("", "\u{1F4E1} Inventory comes from Codex app-server. \u{1F9EA} Health-check independently probes enabled configs.");
   const kb = new InlineKeyboard()
     .text("\u{1F9EA} Health-check", "mcp:health")
     .text("\u{1F527} Enable/Disable", "mcp:tog:0")
@@ -59,7 +68,7 @@ function mainPanel(list: McpServer[]): { text: string; kb: InlineKeyboard } {
     .text("\u{1F501} Refresh", "mcp:refresh")
     .row()
     .text("\u2716 Close", "mcp:close");
-  return { text: lines.join("\n"), kb };
+  return { text: fitLines(lines, 3800), kb };
 }
 
 /** Build a paginated enable/disable view. */
@@ -85,8 +94,9 @@ function togglePanel(list: McpServer[], page: number): { text: string; kb: Inlin
 }
 
 export async function showMcp(ctx: Context, deps: BotDeps): Promise<void> {
+  await deps.acp.refreshInventories();
   const list = snapshot(ctx.chat!.id, deps);
-  const { text, kb } = mainPanel(list);
+  const { text, kb } = mainPanel(list, deps.acp.availableMcpServers);
   await deps.ephemeral.open(ctx);
   await deps.ephemeral.reply(ctx, text, { reply_markup: kb });
 }
@@ -147,8 +157,9 @@ export function registerMcp(bot: Bot, deps: BotDeps): void {
 
   bot.callbackQuery("mcp:refresh", async (ctx) => {
     await ctx.answerCallbackQuery();
+    await deps.acp.refreshInventories();
     const list = snapshot(ctx.chat!.id, deps);
-    const { text, kb } = mainPanel(list);
+    const { text, kb } = mainPanel(list, deps.acp.availableMcpServers);
     await ctx.editMessageText(text, { reply_markup: kb }).catch(() => {});
   });
 
@@ -191,8 +202,9 @@ export function registerMcp(bot: Bot, deps: BotDeps): void {
     await ctx.editMessageText("\u{1F504} Restarting the Codex agent to apply MCP changes\u2026").catch(() => {});
     try {
       await deps.acp.restart();
+      await deps.acp.refreshInventories();
       const list = snapshot(ctx.chat!.id, deps);
-      const { text, kb } = mainPanel(list);
+      const { text, kb } = mainPanel(list, deps.acp.availableMcpServers);
       await ctx.editMessageText(`\u2705 Agent restarted \u2014 MCP changes applied.\n\n${text}`, {
         reply_markup: kb,
       }).catch(() => {});
@@ -204,3 +216,26 @@ export function registerMcp(bot: Bot, deps: BotDeps): void {
   });
 }
 
+function authText(status: unknown): string {
+  if (status == null) return "";
+  if (typeof status === "string") return ` · auth ${trunc(status, 24)}`;
+  if (typeof status === "object") {
+    const keys = Object.keys(status as Record<string, unknown>);
+    return keys.length ? ` · auth ${trunc(keys[0]!, 24)}` : "";
+  }
+  return "";
+}
+
+function fitLines(lines: string[], max: number): string {
+  const out: string[] = [];
+  let used = 0;
+  for (const line of lines) {
+    if (used + line.length + 1 > max) {
+      out.push("…more servers omitted; use Enable/Disable to browse.");
+      break;
+    }
+    out.push(line);
+    used += line.length + 1;
+  }
+  return out.join("\n");
+}

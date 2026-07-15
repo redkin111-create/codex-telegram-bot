@@ -11,11 +11,12 @@
  * Snapshots are auth.json files copied under `<dataDir>/accounts/<id>.json`.
  * The data dir is git-ignored, so these credentials never leave the machine.
  */
-import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { createLogger } from "../logger.js";
 import { JsonStore } from "./json-store.js";
-import { authUsable, type CodexAuth, codexAuthPath, identityFromAuth, keyFingerprint, keyLabel, readAuthFile } from "./codex-credentials.js";
+import { accountFingerprint, authUsable, type CodexAuth, codexAuthPath, identityFromAuth, keyFingerprint, keyLabel, readAuthFile } from "./codex-credentials.js";
 import type { AccountInfo } from "./usage.js";
 
 const log = createLogger("accounts");
@@ -89,7 +90,7 @@ export class AccountManager {
   /** The saved account matching the currently active login (by email/key). */
   matchActive(key: string | undefined): StoredAccount | undefined {
     if (!key) return undefined;
-    return this.store.get().accounts.find((a) => (a.email || a.key) === key);
+    return this.store.get().accounts.find((a) => a.key === key || (!a.key && a.email === key));
   }
 
   get(id: string): StoredAccount | undefined {
@@ -113,14 +114,14 @@ export class AccountManager {
     }
     await mkdir(this.dir, { recursive: true });
     const email = info?.email ?? identityFromAuth(auth!).email;
-    const key = info?.key ?? keyFingerprint(auth!);
+    const key = info?.key ?? accountFingerprint(auth!) ?? keyFingerprint(auth!);
     const label = customLabel?.trim() || deriveLabel(info, auth!);
-    const identity = email || key;
+    const identity = key || email;
     const existing = identity
-      ? this.store.get().accounts.find((a) => (a.email || a.key) === identity)
+      ? this.store.get().accounts.find((a) => a.key === identity || (!a.key && a.email === identity))
       : undefined;
     const id = existing?.id ?? makeId();
-    await copyFile(codexAuthPath(), this.snapshotPath(id));
+    await atomicCopy(codexAuthPath(), this.snapshotPath(id));
     const meta: StoredAccount = {
       id,
       label,
@@ -151,8 +152,7 @@ export class AccountManager {
     if (!authUsable(auth)) {
       throw new Error(`Saved login for ${meta.label} is incomplete — re-add it with a fresh login.`);
     }
-    await mkdir(join(codexAuthPath(), ".."), { recursive: true });
-    await copyFile(snap, codexAuthPath());
+    await atomicCopy(snap, codexAuthPath());
     log.info(`switched active login to ${meta.label} (${id})`);
     return meta;
   }
@@ -187,5 +187,30 @@ export class AccountManager {
     const p = this.snapshotPath(id);
     const raw = await readFile(codexAuthPath(), "utf-8").catch(() => undefined);
     if (raw) await writeFile(p, raw);
+  }
+
+  /** Exact active credential bytes for transaction rollback, or undefined. */
+  async activeBytes(): Promise<Buffer | undefined> {
+    return readFile(codexAuthPath()).catch(() => undefined);
+  }
+
+  async restoreActive(bytes: Buffer | undefined): Promise<void> {
+    if (bytes) await atomicWrite(codexAuthPath(), bytes);
+    else await rm(codexAuthPath(), { force: true });
+  }
+}
+
+async function atomicCopy(from: string, to: string): Promise<void> {
+  await atomicWrite(to, await readFile(from));
+}
+
+async function atomicWrite(path: string, bytes: Buffer): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const temp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temp, bytes, { mode: 0o600, flag: "wx" });
+    await rename(temp, path);
+  } finally {
+    await rm(temp, { force: true }).catch(() => {});
   }
 }

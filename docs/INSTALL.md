@@ -42,9 +42,6 @@ codex-tg run                     # run in the foreground (Ctrl-C to stop)
 > ⚠️ **Set `ALLOWED_USERS`** in `.env` to your Telegram user ID(s). Empty means
 > *anyone* who finds the bot can run commands on your machine.
 >
-> ⚠️ **Use a distinct bot token** from any Kiro bot you run — the two bots are
-> otherwise fully isolated (separate `~/.codex/tg` home, lock and service).
-
 ### Startup options (`codex-tg <command>`)
 
 | Command | What it does |

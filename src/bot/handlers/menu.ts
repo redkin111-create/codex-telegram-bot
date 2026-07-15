@@ -1,7 +1,7 @@
 /**
  * Menu handler — maps the persistent reply-keyboard buttons (matched by emoji
  * prefix for stateful ones) to actions, and provides inline submenus for Agent
- * (agent modes, if the backend reports any — Codex reports none), Reasoning,
+ * (live Codex collaboration presets), Reasoning,
  * and Model. Changing a value re-renders the keyboard so its labels always
  * reflect the current state.
  */
@@ -52,7 +52,7 @@ export function registerMenu(bot: Bot, deps: BotDeps): void {
   // Inline menu actions.
   bot.callbackQuery(/^m:(\w+)$/, (ctx) => dispatchMenu(ctx, deps, ctx.match![1]!));
 
-  // ── Agent (agent modes; Codex reports none) ─────────────────────────────
+  // ── Agent (live collaboration presets from Codex) ───────────────────────
   bot.callbackQuery(/^agent:set:(\d+)$/, async (ctx) => {
     const mode = deps.acp.availableModes[Number(ctx.match![1])];
     if (!mode) return void ctx.answerCallbackQuery({ text: "Expired, tap Agent again." });
@@ -167,7 +167,7 @@ async function showAgentMenu(ctx: Context, deps: BotDeps): Promise<void> {
   await deps.ephemeral.open(ctx);
   const modes = deps.acp.availableModes.slice(0, 60);
   if (modes.length === 0) {
-    await deps.ephemeral.reply(ctx, `Current agent: ${rt.agent || "default"}\n(Codex has no selectable agents \u2014 it uses one model per session.)`);
+    await deps.ephemeral.reply(ctx, `Current agent: ${rt.agent || "default"}\nNo collaboration presets were reported by this Codex build.`);
     return;
   }
   const kb = new InlineKeyboard();

@@ -3,7 +3,7 @@
  * under `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`, and sorts
  * them by recency.
  *
- * Unlike Kiro (which wrote a `.json` + `.lock` per session), Codex keeps threads
+ * Codex keeps threads
  * in-process and does NOT drop per-session lock files, so there is no reliable
  * on-disk "running now" signal — `active` is always false and `listActive()` is
  * empty. Live sessions are instead tracked in-memory by the runtime registry

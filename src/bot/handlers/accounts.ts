@@ -223,10 +223,11 @@ export function registerAccounts(bot: Bot, deps: BotDeps): void {
     try {
       // Don't lose the current login: snapshot it before overwriting (dedupes).
       await deps.accounts.captureCurrent(await deps.usage.account().catch(() => undefined)).catch(() => {});
-      const meta = await deps.accounts.switchTo(id);
+      const meta = deps.accounts.get(id);
+      if (!meta) throw new Error("That account is no longer saved.");
       await ctx.editMessageText(`\u{1F504} Switching to ${meta.label}\u2026 restarting agent`).catch(() => {});
-      await deps.acp.restart();
-      const note = (await deps.usage.isLoggedIn())
+      const loggedIn = await deps.accountRotator.runExclusive(id, () => deps.usage.isLoggedIn());
+      const note = loggedIn
         ? `\u2705 Now signed in as ${meta.label}. Your session re-binds on the next message.`
         : `\u26A0\uFE0F Switched to ${meta.label}, but codex reports it's not logged in. ${UNSUPPORTED_LOGIN_HELP}`;
       await rerender(ctx, deps, note);

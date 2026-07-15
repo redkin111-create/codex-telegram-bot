@@ -154,7 +154,7 @@ function buildEditDiff(u: SessionUpdate, raw: Record<string, unknown>, maxLines:
   const blocks = collectContent(u);
   const diffBlock = blocks.find((b) => b.type === "diff");
   if (diffBlock) {
-    // Codex hands us a pre-rendered unified diff string; Kiro sent old/new text.
+    // Codex hands us a pre-rendered unified diff string.
     const unified = strOf((diffBlock as { unified?: unknown }).unified);
     if (unified) return renderRawUnifiedDiff(unified, maxLines);
     return renderUnifiedDiff({

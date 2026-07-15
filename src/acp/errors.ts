@@ -34,7 +34,19 @@ export function isTransientAcpError(err: Error): boolean {
 
 /** Heuristic: did this failure come from an exhausted context window? */
 export function isContextExhaustedError(err: Error): boolean {
+  if (errorInfo(err) === "contextWindowExceeded") return true;
   return CONTEXT_EXHAUSTED_RE.test(err.message);
+}
+
+/** True for a definitive account/workspace quota exhaustion. */
+export function isAccountExhaustedError(err: Error): boolean {
+  if (errorInfo(err) === "usageLimitExceeded") return true;
+  return /usage limit|quota exceeded|credits? (?:depleted|exhausted)|out of (?:credits|quota)|billing limit|payment required|\b402\b/i.test(err.message);
+}
+
+function errorInfo(err: Error): unknown {
+  const data = (err as AcpError).data as { codexErrorInfo?: unknown } | undefined;
+  return data?.codexErrorInfo;
 }
 
 /** Compact, log/Telegram-safe stringification of an error's data payload. */

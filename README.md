@@ -16,9 +16,8 @@ Send a message from anywhere and watch Codex read files, run commands, and edit
 code on your machine — with live typing indicators, clean Telegram markdown, and
 unified edit diffs.
 
-> Runs alongside a Kiro bot without conflict: separate config home
-> (`~/.codex/tg`), lock, service name and session namespace. Use a **different
-> Telegram bot token** for each bot.
+Configuration, logs, account snapshots, and task data live under `~/.codex/tg`.
+Use a **different Telegram bot token** for each bot instance.
 
 ---
 
@@ -34,12 +33,14 @@ unified edit diffs.
 | 🖼 **Multi-image prompts** | Send one or many photos (albums included) with a caption — attached to the prompt for Codex to analyze. |
 | 🎙 **Voice → prompt** | Send a voice note; it's transcribed (any Whisper-compatible endpoint) and run as a prompt. |
 | 📎 **File attachments** | Text-like files are inlined into the prompt; binaries are saved and their path handed to the agent. |
-| 🧩 **MCP control** | `/mcp` lists MCP servers from `~/.codex/config.toml`, **health-checks** them, and **enables/disables** them. |
+| 🧩 **Live MCP control** | `/mcp` combines Codex's live server/tool/resource/auth inventory with config toggles and real health checks. |
+| 🧩 **Live capabilities** | `/models`, `/agents`, and `/skills` read the current Codex app-server inventories; no stale model catalog. |
 | 📈 **Task progress bar** | Agent emits a `{progress: N%}` marker; the bot hides it and shows a green 0–100% bar (with a computed fallback). |
 | 🔐 **Re-auth from chat** | `/reauth` signs in without a terminal — **ChatGPT** (browser link), **API key**, or **import** an existing `codex login`. |
-| 👥 **Multiple accounts** | `/accounts` saves several Codex logins and switches between them in a tap (snapshots `~/.codex/auth.json`). |
-| 🔁 **Auto-rotate on give-up** | When a turn exhausts its retries, optionally cycle through your other saved accounts and retry on each. |
-| 🪙 **Usage** | `/usage` shows the active account, model, context usage %, and turns this session. |
+| 👥 **Multiple accounts** | `/accounts` saves several Codex logins and switches between them in a tap with stable account fingerprints and `auth.json` snapshots. |
+| 🔁 **Quota-safe rotation** | When Codex reports account/workspace quota exhaustion, serialized rotation tries each saved login once and rolls back safely if restart fails. |
+| 🪙 **Live usage** | `/usage` shows identity, model, context usage, quota windows, reset times, credits, and turns. |
+| 👥 **Real subagents** | Collaboration tool events are surfaced as active subagent status and cleaned up when complete. |
 | ⌨️ **Typing indicator** | Stays on for the whole turn, through long tool chains. |
 | 📥 **Queued follow-ups** | Message while Codex is busy — it's queued and runs next. `/btw` runs ASAP; `/flush` runs the queue now. |
 | ✏️ **Edit diffs** | File edits show as unified `diff` blocks with `+N -M` stats. |
@@ -104,7 +105,10 @@ No build step — TypeScript runs directly via `tsx`.
 /menu         Show the persistent menu keyboard
 /projects     List · search <q> · open any <path> · new <name>
 /sessions     List & resume sessions · /sessions <q> to filter
-/mcp          Inspect MCP servers · health-check · enable/disable
+/mcp          Live MCP inventory · health-check · enable/disable
+/models       List models reported by the running Codex app-server
+/agents       List collaboration modes and observed subagents
+/skills       List enabled skills reported by Codex
 /tasks        Manage scheduled tasks · /newtask to create one
 /history      Show recent conversation history
 /new          Start a fresh session here
@@ -161,9 +165,19 @@ Codex signs in two ways (plus reusing an existing login):
 - **📥 Import** — adopt a `codex login` already present in `~/.codex/auth.json`.
 
 `/accounts` snapshots the active `auth.json` as a named account and switches
-between them in a tap (ChatGPT logins are identified by email; API keys by a
-non-reversible fingerprint). **🔁 Auto-rotate** cycles through the others once
-when a turn exhausts its retries.
+between them in a tap. ChatGPT workspaces use a non-reversible account
+fingerprint when available; API keys use a non-reversible key fingerprint.
+**🔁 Auto-rotate** activates only for a definitive quota/account exhaustion,
+holds a process-global lock through restart and retry, and restores the exact
+previous credentials if activation fails.
+
+### Live capability discovery
+
+The bot asks the running `codex app-server` for its current `model/list`,
+`collaborationMode/list`, `skills/list`, and `mcpServerStatus/list` data after
+startup and on demand. Model and MCP results are paginated, so the UI does not
+depend on hardcoded model names or a stale local catalog. `/mcp` also keeps a
+separate real MCP `initialize` health check for enabled configured servers.
 
 ---
 
@@ -190,8 +204,9 @@ when a turn exhausts its retries.
 | `NOTIFY_OTHER_SESSIONS` | no | `true` | Deliver background sessions' "Done" summaries. |
 | `MCP_PROBE_TIMEOUT_MS` | no | `8000` | Per-server timeout for the `/mcp` health-check. |
 | `ACP_AUTO_RESTART` | no | `true` | Auto-restart the agent if it exits. |
-| `CODEX_TG_SINGLE_INSTANCE` | no | `true` | One running bot per token; refuses to start on a token held by a running Kiro bot. |
+| `CODEX_TG_SINGLE_INSTANCE` | no | `true` | Enforce one running Codex bot per Telegram token. |
 | `AUTO_UPDATE` | no | `true` | Hourly npm check; auto-update + restart when idle (global installs). |
+| `UPDATE_CHECK_MS` | no | `3600000` | Auto-update polling interval in milliseconds. The first check runs about 60 seconds after startup. |
 | `PROMPT_RETRY_ATTEMPTS` | no | `5` | Retries for a transient agent error (6s→60s backoff). |
 | `AUTO_FORK_ON_ERROR` | no | `true` | Fork a fresh continuation when retries are exhausted. |
 | `RESUME_ON_STREAM_ERROR` | no | `true` | Continue the same session after a mid-stream throttle. |
@@ -217,6 +232,16 @@ codex-tg uninstall   # stop + remove
 ```
 
 Logs live at `logs/codex-telegram-bot.log`.
+
+### Automatic npm updates
+
+For a global npm install, `AUTO_UPDATE=true` checks the npm `latest` dist-tag
+on the configured interval. An update is applied only when the bot is fully
+idle: no Telegram turn, scheduled task, or unrelated active Codex session is
+running. Busy checks are deferred to the next interval; the current turn is
+never interrupted. After a successful `npm install -g`, the bot restarts using
+the installed package and posts the matching changelog section with `#update`.
+Source checkouts and zip installs are intentionally never self-updated.
 
 ---
 
@@ -253,9 +278,6 @@ and run as a non-privileged user. See [SECURITY.md](./SECURITY.md).
 
 Contributions welcome — see **[CONTRIBUTING.md](./CONTRIBUTING.md)**. No build
 step (`npm run dev`); `npm run typecheck` must pass.
-
-Inspired by [`ajitnk-lab/kiro-acp-telegram-bot`](https://github.com/ajitnk-lab/kiro-acp-telegram-bot)
-and the Kiro Telegram Bot; adapted to OpenAI Codex CLI's `app-server` protocol.
 
 ## 📄 License
 

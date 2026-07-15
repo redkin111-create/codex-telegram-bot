@@ -6,7 +6,7 @@
  */
 import { basename } from "node:path";
 import { type Api, InlineKeyboard } from "grammy";
-import { type AcpClient, isContextExhaustedError, isTransientAcpError, type SessionMetadata } from "../acp/client.js";
+import { type AcpClient, isAccountExhaustedError, isContextExhaustedError, isTransientAcpError, type SessionMetadata } from "../acp/client.js";
 import type { AccountRotator } from "./account-rotator.js";
 import type { ContentBlock, PromptResult, SessionUpdate } from "../acp/types.js";
 import type { AppConfig } from "../config.js";
@@ -674,7 +674,7 @@ export class SessionRuntime {
     final: { result?: PromptResult; error?: Error; attempts: number },
   ): Promise<{ result?: PromptResult; error?: Error; attempts: number } | undefined> {
     const rotator = this.accountRotator;
-    if (!rotator?.enabled() || !final.error || this.cancelled) return undefined;
+    if (!rotator?.enabled() || !final.error || !isAccountExhaustedError(final.error) || this.cancelled) return undefined;
     if (this.streamer?.hasOutput ?? false) return undefined;
     const targets = await rotator.targets().catch(() => [] as { id: string; label: string }[]);
     if (targets.length === 0) return undefined;
@@ -689,28 +689,23 @@ export class SessionRuntime {
         await this.notify(`\u{1F501} Auto-rotating accounts \u2014 trying ${t.label}\u2026`, { replyTo: this.turnReplyTo });
       }
       try {
-        await rotator.activate(t.id); // switch login + restart the shared agent
+        last = await rotator.runExclusive(t.id, async () => {
+          await this.bindNewSession(this.cwd, this.projectName);
+          this.shownToolIds = new Set();
+          this.subagentShown = new Map();
+          this.streamer?.setFooter(this.hashtags());
+          const content = buildContentBlocks(input, {
+            reasoning: reasoningDirective(this.reasoning),
+            priming: transcript ? buildPriming(transcript) : undefined,
+            progress: this.cfg.showProgress ? PROGRESS_DIRECTIVE : undefined,
+          });
+          log.info(`chat ${this.chatId} auto-rotating to account ${t.label}`);
+          return this.runPromptWithRetries(content);
+        });
       } catch (e) {
-        errors.push(`\u2022 ${t.label}: couldn't switch \u2014 ${(e as Error).message}`);
+        errors.push(`\u2022 ${t.label}: couldn't switch or run \u2014 ${(e as Error).message}`);
         continue;
       }
-      try {
-        await this.bindNewSession(this.cwd, this.projectName); // fresh session on the new login
-      } catch (e) {
-        errors.push(`\u2022 ${t.label}: no session \u2014 ${(e as Error).message}`);
-        continue;
-      }
-      // Reset per-turn render state so the retry streams cleanly.
-      this.shownToolIds = new Set();
-      this.subagentShown = new Map();
-      this.streamer?.setFooter(this.hashtags());
-      const content = buildContentBlocks(input, {
-        reasoning: reasoningDirective(this.reasoning),
-        priming: transcript ? buildPriming(transcript) : undefined,
-        progress: this.cfg.showProgress ? PROGRESS_DIRECTIVE : undefined,
-      });
-      log.info(`chat ${this.chatId} auto-rotating to account ${t.label}`);
-      last = await this.runPromptWithRetries(content);
       if (last.result && !this.cancelled) {
         if (this.foreground) await this.notify(`\u2705 Recovered on ${t.label}.`, { replyTo: this.turnReplyTo });
         return last;
@@ -754,6 +749,7 @@ export class SessionRuntime {
           attempt <= delays.length &&
           canRecover &&
           !forkInstead &&
+          !isAccountExhaustedError(error) &&
           isTransientAcpError(error);
         if (!willRetry) return { error, attempts: attempt };
         const waitMs = delays[attempt - 1]!;

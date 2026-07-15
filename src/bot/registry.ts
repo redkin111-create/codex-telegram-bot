@@ -3,12 +3,11 @@
  * sessions). `get(chatId)` returns the chat's foreground SessionRuntime so the
  * existing handlers keep operating on "the current session".
  *
- * It also owns **subagent attribution** for ACP-style agents that report a
- * single, process-global subagent list (with no parent session id on the wire):
+ * It also owns **subagent attribution** for Codex collaboration events:
  * new subagents are attributed to the chat whose turn is currently running
  * (most-recent first). That mapping drives both subagent *visibility* (routed to
  * the owner's foreground runtime) and *permission* routing. Codex does not emit
- * subagents today, so this machinery stays dormant but forward-compatible.
+ * subagents are associated with their parent thread when Codex reports it.
  */
 import type { Api } from "grammy";
 import type { AcpClient } from "../acp/client.js";

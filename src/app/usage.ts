@@ -4,8 +4,11 @@
  * there (and confirm the live state with `codex login status`).
  */
 import { codexRun } from "./codex-cli.js";
+import type { AcpClient } from "../acp/client.js";
+import type { CodexRateLimitSnapshot } from "../acp/codex-protocol.js";
 import {
   authLabel,
+  accountFingerprint,
   authMethod,
   authUsable,
   codexAuthPath,
@@ -24,15 +27,34 @@ export interface AccountInfo {
   key?: string;
 }
 
+export interface LiveUsageInfo {
+  account?: AccountInfo;
+  limits: CodexRateLimitSnapshot[];
+}
+
 export class UsageService {
-  constructor(private readonly codexCliPath: string) {}
+  constructor(
+    private readonly codexCliPath: string,
+    private readonly acp?: AcpClient,
+  ) {}
 
   async account(): Promise<AccountInfo | undefined> {
+    const live = await this.acp?.accountState().catch(() => undefined);
+    if (live?.account) {
+      const a = live.account;
+      if (a.type === "chatgpt") {
+        const disk = await readAuthFile(codexAuthPath());
+        return { email: a.email ?? undefined, accountType: a.planType || "ChatGPT", key: accountFingerprint(disk) };
+      }
+      if (a.type === "amazonBedrock") return { accountType: "Amazon Bedrock" };
+      const disk = await readAuthFile(codexAuthPath());
+      return { accountType: keyLabel(disk) || "API key", key: keyFingerprint(disk) };
+    }
     const auth = await readAuthFile(codexAuthPath());
     if (authUsable(auth)) {
       const id = identityFromAuth(auth);
       if (authMethod(auth) === "chatgpt") {
-        return { email: id.email, accountType: id.plan || "ChatGPT" };
+        return { email: id.email, accountType: id.plan || "ChatGPT", key: accountFingerprint(auth) };
       }
       // API key: no email — carry a masked label + a stable match fingerprint.
       return { accountType: keyLabel(auth) || "API key", key: keyFingerprint(auth) };
@@ -40,6 +62,15 @@ export class UsageService {
     // No auth.json but an API key env var still logs Codex in.
     if (process.env.OPENAI_API_KEY?.trim()) return { accountType: "API key (env)" };
     return undefined;
+  }
+
+  async live(): Promise<LiveUsageInfo> {
+    const state = await this.acp?.accountState().catch(() => undefined);
+    const account = await this.account();
+    const limits = state?.rateLimitsByLimitId
+      ? Object.values(state.rateLimitsByLimitId)
+      : state?.rateLimits ? [state.rateLimits] : [];
+    return { account, limits };
   }
 
   /**

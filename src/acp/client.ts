@@ -4,7 +4,7 @@
  *
  * One process manages many threads (the bot's "sessions"). Callers create/resume
  * threads and start turns; Codex's streamed `item/*` and `turn/*` notifications
- * are translated (see ./translate.ts) into the bot's internal, Kiro-shaped
+ * are translated (see ./translate.ts) into the bot's protocol-neutral
  * "session-update" events keyed by threadId, so the whole downstream layer is
  * unchanged. The class name `AcpClient` is kept for import compatibility.
  */
@@ -13,7 +13,7 @@ import { EventEmitter } from "node:events";
 import { codexLaunchInfo, codexSpawn } from "../app/codex-cli.js";
 import { createLogger } from "../logger.js";
 import { killPid } from "../sessions/process.js";
-import { AcpError, isContextExhaustedError, isTransientAcpError, toAcpError } from "./errors.js";
+import { AcpError, isAccountExhaustedError, isContextExhaustedError, isTransientAcpError, toAcpError } from "./errors.js";
 import { decideApproval } from "./approvals.js";
 import { handleServerRequest, type ServerHandlerOptions } from "./server-handlers.js";
 import { JsonRpcTransport } from "./transport.js";
@@ -21,12 +21,18 @@ import {
   itemToUpdates,
   textChunk,
   thoughtChunk,
+  turnErrorInfo,
   toCodexInput,
   turnErrorMessage,
 } from "./translate.js";
 import type {
   CodexInitializeResult,
+  CodexCollaborationModeInfo,
+  CodexCollaborationModeListResult,
   CodexItem,
+  CodexMcpServerStatus,
+  CodexAccountInfo,
+  CodexRateLimitSnapshot,
   CodexModelInfo,
   CodexModelListResult,
   CodexThreadResponse,
@@ -34,6 +40,7 @@ import type {
   CodexTurn,
   CodexTurnResponse,
   CodexTurnStartParams,
+  CodexSkillInfo,
 } from "./codex-protocol.js";
 import type {
   ContentBlock,
@@ -56,7 +63,7 @@ export interface SessionMetadata {
 }
 
 // Re-exported so existing importers of these from "../acp/client.js" keep working.
-export { AcpError, isContextExhaustedError, isTransientAcpError };
+export { AcpError, isAccountExhaustedError, isContextExhaustedError, isTransientAcpError };
 
 export interface AcpClientOptions {
   codexCliPath: string;
@@ -100,6 +107,7 @@ export declare interface AcpClient {
   emit(e: "exit", code: number | null): boolean;
   emit(e: "restarted"): boolean;
   emit(e: "subagents", subagents: SubagentInfo[], pending: PendingStage[]): boolean;
+  emit(e: "rate-limits", limits: unknown): boolean;
 }
 
 export class AcpClient extends EventEmitter {
@@ -124,16 +132,21 @@ export class AcpClient extends EventEmitter {
   capabilities?: InitializeResult["agentCapabilities"];
   /** Absolute CODEX_HOME reported by Codex at initialize (sessions/auth live here). */
   codexHome?: string;
-  /** Codex has no per-session "agent modes" — kept empty for menu compatibility. */
+  /** Agent/collaboration presets reported by Codex. */
   availableModes: Array<{ id: string; name: string; description?: string }> = [];
   currentModeId?: string;
   /** Models from Codex's `model/list`. */
   availableModels: Array<{ modelId: string; name: string; description?: string }> = [];
   currentModelId?: string;
+  availableSkills: CodexSkillInfo[] = [];
+  availableMcpServers: CodexMcpServerStatus[] = [];
 
   private readonly metadata = new Map<string, SessionMetadata>();
   private readonly threadCwd = new Map<string, string>();
   private readonly threadModel = new Map<string, string>();
+  private readonly threadMode = new Map<string, string>();
+  private readonly collaborationModes = new Map<string, CodexCollaborationModeInfo>();
+  private readonly subagents = new Map<string, SubagentInfo>();
   /** itemId -> threadId, so text/reasoning deltas route to the right thread. */
   private readonly itemThread = new Map<string, string>();
 
@@ -153,6 +166,7 @@ export class AcpClient extends EventEmitter {
   }
 
   private async connect(): Promise<void> {
+    this.subagents.clear();
     const args = ["app-server"];
     const env = { ...process.env } as NodeJS.ProcessEnv;
     if (this.opts.codexHome) env.CODEX_HOME = this.opts.codexHome;
@@ -190,6 +204,7 @@ export class AcpClient extends EventEmitter {
 
     const init = (await this.request("initialize", {
       clientInfo: { name: "codex-telegram-bot", title: "Codex Telegram Bot", version: "1.0.0" },
+      capabilities: { experimentalApi: true },
     })) as CodexInitializeResult;
     // Codex requires an `initialized` notification to complete the handshake.
     this.send({ method: "initialized" });
@@ -199,25 +214,111 @@ export class AcpClient extends EventEmitter {
     this.agentInfo = { name: "codex", version: parseVersion(init?.userAgent) };
     this.restartAttempts = 0;
     this.everConnected = true;
-    await this.loadModels();
+    await Promise.all([this.loadModels(), this.loadCapabilities()]);
     log.info(`connected: codex app-server${init?.userAgent ? ` (${init.userAgent})` : ""}`);
+  }
+
+  /** Load live Codex inventories. Each endpoint is independent and best-effort. */
+  async refreshInventories(): Promise<void> {
+    await Promise.all([this.loadModels(), this.loadCapabilities()]);
+  }
+
+  private async loadCapabilities(): Promise<void> {
+    await Promise.all([
+      this.loadCollaborationModes(),
+      this.request("skills/list", { cwds: [this.opts.workspace] })
+        .then((r) => {
+          const entries = (r as { data?: Array<{ skills?: CodexSkillInfo[] }> })?.data ?? [];
+          this.availableSkills = entries.flatMap((e) => e.skills ?? []);
+        })
+        .catch((e) => {
+          this.availableSkills = [];
+          log.debug("skills/list unavailable:", (e as Error).message);
+        }),
+      this.loadMcpStatuses(),
+    ]);
+  }
+
+  private async loadCollaborationModes(): Promise<void> {
+    try {
+      const res = (await this.request("collaborationMode/list", {})) as CodexCollaborationModeListResult;
+      const modes = res?.data ?? [];
+      this.collaborationModes.clear();
+      for (const mode of modes) this.collaborationModes.set(mode.name, mode);
+      this.availableModes = modes.map((m) => ({
+        id: m.name,
+        name: m.name,
+        description: [m.mode, m.model, m.reasoning_effort].filter(Boolean).join(" · ") || undefined,
+      }));
+    } catch (e) {
+      this.collaborationModes.clear();
+      this.availableModes = [];
+      log.debug("collaborationMode/list unavailable:", (e as Error).message);
+    }
+  }
+
+  private async loadMcpStatuses(): Promise<void> {
+    try {
+      const all: CodexMcpServerStatus[] = [];
+      let cursor: string | undefined;
+      do {
+        const r = (await this.request("mcpServerStatus/list", { detail: "full", limit: 100, cursor })) as {
+          data?: CodexMcpServerStatus[];
+          nextCursor?: string | null;
+        };
+        all.push(...(r.data ?? []));
+        cursor = r.nextCursor ?? undefined;
+      } while (cursor);
+      this.availableMcpServers = all;
+    } catch (e) {
+      this.availableMcpServers = [];
+      log.debug("mcpServerStatus/list unavailable:", (e as Error).message);
+    }
+  }
+
+  /** Live identity and quota state reported by the running app-server. */
+  async accountState(): Promise<{
+    account?: CodexAccountInfo;
+    rateLimits?: CodexRateLimitSnapshot;
+    rateLimitsByLimitId?: Record<string, CodexRateLimitSnapshot>;
+  }> {
+    const [account, limits] = await Promise.all([
+      this.request("account/read", { refreshToken: false }).catch(() => undefined),
+      this.request("account/rateLimits/read", undefined).catch(() => undefined),
+    ]);
+    const a = account as { account?: CodexAccountInfo | null } | undefined;
+    const l = limits as {
+      rateLimits?: CodexRateLimitSnapshot;
+      rateLimitsByLimitId?: Record<string, CodexRateLimitSnapshot> | null;
+    } | undefined;
+    return {
+      account: a?.account ?? undefined,
+      rateLimits: l?.rateLimits,
+      rateLimitsByLimitId: l?.rateLimitsByLimitId ?? undefined,
+    };
   }
 
   /** Populate the model catalogue via `model/list` (best-effort). */
   private async loadModels(): Promise<void> {
     try {
-      const res = (await this.request("model/list", {})) as CodexModelListResult;
-      const list = res?.data ?? res?.models ?? [];
-      if (Array.isArray(list) && list.length) {
-        this.availableModels = list.map((m: CodexModelInfo) => ({
-          modelId: m.id ?? m.model ?? "",
-          name: m.displayName ?? m.model ?? m.id ?? "",
-          description: m.description,
-        })).filter((m) => m.modelId);
-        const def = list.find((m) => m.isDefault);
-        if (def) this.currentModelId = def.id ?? def.model;
+      const list: CodexModelInfo[] = [];
+      let cursor: string | undefined;
+      do {
+        const res = (await this.request("model/list", { cursor, limit: 100, includeHidden: false })) as CodexModelListResult;
+        list.push(...(res?.data ?? res?.models ?? []));
+        cursor = res?.nextCursor ?? undefined;
+      } while (cursor);
+      this.availableModels = list.map((m) => ({
+        modelId: m.model ?? m.id ?? "",
+        name: m.displayName ?? m.model ?? m.id ?? "",
+        description: m.description,
+      })).filter((m) => m.modelId);
+      const def = list.find((m) => m.isDefault);
+      if (!this.currentModelId || !this.availableModels.some((m) => m.modelId === this.currentModelId)) {
+        this.currentModelId = def?.model ?? def?.id;
       }
     } catch (e) {
+      this.availableModels = [];
       log.debug("model/list unavailable:", (e as Error).message);
     }
   }
@@ -259,7 +360,7 @@ export class AcpClient extends EventEmitter {
     const params: Record<string, unknown> = { cwd };
     const model = this.modelFor(undefined);
     if (model) params.model = model;
-    params.sandboxPolicy = { type: this.opts.trustAllTools ? "danger-full-access" : "workspace-write" };
+    params.sandbox = this.opts.trustAllTools ? "danger-full-access" : "workspace-write";
     const res = (await this.request("thread/start", params)) as CodexThreadResponse;
     const id = res?.thread?.id;
     if (!id) throw new AcpError("thread/start returned no thread id");
@@ -283,8 +384,8 @@ export class AcpClient extends EventEmitter {
     this.threadCwd.set(sessionId, cwd);
   }
 
-  hasMode(_id: string): boolean {
-    return false; // Codex exposes no selectable agent modes
+  hasMode(id: string): boolean {
+    return this.collaborationModes.has(id);
   }
 
   hasModel(id: string): boolean {
@@ -334,10 +435,23 @@ export class AcpClient extends EventEmitter {
         input: toCodexInput(content),
         cwd: this.threadCwd.get(sessionId),
         approvalPolicy: this.opts.trustAllTools ? "never" : "on-request",
-        sandboxPolicy: { type: this.opts.trustAllTools ? "danger-full-access" : "workspace-write" },
+        sandboxPolicy: this.opts.trustAllTools
+          ? { type: "dangerFullAccess" }
+          : { type: "workspaceWrite", writableRoots: [this.threadCwd.get(sessionId) ?? this.opts.workspace], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
       };
       const model = this.modelFor(sessionId);
       if (model) params.model = model;
+      const mode = this.collaborationModes.get(this.threadMode.get(sessionId) ?? "");
+      if (mode?.mode) {
+        params.collaborationMode = {
+          mode: mode.mode,
+          settings: {
+            model: mode.model ?? model ?? "",
+            reasoning_effort: mode.reasoning_effort ?? null,
+            developer_instructions: null,
+          },
+        };
+      }
 
       this.request("turn/start", params)
         .then((res) => {
@@ -379,8 +493,10 @@ export class AcpClient extends EventEmitter {
     this.currentModelId = modelId;
   }
 
-  async setMode(_sessionId: string, modeId: string): Promise<void> {
-    this.currentModeId = modeId; // Codex has no modes; recorded for display only
+  async setMode(sessionId: string, modeId: string): Promise<void> {
+    if (!this.hasMode(modeId)) throw new AcpError(`Unknown Codex collaboration mode: ${modeId}`);
+    this.threadMode.set(sessionId, modeId);
+    this.currentModeId = modeId;
   }
 
   stop(): void {
@@ -549,6 +665,7 @@ export class AcpClient extends EventEmitter {
         const item = p.item as CodexItem | undefined;
         const tid = threadHint;
         if (item?.id && tid) this.itemThread.set(item.id, tid);
+        if (item && tid) this.updateSubagents(item, tid);
         break;
       }
       case "item/completed": {
@@ -557,6 +674,7 @@ export class AcpClient extends EventEmitter {
         if (item && tid) {
           this.itemThread.set(item.id, tid);
           for (const u of itemToUpdates(item)) this.emit("session-update", tid, u);
+          this.updateSubagents(item, tid);
         }
         break;
       }
@@ -576,6 +694,12 @@ export class AcpClient extends EventEmitter {
       case "thread/tokenUsage/updated":
         this.onTokenUsage(p);
         break;
+      case "skills/changed":
+        void this.loadCapabilities();
+        break;
+      case "account/rateLimits/updated":
+        this.emit("rate-limits", p.rateLimits);
+        break;
       default:
         break;
     }
@@ -592,7 +716,7 @@ export class AcpClient extends EventEmitter {
     const status = turn?.status;
     if (status === "failed") {
       const msg = turnErrorMessage(turn) || "Codex turn failed";
-      this.finishTurn(threadId, "reject", new AcpError(msg, -32603));
+      this.finishTurn(threadId, "reject", new AcpError(msg, -32603, { codexErrorInfo: turnErrorInfo(turn) }));
     } else {
       this.finishTurn(threadId, "resolve", { stopReason: status === "interrupted" ? "cancelled" : "end_turn" });
     }
@@ -629,15 +753,50 @@ export class AcpClient extends EventEmitter {
   }
 
   currentSubagents(): SubagentInfo[] {
-    return []; // Codex has no subagent/crew concept
+    return [...this.subagents.values()];
   }
 
   currentPendingStages(): PendingStage[] {
     return [];
   }
 
-  subagentById(_sessionId: string): SubagentInfo | undefined {
-    return undefined;
+  subagentById(sessionId: string): SubagentInfo | undefined {
+    return this.subagents.get(sessionId);
+  }
+
+  private updateSubagents(item: CodexItem, parentThreadId: string): void {
+    const type = String(item.type ?? item.itemType ?? "");
+    if (type === "collabAgentToolCall") {
+      for (const id of item.receiverThreadIds ?? []) {
+        const state = item.agentsStates?.[id];
+        this.subagents.set(id, {
+          sessionId: id,
+          sessionName: id.slice(0, 8),
+          initialQuery: item.prompt ?? undefined,
+          status: { type: state?.status ?? item.status, message: state?.message ?? undefined },
+          group: parentThreadId,
+        });
+      }
+    } else if (type === "subAgentActivity" && item.agentThreadId) {
+      const existing = this.subagents.get(item.agentThreadId);
+      this.subagents.set(item.agentThreadId, {
+        ...existing,
+        sessionId: item.agentThreadId,
+        sessionName: existing?.sessionName ?? item.agentPath ?? item.agentThreadId.slice(0, 8),
+        status: { type: item.kind ?? item.status },
+        group: parentThreadId,
+      });
+    } else return;
+    this.emit("subagents", this.currentSubagents(), []);
+    const terminal = item.status === "completed" || item.status === "failed" || item.kind === "interrupted";
+    if (terminal) {
+      if (type === "collabAgentToolCall") {
+        for (const id of item.receiverThreadIds ?? []) this.subagents.delete(id);
+      } else if (item.agentThreadId) {
+        this.subagents.delete(item.agentThreadId);
+      }
+      this.emit("subagents", this.currentSubagents(), []);
+    }
   }
 
   metadataFor(sessionId: string | undefined): SessionMetadata | undefined {

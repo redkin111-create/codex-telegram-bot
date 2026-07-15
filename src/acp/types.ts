@@ -1,8 +1,8 @@
 /**
  * Internal protocol type definitions consumed across the bot.
  *
- * These are the bot's OWN event shapes (historically modelled on the Agent
- * Client Protocol). The Codex app-server client (see ./client.ts + ./translate.ts)
+ * These are the bot's protocol-neutral event shapes. The Codex app-server
+ * client (see ./client.ts + ./translate.ts)
  * translates Codex's `thread`/`turn`/`item` events into these, so the whole
  * downstream render/runtime layer stays protocol-agnostic.
  */
@@ -75,7 +75,7 @@ export interface SessionUpdate {
   status?: "pending" | "in_progress" | "completed" | "failed" | string;
   rawInput?: Record<string, unknown>;
   content_blocks?: ToolCallContent[];
-  // ACP also nests content for tool calls as `content`
+  // Some tool updates also nest payloads under `content`.
   [k: string]: unknown;
 }
 
@@ -108,9 +108,7 @@ export type PermissionOutcome =
   | { outcome: { outcome: "cancelled" } };
 
 /**
- * One subagent ("crew" member) as reported by ACP-style agents via a
- * `subagent/list_update` notification. The list is process-global
- * (it is not scoped to a parent session id on the wire).
+ * One subagent reported by Codex collaboration items.
  */
 export interface SubagentInfo {
   /** The subagent's own session id (distinct from the parent session). */

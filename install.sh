@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # ============================================================
-#  Kiro Telegram Bot — 1-click installer (Linux / macOS)
+#  Codex Telegram Bot — 1-click installer (Linux / macOS)
 # ============================================================
 set -euo pipefail
 cd "$(dirname "$0")"
 
 echo "============================================"
-echo "  Kiro Telegram Bot - installer"
+echo "  Codex Telegram Bot - installer"
 echo "============================================"
 echo
 
@@ -19,7 +19,7 @@ echo "[1/4] Installing dependencies..."
 npm install
 
 echo
-echo "[2/4] Detecting kiro-cli and writing .env..."
+echo "[2/4] Detecting Codex CLI and writing .env..."
 node scripts/setup.mjs
 
 echo

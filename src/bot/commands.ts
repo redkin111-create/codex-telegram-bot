@@ -10,6 +10,9 @@ export const COMMANDS: { command: string; description: string }[] = [
   { command: "running", description: "Sessions this chat controls \u2014 switch between them" },
   { command: "killall", description: "Kill all active sessions on the PC" },
   { command: "mcp", description: "Inspect & toggle MCP servers \u00b7 health-check" },
+  { command: "models", description: "List live models reported by Codex" },
+  { command: "agents", description: "List live Codex collaboration modes" },
+  { command: "skills", description: "List live enabled Codex skills" },
   { command: "tasks", description: "Manage scheduled tasks" },
   { command: "newtask", description: "Create a scheduled task" },
   { command: "history", description: "Show recent conversation history" },
@@ -49,4 +52,5 @@ export const HELP_TEXT = [
   "/status \u2014 show session, project and queue size",
   "/reauth \u2014 log in to Codex (ChatGPT, API key, or import an existing login)",
   "/accounts \u2014 switch between saved Codex accounts",
+  "/models \u00b7 /agents \u00b7 /skills \u2014 inspect live Codex capabilities",
 ].join("\n");

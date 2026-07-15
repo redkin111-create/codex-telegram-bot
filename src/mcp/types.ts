@@ -11,7 +11,7 @@
 export type McpScope = "global" | "workspace";
 export type McpTransport = "http" | "stdio" | "unknown";
 
-/** Raw server definition as stored in an mcp.json `mcpServers` entry. */
+/** Server definition parsed from a Codex `config.toml` mcp_servers table. */
 export interface McpServerConfig {
   command?: string;
   args?: string[];

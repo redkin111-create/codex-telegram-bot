@@ -1,12 +1,12 @@
 @echo off
 REM ============================================================
-REM  Kiro Telegram Bot — 1-click installer (Windows)
+REM  Codex Telegram Bot — 1-click installer (Windows)
 REM ============================================================
 setlocal
 cd /d "%~dp0"
 
 echo ============================================
-echo   Kiro Telegram Bot - installer
+echo   Codex Telegram Bot - installer
 echo ============================================
 echo.
 
@@ -22,7 +22,7 @@ call npm install
 if errorlevel 1 ( echo [X] npm install failed & pause & exit /b 1 )
 
 echo.
-echo [2/4] Detecting kiro-cli and writing .env...
+echo [2/4] Detecting Codex CLI and writing .env...
 call node scripts\setup.mjs
 
 echo.
