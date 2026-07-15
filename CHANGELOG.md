@@ -4,6 +4,12 @@ All notable changes to **codex-telegram-bot** are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/) and this project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] - 2026-07-15
+
+### Changed
+
+- Keep the optional Reddit launch draft local and excluded from release commits.
+
 ## [1.1.0] - 2026-07-15
 
 ### Added

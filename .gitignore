@@ -61,6 +61,7 @@ scripts/_*.mjs
 
 # ── Package manager / release artifacts ──────────────────────────────────────
 *.tgz
+REDDIT.md
 kiro-telegram-bot-*.zip
 codex-telegram-bot-*.zip
 .npm/
