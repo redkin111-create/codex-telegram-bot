@@ -1,6 +1,6 @@
 {
   "name": "codex-telegram-bot",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Control OpenAI Codex CLI from Telegram over the codex app-server protocol. Switch projects, resume coding sessions, stream responses with diffs, queue follow-ups, and run 24/7 as a cross-platform background service.",
   "type": "module",
   "main": "src/index.ts",
