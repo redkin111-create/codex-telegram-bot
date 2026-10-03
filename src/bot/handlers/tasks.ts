@@ -22,13 +22,18 @@ export async function showTasks(ctx: Context, deps: BotDeps): Promise<void> {
   await deps.ephemeral.reply(ctx, text, { reply_markup: kb });
 }
 
-export async function renderWizardPrompt(ctx: Context, deps: BotDeps, p: WizardPrompt): Promise<void> {
+export async function renderWizardPrompt(ctx: Context, deps: BotDeps, p: WizardPrompt, reuseLatest = false): Promise<void> {
+  if (!reuseLatest) await deps.ephemeral.open(ctx);
+  const reply = (text: string, extra: Record<string, unknown> = {}) => {
+    if (reuseLatest && ctx.chat) return deps.ephemeral.editLatest(ctx.chat.id, text, extra);
+    return deps.ephemeral.reply(ctx, text, extra);
+  };
   switch (p.kind) {
     case "text":
-      await ctx.reply(p.text);
+      await reply(p.text);
       return;
     case "project":
-      await sendProjectMenu(ctx, deps, "wiz:proj:", p.text);
+      await sendProjectMenu(ctx, deps, "wiz:proj:", p.text, undefined, reuseLatest);
       return;
     case "scheduleType": {
       const kb = new InlineKeyboard()
@@ -39,19 +44,21 @@ export async function renderWizardPrompt(ctx: Context, deps: BotDeps, p: WizardP
         .text("Monthly", "wiz:sched:monthly")
         .row()
         .text("Every N minutes", "wiz:sched:interval");
-      await ctx.reply(p.text, { reply_markup: kb });
+      await reply(p.text, { reply_markup: kb });
       return;
     }
     case "confirm": {
       const kb = new InlineKeyboard().text("\u2705 Save", "wiz:confirm").text("\u2716 Cancel", "wiz:cancel");
-      await ctx.reply(p.text, { reply_markup: kb });
+      await reply(p.text, { reply_markup: kb });
       return;
     }
     case "done":
-      await ctx.reply(p.text);
+      await reply(p.text, {
+        reply_markup: new InlineKeyboard().text("\u{1F5D3} Tasks", "m:tasks").text("\u{1F3E0} Main menu", "ui:home"),
+      });
       return;
     case "aborted":
-      await ctx.reply("Cancelled.");
+      await reply("Cancelled.", { reply_markup: new InlineKeyboard().text("\u{1F3E0} Main menu", "ui:home") });
       return;
   }
 }
@@ -71,7 +78,10 @@ export function registerWizardInput(bot: Bot, deps: BotDeps): void {
       return next();
     }
     const p = deps.wizard.handleText(chatId, text);
-    if (p) await renderWizardPrompt(ctx, deps, p);
+    if (p) {
+      await ctx.deleteMessage().catch(() => {});
+      await renderWizardPrompt(ctx, deps, p, true);
+    }
   });
 }
 
@@ -143,9 +153,9 @@ export function registerTasks(bot: Bot, deps: BotDeps): void {
   });
 
   // ── wizard inline steps ────────────────────────────────────────────────
-  bot.callbackQuery(/^wiz:proj:(\d+)$/, async (ctx) => {
-    const entry = deps.menuCache.getProject(ctx.chat!.id, Number(ctx.match![1]));
-    if (!entry) return void ctx.answerCallbackQuery({ text: "Expired, restart the task." });
+  bot.callbackQuery(/^wiz:p:([a-f0-9]{16}):(\d+)$/, async (ctx) => {
+    const entry = deps.menuCache.getProject(ctx.chat!.id, Number(ctx.match![2]), ctx.match![1]);
+    if (!entry) return void ctx.answerCallbackQuery({ text: "Project list expired. Restart the task." });
     await ctx.answerCallbackQuery();
     const p = deps.wizard.setProject(ctx.chat!.id, entry.path, entry.name);
     if (p) await renderWizardPrompt(ctx, deps, p);
@@ -176,7 +186,7 @@ function listView(deps: BotDeps, chatId: number): { text: string; kb: InlineKeyb
   const tasks = deps.tasks.forChat(chatId);
   const kb = new InlineKeyboard();
   if (tasks.length === 0) {
-    kb.text("\u2795 New task", "task:new");
+    kb.text("\u2795 New task", "task:new").row().text("\u{1F3E0} Main menu", "ui:home");
     return { text: "You have no scheduled tasks yet.", kb };
   }
   for (const t of tasks) {
@@ -184,7 +194,7 @@ function listView(deps: BotDeps, chatId: number): { text: string; kb: InlineKeyb
     const name = t.name.length > 24 ? t.name.slice(0, 24) + "\u2026" : t.name;
     kb.text(`${dot} ${name} \u00B7 ${describeSchedule(t.schedule)}`, `task:view:${t.id}`).row();
   }
-  kb.text("\u2795 New task", "task:new");
+  kb.text("\u2795 New task", "task:new").row().text("\u{1F3E0} Main menu", "ui:home");
   return { text: `\u{1F5D3} Your scheduled tasks (${tasks.length}):`, kb };
 }
 
@@ -208,7 +218,8 @@ function detailView(t: Task): { text: string; kb: InlineKeyboard } {
     .text("\u270F\uFE0F Edit", `task:editmenu:${t.id}`)
     .text("\u{1F5D1} Delete", `task:del:${t.id}`)
     .row()
-    .text("\u2B05 Back", "task:list");
+    .text("\u2B05 Back", "task:list")
+    .text("\u{1F3E0} Menu", "ui:home");
   return { text, kb };
 }
 
@@ -220,5 +231,6 @@ function editMenu(id: string): InlineKeyboard {
     .text("Project", `task:edit:project:${id}`)
     .text("Schedule", `task:edit:schedule:${id}`)
     .row()
-    .text("\u2B05 Back", `task:view:${id}`);
+    .text("\u2B05 Back", `task:view:${id}`)
+    .text("\u{1F3E0} Menu", "ui:home");
 }

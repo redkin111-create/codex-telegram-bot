@@ -43,7 +43,8 @@ export class Ephemeral {
     if (!messageId) return;
     this.store.update((m) => {
       const k = String(chatId);
-      (m[k] ??= []).push(messageId);
+      const ids = (m[k] ??= []);
+      if (!ids.includes(messageId)) ids.push(messageId);
     });
   }
 
@@ -53,16 +54,16 @@ export class Ephemeral {
     await this.serialize(chatId, () => this.doClear(chatId));
   }
 
-  private async doClear(chatId: number): Promise<void> {
+  private async doClear(chatId: number, preserveMessageId?: number): Promise<void> {
     const k = String(chatId);
     const ids = (this.store.get()[k] ?? []).slice();
     if (ids.length === 0) return;
     // A Telegram rejection (message gone / too old / not found) is final, so we
     // forget that id. A transient/network failure is KEPT for the next sweep so
     // a tracked card never becomes a permanent "ghost" (the duplicate-cards bug).
-    const keep: number[] = [];
+    const keep: number[] = preserveMessageId === undefined ? [] : ids.filter((id) => id === preserveMessageId);
     await Promise.all(
-      ids.map(async (id) => {
+      ids.filter((id) => id !== preserveMessageId).map(async (id) => {
         try {
           await this.api.deleteMessage(chatId, id);
         } catch (err) {
@@ -88,7 +89,10 @@ export class Ephemeral {
    * Call at the start of every menu/card/picker handler.
    */
   async open(ctx: Context): Promise<void> {
-    await this.clear(ctx.chat?.id);
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const preserveMessageId = ctx.callbackQuery?.message?.message_id;
+    await this.serialize(chatId, () => this.doClear(chatId, preserveMessageId));
   }
 
   /** Send a transient reply (tracked) — use for menus / cards / pickers. */
@@ -96,8 +100,51 @@ export class Ephemeral {
     const chatId = ctx.chat?.id;
     if (chatId === undefined) return undefined;
     return this.serialize(chatId, async () => {
+      const currentMessageId = ctx.callbackQuery?.message?.message_id;
+      if (currentMessageId !== undefined) {
+        try {
+          await ctx.editMessageText(text, extra as never);
+          this.remember(chatId, currentMessageId);
+          return currentMessageId;
+        } catch (err) {
+          if (isNotModified(err)) {
+            this.remember(chatId, currentMessageId);
+            return currentMessageId;
+          }
+          if (!isUneditable(err)) return undefined;
+        }
+      }
       try {
         const msg = await ctx.reply(text, extra);
+        this.remember(chatId, msg.message_id);
+        return msg.message_id;
+      } catch {
+        return undefined;
+      }
+    });
+  }
+
+  /** Edit the current navigation message after an input-only step such as search. */
+  async editLatest(chatId: number, text: string, extra: Record<string, unknown> = {}): Promise<number | undefined> {
+    return this.serialize(chatId, async () => {
+      const k = String(chatId);
+      const ids = (this.store.get()[k] ?? []).slice();
+      const latest = ids.at(-1);
+      if (latest !== undefined) {
+        try {
+          await this.api.editMessageText(chatId, latest, text, extra as never);
+          return latest;
+        } catch (err) {
+          if (isNotModified(err)) return latest;
+          if (!isUneditable(err)) return undefined;
+          this.store.update((m) => {
+            m[k] = (m[k] ?? []).filter((id) => id !== latest);
+            if (m[k]!.length === 0) delete m[k];
+          });
+        }
+      }
+      try {
+        const msg = await this.api.sendMessage(chatId, text, extra as never);
         this.remember(chatId, msg.message_id);
         return msg.message_id;
       } catch {
@@ -110,6 +157,14 @@ export class Ephemeral {
   async drop(ctx: Context): Promise<void> {
     await ctx.deleteMessage().catch(() => {});
   }
+}
+
+function isNotModified(err: unknown): boolean {
+  return err instanceof GrammyError && /message is not modified/i.test(err.description);
+}
+
+function isUneditable(err: unknown): boolean {
+  return err instanceof GrammyError && /message to edit not found|message can't be edited|message_id_invalid|message to be edited/i.test(err.description);
 }
 
 function noop(): void {

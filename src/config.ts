@@ -186,7 +186,7 @@ export function loadConfig(): AppConfig {
     codexHome,
     workspace,
     agent: process.env.CODEX_AGENT?.trim() || undefined,
-    trustAllTools: bool(process.env.CODEX_TRUST_ALL_TOOLS, true),
+    trustAllTools: bool(process.env.CODEX_TRUST_ALL_TOOLS, false),
     projectRoots: [...new Set(roots)],
     streamThrottleMs: num(process.env.STREAM_THROTTLE_MS, 1500),
     messageBatchMs: nonNegNum(process.env.MESSAGE_BATCH_MS, 800),

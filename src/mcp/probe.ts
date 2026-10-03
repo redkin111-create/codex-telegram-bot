@@ -219,6 +219,6 @@ function parseJsonOrSse(text: string): RpcEnvelope | undefined {
       }
     }
   }
-  log.debug("unparseable MCP HTTP response:", trimmed.slice(0, 120));
+  log.debug("unparseable MCP HTTP response");
   return undefined;
 }

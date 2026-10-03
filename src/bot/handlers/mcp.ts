@@ -1,241 +1,242 @@
-/**
- * /mcp — inspect and control the Codex agent's MCP servers from Telegram.
- *
- *   • Lists configured servers plus live status/tool/resource/auth inventory
- *     reported by the running Codex app-server.
- *   • 🩺 Health-check runs a real MCP `initialize` handshake against each enabled
- *     server and reports which connected and which failed (and why).
- *   • 🔧 Enable/Disable toggles a server's `enabled` flag in config.toml. The
- *     change applies when the agent next loads servers, so a 🔄 Restart button
- *     is offered to apply it immediately.
- */
+/** Inline inspection and safe, explicit control of Codex MCP configuration. */
 import { type Bot, type Context, InlineKeyboard } from "grammy";
 import type { BotDeps } from "../deps.js";
 import { listMcpServers, setMcpDisabled } from "../../mcp/config.js";
 import { probeAll } from "../../mcp/probe.js";
 import type { McpProbeResult, McpServer } from "../../mcp/types.js";
 import type { CodexMcpServerStatus } from "../../acp/codex-protocol.js";
+import { compactLabel, INLINE_PAGE_SIZE, pageWindow } from "../menu/paging.js";
 
-const PAGE_SIZE = 10;
+const PAGE_SIZE = INLINE_PAGE_SIZE;
+const TOKEN = "([a-f0-9]{16})";
 
-/** Per-chat snapshot of the last listed servers, for index-based callbacks. */
-const snapshots = new Map<number, McpServer[]>();
+interface McpSnapshot {
+  token: string;
+  cwd: string;
+  list: McpServer[];
+}
 
-function snapshot(chatId: number, deps: BotDeps): McpServer[] {
+const snapshots = new Map<number, McpSnapshot>();
+
+function snapshot(chatId: number, deps: BotDeps): McpSnapshot {
   const cwd = deps.registry.get(chatId).cwd;
-  const list = listMcpServers(cwd);
-  snapshots.set(chatId, list);
-  return list;
+  const current = { token: deps.menuCache.createToken(), cwd, list: listMcpServers(cwd) };
+  snapshots.set(chatId, current);
+  return current;
+}
+
+function currentSnapshot(chatId: number, token: string, cwd: string): McpSnapshot | undefined {
+  const current = snapshots.get(chatId);
+  return current?.token === token && sameWorkspace(current.cwd, cwd) ? current : undefined;
+}
+
+function sameWorkspace(a: string, b: string): boolean {
+  return a.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase() === b.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
 }
 
 function trunc(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n - 1) + "\u2026" : s;
+  return compactLabel(s, n);
 }
 
 const TRANSPORT_ICON: Record<string, string> = { http: "\u{1F310}", stdio: "\u{1F5A5}\uFE0F", unknown: "\u2753" };
 
-/** Build the main MCP panel text + keyboard. */
-function mainPanel(list: McpServer[], live: CodexMcpServerStatus[]): { text: string; kb: InlineKeyboard } {
+export function mainPanel(
+  list: McpServer[],
+  live: CodexMcpServerStatus[],
+  page: number,
+  token: string,
+): { text: string; kb: InlineKeyboard } {
   const enabled = list.filter((s) => !s.disabled);
-  const disabled = list.filter((s) => s.disabled);
-  const lines = [`\u{1F9E9} MCP servers \u2014 ${list.length} total \u00B7 \u2705 ${enabled.length} enabled \u00B7 \u26D4 ${disabled.length} disabled`, ""];
-  if (list.length === 0) {
-    lines.push("No MCP servers configured in ~/.codex/config.toml.");
-  } else {
-    const LIST_CAP = 60; // keep the message well under Telegram's 4096-char limit
-    for (const s of list.slice(0, LIST_CAP)) {
-      const mark = s.disabled ? "\u26D4" : "\u2705";
-      const ti = TRANSPORT_ICON[s.transport] ?? "";
-      const scope = s.scope === "workspace" ? " \u00B7 ws" : "";
-      const status = live.find((x) => x.name === s.name);
-      const inventory = status
-        ? ` · ${Object.keys(status.tools ?? {}).length} tools · ${(status.resources?.length ?? 0) + (status.resourceTemplates?.length ?? 0)} resources${authText(status.authStatus)}`
-        : " · not loaded";
-      lines.push(`${mark} ${ti} ${trunc(s.name, 28)}${scope}${inventory}`);
+  const disabled = list.length - enabled.length;
+  const { page: p, pages, start, end } = pageWindow(list.length, page, PAGE_SIZE);
+  const liveByName = new Map(live.map((status) => [status.name, status]));
+  const lines = [
+    `\u{1F9E9} MCP servers \u00B7 ${list.length}`,
+    `\u2705 ${enabled.length} enabled \u00B7 \u26D4 ${disabled} disabled`,
+    "",
+  ];
+  for (const server of list.slice(start, end)) {
+    const status = liveByName.get(server.name);
+    const resourceCount = (status?.resources?.length ?? 0) + (status?.resourceTemplates?.length ?? 0);
+    const loaded = status
+      ? `loaded \u00B7 ${Object.keys(status.tools ?? {}).length} tools \u00B7 ${resourceCount} resources${authSummary(status.authStatus)}`
+      : server.disabled ? "disabled" : "not reported by app-server";
+    const scope = server.scope === "workspace" ? " \u00B7 workspace" : "";
+    lines.push(`${server.disabled ? "\u26D4" : status ? "\u{1F7E2}" : "\u{1F7E1}"} ${TRANSPORT_ICON[server.transport] ?? ""} ${trunc(server.name, 28)}${scope} \u00B7 ${loaded}`);
+  }
+  const configuredNames = new Set(list.map((server) => server.name));
+  const liveOnly = live.filter((status) => !configuredNames.has(status.name));
+  if (liveOnly.length > 0 && (p === 0 || list.length === 0)) {
+    lines.push("", `Reported by Codex app-server \u00B7 ${liveOnly.length}`);
+    for (const status of liveOnly.slice(0, PAGE_SIZE)) {
+      const resources = (status.resources?.length ?? 0) + (status.resourceTemplates?.length ?? 0);
+      lines.push(`\u{1F7E2} ${trunc(status.name, 28)} \u00B7 ${Object.keys(status.tools ?? {}).length} tools \u00B7 ${resources} resources${authSummary(status.authStatus)}`);
     }
-    if (list.length > LIST_CAP) lines.push(`\u2026and ${list.length - LIST_CAP} more (use \u{1F527} Enable/Disable to browse).`);
+    if (liveOnly.length > PAGE_SIZE) lines.push(`\u2026 ${liveOnly.length - PAGE_SIZE} more reported`);
   }
-  const configNames = new Set(list.map((s) => s.name));
-  for (const status of live.filter((s) => !configNames.has(s.name)).slice(0, 10)) {
-    lines.push(`\u2705 \u{1F4E1} ${trunc(status.name, 28)} · app-server · ${Object.keys(status.tools ?? {}).length} tools${authText(status.authStatus)}`);
+  if (list.length === 0) {
+    if (liveOnly.length === 0) lines.push("No MCP servers are configured or reported.");
   }
-  lines.push("", "\u{1F4E1} Inventory comes from Codex app-server. \u{1F9EA} Health-check independently probes enabled configs.");
-  const kb = new InlineKeyboard()
-    .text("\u{1F9EA} Health-check", "mcp:health")
-    .text("\u{1F527} Enable/Disable", "mcp:tog:0")
-    .row()
-    .text("\u{1F504} Restart agent", "mcp:restart")
-    .text("\u{1F501} Refresh", "mcp:refresh")
-    .row()
-    .text("\u2716 Close", "mcp:close");
-  return { text: fitLines(lines, 3800), kb };
-}
-
-/** Build a paginated enable/disable view. */
-function togglePanel(list: McpServer[], page: number): { text: string; kb: InlineKeyboard } {
-  const pages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
-  const p = Math.min(Math.max(0, page), pages - 1);
-  const slice = list.slice(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE);
   const kb = new InlineKeyboard();
-  slice.forEach((s) => {
-    const idx = list.indexOf(s);
-    const label = s.disabled ? `\u2705 Enable ${trunc(s.name, 24)}` : `\u26D4 Disable ${trunc(s.name, 24)}`;
-    kb.text(label, `mcp:set:${idx}`).row();
-  });
   if (pages > 1) {
-    if (p > 0) kb.text("\u25C0 Prev", `mcp:tog:${p - 1}`);
-    kb.text(`Page ${p + 1}/${pages}`, "mcp:noop");
-    if (p < pages - 1) kb.text("Next \u25B6", `mcp:tog:${p + 1}`);
+    if (p > 0) kb.text("\u25C0", `mcp:page:${token}:${p - 1}`);
+    kb.text(`${p + 1}/${pages}`, "noop");
+    if (p < pages - 1) kb.text("\u25B6", `mcp:page:${token}:${p + 1}`);
     kb.row();
   }
-  kb.text("\u2B05 Back", "mcp:refresh");
-  const text = `\u{1F527} Enable/Disable MCP servers (${list.length})\nTap to toggle. Changes apply after \u{1F504} Restart agent.`;
+  kb.text("\u{1F9EA} Health-check", `mcp:health:${token}`).text("\u{1F527} Manage", `mcp:tog:${token}:0`).row();
+  kb.text("\u{1F501} Refresh", "mcp:refresh");
+  if (list.length > 0) kb.text("\u{1F504} Restart Codex", `mcp:restart:${token}`);
+  kb.row().text("\u{1F3E0} Main menu", "ui:home");
+  return { text: lines.join("\n"), kb };
+}
+
+function togglePanel(list: McpServer[], token: string, page: number): { text: string; kb: InlineKeyboard } {
+  const { page: p, pages, start, end } = pageWindow(list.length, page, PAGE_SIZE);
+  const kb = new InlineKeyboard();
+  list.slice(start, end).forEach((server, offset) => {
+    const index = start + offset;
+    const label = `${server.disabled ? "\u2705 Enable" : "\u26D4 Disable"} ${trunc(server.name, 24)}`;
+    kb.text(label, `mcp:set:${token}:${index}`).row();
+  });
+  if (pages > 1) {
+    if (p > 0) kb.text("\u25C0", `mcp:tog:${token}:${p - 1}`);
+    kb.text(`${p + 1}/${pages}`, "noop");
+    if (p < pages - 1) kb.text("\u25B6", `mcp:tog:${token}:${p + 1}`);
+    kb.row();
+  }
+  kb.text("\u2B05 MCP", "mcp:refresh").text("\u{1F3E0} Menu", "ui:home");
+  const text = list.length
+    ? `\u{1F527} Manage MCP servers \u00B7 ${list.length}\nTap to enable or disable. Restart Codex to apply the change.`
+    : "No configured MCP servers to manage.";
   return { text, kb };
 }
 
 export async function showMcp(ctx: Context, deps: BotDeps): Promise<void> {
   await deps.acp.refreshInventories();
-  const list = snapshot(ctx.chat!.id, deps);
-  const { text, kb } = mainPanel(list, deps.acp.availableMcpServers);
+  const current = snapshot(ctx.chat!.id, deps);
+  const { text, kb } = mainPanel(current.list, deps.acp.availableMcpServers, 0, current.token);
   await deps.ephemeral.open(ctx);
   await deps.ephemeral.reply(ctx, text, { reply_markup: kb });
 }
 
-function fmtProbe(r: McpProbeResult): string {
-  if (r.ok) {
-    const who = r.serverName ? ` \u00B7 ${trunc(r.serverName, 30)}` : "";
-    return `\u2705 ${trunc(r.name, 26)}  ${r.ms ?? 0}ms${who}`;
-  }
-  return `\u274C ${trunc(r.name, 26)}  ${trunc(r.error ?? "failed", 60)}`;
+export function formatProbeResult(result: McpProbeResult): string {
+  if (result.ok) return `\u2705 ${trunc(result.name, 26)} \u00B7 ${result.ms ?? 0}ms`;
+  const raw = result.error ?? "";
+  let reason = "Connection failed";
+  if (/^timeout/i.test(raw)) reason = "Timed out";
+  else if (/^HTTP\s+\d{3}/i.test(raw)) reason = `HTTP ${/^HTTP\s+(\d{3})/i.exec(raw)?.[1]}`;
+  else if (/^(spawn failed|no command configured)/i.test(raw)) reason = "Command unavailable";
+  else if (/^process exited \(code -?\d+\)/i.test(raw)) reason = `Process exited (${/^process exited \((code -?\d+)\)/i.exec(raw)?.[1]})`;
+  else if (/^server error/i.test(raw)) reason = "Server rejected request";
+  return `\u274C ${trunc(result.name, 26)} \u00B7 ${reason}`;
 }
 
-async function runHealthCheck(ctx: Context, deps: BotDeps): Promise<void> {
-  const list = snapshot(ctx.chat!.id, deps);
-  const enabled = list.filter((s) => !s.disabled);
+function authSummary(status: unknown): string {
+  if (typeof status !== "string") return "";
+  const normalized = status.toLowerCase();
+  if (/unauth|not[_ -]?auth|needs?[_ -]?auth|expired|pending/.test(normalized)) return " \u00B7 auth needed";
+  if (/auth|connected|ready|^ok$/.test(normalized)) return " \u00B7 authenticated";
+  return "";
+}
+
+async function runHealthCheck(ctx: Context, deps: BotDeps, list: McpServer[]): Promise<void> {
+  const enabled = list.filter((server) => !server.disabled);
   if (enabled.length === 0) {
     await ctx.editMessageText("No enabled MCP servers to check.", {
-      reply_markup: new InlineKeyboard().text("\u2B05 Back", "mcp:refresh"),
+      reply_markup: new InlineKeyboard().text("\u2B05 MCP", "mcp:refresh").text("\u{1F3E0} Menu", "ui:home"),
     }).catch(() => {});
     return;
   }
-  const header = `\u{1F9EA} Health-check \u2014 probing ${enabled.length} enabled server(s)\u2026`;
+  const header = `\u{1F9EA} Checking ${enabled.length} enabled MCP server(s)\u2026`;
   await ctx.editMessageText(header).catch(() => {});
-
   let lastEdit = 0;
   const results = await probeAll(
     enabled,
     { timeoutMs: deps.cfg.mcpProbeTimeoutMs, concurrency: deps.cfg.mcpProbeConcurrency },
-    (_r, done, total) => {
+    (_result, done, total) => {
       const now = Date.now();
-      if (now - lastEdit < 1200 && done < total) return; // throttle progress edits
+      if (now - lastEdit < 1200 && done < total) return;
       lastEdit = now;
       void ctx.editMessageText(`${header}\n\nProgress: ${done}/${total}`).catch(() => {});
     },
   );
-
-  const ok = results.filter((r) => r.ok).length;
-  const bad = results.length - ok;
-  const body = results
-    .slice()
-    .sort((a, b) => Number(a.ok) - Number(b.ok) || a.name.localeCompare(b.name))
-    .map(fmtProbe)
-    .join("\n");
-  const text = `\u{1F9EA} Health-check \u2014 \u2705 ${ok} connected \u00B7 \u274C ${bad} failed\n\n${trunc(body, 3500)}`;
-  const kb = new InlineKeyboard().text("\u{1F501} Re-check", "mcp:health").row().text("\u2B05 Back", "mcp:refresh");
+  const ok = results.filter((result) => result.ok).length;
+  const sorted = results.slice().sort((a, b) => Number(a.ok) - Number(b.ok) || a.name.localeCompare(b.name));
+  const rows = sorted.slice(0, 36).map(formatProbeResult);
+  if (sorted.length > rows.length) rows.push(`… ${sorted.length - rows.length} more server(s)`);
+  const text = `\u{1F9EA} MCP health-check \u00B7 ${ok}/${results.length} connected\n\n${rows.join("\n")}`;
+  const kb = new InlineKeyboard().text("\u{1F501} Re-check", "mcp:refresh").row().text("\u2B05 MCP", "mcp:refresh").text("\u{1F3E0} Menu", "ui:home");
   await ctx.editMessageText(text, { reply_markup: kb }).catch(() => {});
 }
 
 export function registerMcp(bot: Bot, deps: BotDeps): void {
   bot.command("mcp", (ctx) => showMcp(ctx, deps));
-
   bot.callbackQuery("mcp:noop", (ctx) => ctx.answerCallbackQuery());
-
-  bot.callbackQuery("mcp:close", async (ctx) => {
-    await ctx.answerCallbackQuery();
-    await ctx.deleteMessage().catch(() => {});
-  });
 
   bot.callbackQuery("mcp:refresh", async (ctx) => {
     await ctx.answerCallbackQuery();
     await deps.acp.refreshInventories();
-    const list = snapshot(ctx.chat!.id, deps);
-    const { text, kb } = mainPanel(list, deps.acp.availableMcpServers);
+    const current = snapshot(ctx.chat!.id, deps);
+    const { text, kb } = mainPanel(current.list, deps.acp.availableMcpServers, 0, current.token);
     await ctx.editMessageText(text, { reply_markup: kb }).catch(() => {});
   });
 
-  bot.callbackQuery("mcp:health", async (ctx) => {
-    await ctx.answerCallbackQuery({ text: "Checking\u2026" });
-    await runHealthCheck(ctx, deps);
-  });
-
-  bot.callbackQuery(/^mcp:tog:(\d+)$/, async (ctx) => {
+  bot.callbackQuery(new RegExp(`^mcp:page:${TOKEN}:(\\d+)$`), async (ctx) => {
+    const current = currentSnapshot(ctx.chat!.id, ctx.match![1]!, deps.registry.get(ctx.chat!.id).cwd);
+    if (!current) return void ctx.answerCallbackQuery({ text: "This MCP list expired. Reopen MCP." });
     await ctx.answerCallbackQuery();
-    const list = snapshot(ctx.chat!.id, deps);
-    const { text, kb } = togglePanel(list, Number(ctx.match![1]));
+    const { text, kb } = mainPanel(current.list, deps.acp.availableMcpServers, Number(ctx.match![2]), current.token);
     await ctx.editMessageText(text, { reply_markup: kb }).catch(() => {});
   });
 
-  bot.callbackQuery(/^mcp:set:(\d+)$/, async (ctx) => {
-    const idx = Number(ctx.match![1]);
-    const cached = snapshots.get(ctx.chat!.id);
-    const server = cached?.[idx];
-    if (!server) {
-      await ctx.answerCallbackQuery({ text: "Expired \u2014 reopen /mcp." });
-      return;
-    }
-    const res = setMcpDisabled(server, !server.disabled);
-    if (!res.ok) {
-      await ctx.answerCallbackQuery({ text: `Failed: ${res.error}`, show_alert: true });
-      return;
-    }
-    await ctx.answerCallbackQuery({ text: res.disabled ? `Disabled ${server.name}` : `Enabled ${server.name}` });
-    const page = Math.floor(idx / PAGE_SIZE);
-    const list = snapshot(ctx.chat!.id, deps); // re-list to reflect the change
-    const { text, kb } = togglePanel(list, page);
-    await ctx.editMessageText(`${text}\n\n\u26A0\uFE0F Tap \u{1F504} Restart agent (on the main panel) to apply.`, {
-      reply_markup: kb,
-    }).catch(() => {});
+  bot.callbackQuery(new RegExp(`^mcp:tog:${TOKEN}:(\\d+)$`), async (ctx) => {
+    const current = currentSnapshot(ctx.chat!.id, ctx.match![1]!, deps.registry.get(ctx.chat!.id).cwd);
+    if (!current) return void ctx.answerCallbackQuery({ text: "This MCP list expired. Reopen MCP." });
+    await ctx.answerCallbackQuery();
+    const { text, kb } = togglePanel(current.list, current.token, Number(ctx.match![2]));
+    await ctx.editMessageText(text, { reply_markup: kb }).catch(() => {});
   });
 
-  bot.callbackQuery("mcp:restart", async (ctx) => {
-    await ctx.answerCallbackQuery({ text: "Restarting agent\u2026" });
-    await ctx.editMessageText("\u{1F504} Restarting the Codex agent to apply MCP changes\u2026").catch(() => {});
+  bot.callbackQuery(new RegExp(`^mcp:set:${TOKEN}:(\\d+)$`), async (ctx) => {
+    const current = currentSnapshot(ctx.chat!.id, ctx.match![1]!, deps.registry.get(ctx.chat!.id).cwd);
+    const server = current?.list[Number(ctx.match![2])];
+    if (!server) return void ctx.answerCallbackQuery({ text: "This MCP list expired. Reopen MCP." });
+    const result = setMcpDisabled(server, !server.disabled);
+    if (!result.ok) return void ctx.answerCallbackQuery({ text: "Could not update MCP config. Check the local Codex config file.", show_alert: true });
+    await ctx.answerCallbackQuery({ text: result.disabled ? `Disabled ${trunc(server.name, 48)}` : `Enabled ${trunc(server.name, 48)}` });
+    const updated = snapshot(ctx.chat!.id, deps);
+    const page = Math.floor(Number(ctx.match![2]) / PAGE_SIZE);
+    const { text, kb } = togglePanel(updated.list, updated.token, page);
+    await ctx.editMessageText(text, { reply_markup: kb }).catch(() => {});
+  });
+
+  bot.callbackQuery(new RegExp(`^mcp:health:${TOKEN}$`), async (ctx) => {
+    const current = currentSnapshot(ctx.chat!.id, ctx.match![1]!, deps.registry.get(ctx.chat!.id).cwd);
+    if (!current) return void ctx.answerCallbackQuery({ text: "This MCP list expired. Reopen MCP." });
+    await ctx.answerCallbackQuery({ text: "Checking MCP servers\u2026" });
+    await runHealthCheck(ctx, deps, current.list);
+  });
+
+  bot.callbackQuery(new RegExp(`^mcp:restart:${TOKEN}$`), async (ctx) => {
+    const current = currentSnapshot(ctx.chat!.id, ctx.match![1]!, deps.registry.get(ctx.chat!.id).cwd);
+    if (!current) return void ctx.answerCallbackQuery({ text: "This MCP list expired. Reopen MCP." });
+    if (deps.acp.hasInflightPrompt()) {
+      await ctx.answerCallbackQuery({ text: "Wait for the current Codex task to finish before restarting.", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery({ text: "Restarting Codex\u2026" });
+    await ctx.editMessageText("\u{1F504} Restarting Codex to apply MCP changes\u2026").catch(() => {});
     try {
       await deps.acp.restart();
       await deps.acp.refreshInventories();
-      const list = snapshot(ctx.chat!.id, deps);
-      const { text, kb } = mainPanel(list, deps.acp.availableMcpServers);
-      await ctx.editMessageText(`\u2705 Agent restarted \u2014 MCP changes applied.\n\n${text}`, {
-        reply_markup: kb,
-      }).catch(() => {});
-    } catch (err) {
-      await ctx.editMessageText(`\u274C Restart failed: ${(err as Error).message}`, {
-        reply_markup: new InlineKeyboard().text("\u2B05 Back", "mcp:refresh"),
+      const updated = snapshot(ctx.chat!.id, deps);
+      const { text, kb } = mainPanel(updated.list, deps.acp.availableMcpServers, 0, updated.token);
+      await ctx.editMessageText(`\u2705 Codex restarted.\n\n${text}`, { reply_markup: kb }).catch(() => {});
+    } catch {
+      await ctx.editMessageText("\u274C Codex restart failed. Check the local service logs for details.", {
+        reply_markup: new InlineKeyboard().text("\u2B05 MCP", "mcp:refresh").text("\u{1F3E0} Menu", "ui:home"),
       }).catch(() => {});
     }
   });
-}
-
-function authText(status: unknown): string {
-  if (status == null) return "";
-  if (typeof status === "string") return ` · auth ${trunc(status, 24)}`;
-  if (typeof status === "object") {
-    const keys = Object.keys(status as Record<string, unknown>);
-    return keys.length ? ` · auth ${trunc(keys[0]!, 24)}` : "";
-  }
-  return "";
-}
-
-function fitLines(lines: string[], max: number): string {
-  const out: string[] = [];
-  let used = 0;
-  for (const line of lines) {
-    if (used + line.length + 1 > max) {
-      out.push("…more servers omitted; use Enable/Disable to browse.");
-      break;
-    }
-    out.push(line);
-    used += line.length + 1;
-  }
-  return out.join("\n");
 }

@@ -45,7 +45,7 @@ export class PermissionService {
   async handle(params: RequestPermissionParams): Promise<PermissionOutcome> {
     const desc = this.registry.describeSession(params.sessionId);
     const chatId = desc.chatId;
-    if (chatId === undefined) return autoDecide(params); // unattended (e.g. scheduled task / orphan subagent)
+    if (chatId === undefined) return deny(); // unattended work must never approve itself
 
     const reqId = String(++this.seq);
     const isForeground = !desc.subagent && this.registry.get(chatId).sessionId === params.sessionId;
@@ -75,7 +75,7 @@ export class PermissionService {
       messageId = msg.message_id;
     } catch (e) {
       log.warn("failed to send permission prompt:", (e as Error).message);
-      return autoDecide(params);
+      return deny();
     }
 
     return new Promise<PermissionOutcome>((resolve) => {
@@ -140,10 +140,6 @@ function buttonLabel(o: { name: string; kind?: string }): string {
   return `${icon} ${o.name}`;
 }
 
-/** Pick an allow option when nobody can be asked (otherwise cancel). */
-function autoDecide(params: RequestPermissionParams): PermissionOutcome {
-  const allow = params.options.find((o) => /allow|approve|yes|once/i.test(`${o.kind ?? ""} ${o.name}`));
-  return allow
-    ? { outcome: { outcome: "selected", optionId: allow.optionId } }
-    : { outcome: { outcome: "cancelled" } };
+function deny(): PermissionOutcome {
+  return { outcome: { outcome: "cancelled" } };
 }

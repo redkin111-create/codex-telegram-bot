@@ -30,8 +30,7 @@ export async function decideApproval(
       rawInput: isFile ? { path: firstChangePath(params) } : { command: cmd, cwd: params.cwd },
     },
     options: [
-      { optionId: "accept", name: "Approve", kind: "allow_once" },
-      { optionId: "acceptForSession", name: "Approve always", kind: "allow_always" },
+      { optionId: "accept", name: "Allow once", kind: "allow_once" },
       { optionId: "decline", name: "Deny", kind: "reject_once" },
     ],
   };

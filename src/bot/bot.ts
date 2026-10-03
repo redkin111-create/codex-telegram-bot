@@ -182,6 +182,12 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
   registerVoice(bot, deps); // voice / audio -> transcription -> prompt
   registerMessages(bot, deps); // catch-all text prompt — keep last
 
+  // Never leave old/unknown buttons spinning in Telegram after a menu changes
+  // or the process restarts.
+  bot.on("callback_query:data", async (ctx) => {
+    await ctx.answerCallbackQuery({ text: "This button expired. Open /menu and try again." }).catch(() => {});
+  });
+
   bot.catch((err) => {
     log.error("unhandled bot error:", err.error instanceof Error ? err.error.message : err.error);
   });

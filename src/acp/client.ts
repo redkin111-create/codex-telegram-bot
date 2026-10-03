@@ -125,6 +125,7 @@ export class AcpClient extends EventEmitter {
   private stopped = false;
   /** True once an initialize handshake has ever succeeded (for error hints). */
   private everConnected = false;
+  private connected = false;
   private restartAttempts = 0;
   private restartTimer?: NodeJS.Timeout;
 
@@ -152,6 +153,10 @@ export class AcpClient extends EventEmitter {
 
   permissionHandler?: (params: RequestPermissionParams) => Promise<PermissionOutcome>;
 
+  get isConnected(): boolean {
+    return this.connected;
+  }
+
   constructor(private readonly opts: AcpClientOptions) {
     super();
     this.setMaxListeners(0);
@@ -166,6 +171,7 @@ export class AcpClient extends EventEmitter {
   }
 
   private async connect(): Promise<void> {
+    this.connected = false;
     this.subagents.clear();
     const args = ["app-server"];
     const env = { ...process.env } as NodeJS.ProcessEnv;
@@ -180,6 +186,7 @@ export class AcpClient extends EventEmitter {
 
     proc.on("exit", (code) => {
       if (this.proc !== proc) return;
+      this.connected = false;
       log.warn(`codex app-server exited (code ${code})`);
       const msg = this.everConnected
         ? `codex app-server exited (code ${code})`
@@ -190,6 +197,7 @@ export class AcpClient extends EventEmitter {
     });
     proc.on("error", (err) => {
       if (this.proc !== proc) return;
+      this.connected = false;
       const e = err as NodeJS.ErrnoException;
       const msg =
         e.code === "ENOENT"
@@ -214,6 +222,7 @@ export class AcpClient extends EventEmitter {
     this.agentInfo = { name: "codex", version: parseVersion(init?.userAgent) };
     this.restartAttempts = 0;
     this.everConnected = true;
+    this.connected = true;
     await Promise.all([this.loadModels(), this.loadCapabilities()]);
     log.info(`connected: codex app-server${init?.userAgent ? ` (${init.userAgent})` : ""}`);
   }
@@ -501,6 +510,7 @@ export class AcpClient extends EventEmitter {
 
   stop(): void {
     this.stopped = true;
+    this.connected = false;
     if (this.restartTimer) {
       clearTimeout(this.restartTimer);
       this.restartTimer = undefined;

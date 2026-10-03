@@ -12,12 +12,15 @@ import { basename } from "node:path";
 import type { BotDeps } from "../deps.js";
 import { readHistory } from "../../sessions/history.js";
 import type { SessionMeta } from "../../sessions/types.js";
+import { homeKeyboard } from "../menu/keyboard.js";
+import { compactLabel, INLINE_PAGE_SIZE, pageWindow } from "../menu/paging.js";
+import { openMainMenu } from "../menu/main.js";
 import { refreshMenu } from "../menu/refresh.js";
 import { showHistory } from "./history.js";
-import { buildSessionCard } from "./session-card.js";
+import { relTime } from "./session-card.js";
 
-/** How many session cards per page. */
-const PAGE_SIZE = 10;
+/** Compact picker: one editable message, six sessions per page. */
+const PAGE_SIZE = INLINE_PAGE_SIZE;
 const UUID = "([0-9a-fA-F-]{36})";
 
 export async function showSessions(ctx: Context, deps: BotDeps, query?: string): Promise<void> {
@@ -28,7 +31,8 @@ export async function showSessions(ctx: Context, deps: BotDeps, query?: string):
   }
   if (metas.length === 0) {
     await deps.ephemeral.open(ctx);
-    await deps.ephemeral.reply(ctx, q ? `No sessions match "${q}".` : "No saved sessions found in ~/.codex/sessions.");
+    const kb = new InlineKeyboard().text("\u{1F195} New session", "s:new").row().text("\u{1F3E0} Main menu", "ui:home");
+    await deps.ephemeral.reply(ctx, q ? `No sessions match "${compactLabel(q, 80)}".` : "No saved Codex sessions found.", { reply_markup: kb });
     return;
   }
   deps.menuCache.setSessions(ctx.chat!.id, metas, q ? `Sessions matching "${q}"` : "Recent sessions");
@@ -40,30 +44,40 @@ async function renderSessionPage(ctx: Context, deps: BotDeps, page: number): Pro
   await deps.ephemeral.open(ctx);
   const cached = deps.menuCache.getSessions(ctx.chat!.id);
   if (!cached) return;
-  const { metas, heading } = cached;
-  const totalPages = Math.max(1, Math.ceil(metas.length / PAGE_SIZE));
-  const p = Math.min(Math.max(0, page), totalPages - 1);
-  const slice = metas.slice(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE);
+  const currentId = deps.registry.get(ctx.chat!.id).sessionId;
+  const { text, keyboard } = sessionPage(cached.metas, cached.heading, page, cached.token, currentId);
+  await deps.ephemeral.reply(ctx, text, { reply_markup: keyboard });
+}
 
-  const live = slice.filter((m) => m.active).length;
-  const liveStr = live ? ` \u00B7 \u{1F7E2} ${live} live` : "";
-  const pageStr = totalPages > 1 ? ` \u00B7 page ${p + 1}/${totalPages}` : "";
-  await deps.ephemeral.reply(ctx, `\u{1F5C2} ${heading} \u2014 ${metas.length} total${liveStr}${pageStr}`);
-
-  for (const m of slice) {
-    const contextPct = deps.acp.metadataFor(m.sessionId)?.contextUsagePercentage;
-    const progress = deps.registry.controller(ctx.chat!.id).progressFor(m.sessionId);
-    const { text, keyboard } = buildSessionCard(m, { contextPct, selfPid: deps.acp.pid, progress });
-    await deps.ephemeral.reply(ctx, text, { reply_markup: keyboard });
+export function sessionPage(
+  metas: SessionMeta[],
+  heading: string,
+  requestedPage: number,
+  token: string,
+  currentId?: string,
+): { text: string; keyboard: InlineKeyboard } {
+  const { page: p, pages, start, end } = pageWindow(metas.length, requestedPage, PAGE_SIZE);
+  const kb = new InlineKeyboard();
+  for (let i = start; i < end; i++) {
+    const m = metas[i]!;
+    const marker = m.sessionId === currentId ? "\u2705" : "\u25CB";
+    const project = m.cwd ? basename(m.cwd) : "project unknown";
+    kb.text(`${marker} ${compactLabel(m.title, 30)} \u00B7 ${compactLabel(project, 16)}`, `s:${token}:${i}`).row();
   }
-
-  if (totalPages > 1) {
-    const nav = new InlineKeyboard();
-    if (p > 0) nav.text("\u25C0 Prev", `sp:${p - 1}`);
-    nav.text(`${p + 1}/${totalPages}`, "noop");
-    if (p < totalPages - 1) nav.text("Next \u25B6", `sp:${p + 1}`);
-    await deps.ephemeral.reply(ctx, `\u{1F4C4} Page ${p + 1}/${totalPages}`, { reply_markup: nav });
+  if (pages > 1) {
+    if (p > 0) kb.text("\u25C0", `sp:${token}:${p - 1}`);
+    kb.text(`${p + 1}/${pages}`, "noop");
+    if (p < pages - 1) kb.text("\u25B6", `sp:${token}:${p + 1}`);
+    kb.row();
   }
+  kb.text("\u{1F195} New session", "s:new").row().text("\u{1F3E0} Main menu", "ui:home");
+  const lines = [`\u{1F4AC} ${compactLabel(heading, 56)} \u00B7 ${metas.length}`, ""];
+  for (const m of metas.slice(start, end)) {
+    const marker = m.sessionId === currentId ? "\u2705" : "\u25CB";
+    const project = m.cwd ? basename(m.cwd) : "project unknown";
+    lines.push(`${marker} ${compactLabel(m.title, 34)} \u00B7 ${compactLabel(project, 18)} \u00B7 ${relTime(m.updatedAt)}`);
+  }
+  return { text: lines.join("\n"), keyboard: kb };
 }
 
 export function registerSessions(bot: Bot, deps: BotDeps): void {
@@ -80,9 +94,42 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
     await renderSessionPage(ctx, deps, 0);
   });
 
-  bot.callbackQuery(/^sp:(\d+)$/, async (ctx) => {
+  bot.callbackQuery(/^sp:([a-f0-9]{16}):(\d+)$/, async (ctx) => {
+    const cached = deps.menuCache.getSessions(ctx.chat!.id, ctx.match![1]);
+    if (!cached) return void ctx.answerCallbackQuery({ text: "This list expired. Open Sessions again." });
     await ctx.answerCallbackQuery();
-    await renderSessionPage(ctx, deps, Number(ctx.match![1]));
+    await renderSessionPage(ctx, deps, Number(ctx.match![2]));
+  });
+
+  bot.callbackQuery(/^s:([a-f0-9]{16}):(\d+)$/, async (ctx) => {
+    const token = ctx.match![1]!;
+    const meta = deps.menuCache.getSession(ctx.chat!.id, token, Number(ctx.match![2]));
+    if (!meta || !deps.store.get(meta.sessionId)) {
+      await ctx.answerCallbackQuery({ text: "This session is no longer available. Refresh Sessions.", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery({ text: "Switching session\u2026" });
+    const fgCwd = deps.registry.get(ctx.chat!.id).cwd;
+    const cwd = meta.cwd || fgCwd;
+    const projectName = basename(meta.cwd || fgCwd) || "session";
+    const prior = readHistory(deps.store.jsonlPath(meta.sessionId), 24);
+    try {
+      await deps.registry.controller(ctx.chat!.id).addAttach(meta.sessionId, cwd, projectName, prior);
+      await openMainMenu(ctx, deps);
+    } catch (err) {
+      await deps.ephemeral.reply(ctx, `\u274C Could not connect: ${(err as Error).message}`, { reply_markup: homeKeyboard() });
+    }
+  });
+
+  bot.callbackQuery("s:new", async (ctx) => {
+    await ctx.answerCallbackQuery({ text: "Starting a new session\u2026" });
+    const rt = deps.registry.get(ctx.chat!.id);
+    try {
+      await deps.registry.controller(ctx.chat!.id).addNew(rt.cwd, rt.projectName);
+      await openMainMenu(ctx, deps);
+    } catch (err) {
+      await deps.ephemeral.reply(ctx, `\u274C Could not start session: ${(err as Error).message}`, { reply_markup: homeKeyboard() });
+    }
   });
 
   bot.command("unwatch", async (ctx) => {

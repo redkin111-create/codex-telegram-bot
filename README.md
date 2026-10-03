@@ -29,6 +29,7 @@ Use a **different Telegram bot token** for each bot instance.
 | ♻️ **Resume sessions** | `/sessions` lists recent Codex sessions (rollouts); tap to resume via `thread/resume`. |
 | 📜 **History** | `/history` shows the latest messages of any session. |
 | 🧭 **Always-visible menu** | A persistent keyboard plus a pinned status panel showing project, model, reasoning, session and queue. |
+| 📱 **Phone-friendly controls** | `/menu` opens compact inline screens for projects, sessions, MCP, skills, models, settings, and status. |
 | ⏰ **Scheduled tasks** | Prompts that run on a schedule (once / daily / weekly / monthly / every-N-minutes) in a chosen project, delivered back to your chat. |
 | 🖼 **Multi-image prompts** | Send one or many photos (albums included) with a caption — attached to the prompt for Codex to analyze. |
 | 🎙 **Voice → prompt** | Send a voice note; it's transcribed (any Whisper-compatible endpoint) and run as a prompt. |
@@ -127,6 +128,13 @@ No build step — TypeScript runs directly via `tsx`.
 Anything that isn't a command is sent to Codex as a prompt. While a turn runs,
 your messages are queued and sent automatically when it finishes.
 
+### Phone-friendly inline controls
+
+Open `/menu` or tap **☰ Menu** for a compact control panel. Project and session
+lists are paged, and each screen offers a clear way back to the main menu. Model,
+reasoning, and MCP controls use the live information reported by Codex. Tool
+approval requests still ask before acting when full-access mode is off.
+
 ---
 
 ## 🧩 How it works
@@ -190,7 +198,7 @@ separate real MCP `initialize` health check for enabled configured servers.
 | `CODEX_CLI_PATH` | no | auto | Path to the `codex` binary (auto-resolved via PATH otherwise). |
 | `CODEX_HOME` | no | `~/.codex` | Holds `sessions/`, `auth.json`, `config.toml`. |
 | `CODEX_WORKSPACE` | no | cwd | Default working directory. |
-| `CODEX_TRUST_ALL_TOOLS` | no | `true` | Run with approval `never` + sandbox `danger-full-access` (full auto). `false` → inline Approve/Deny + `workspace-write`. |
+| `CODEX_TRUST_ALL_TOOLS` | no | `false` | `false` keeps `workspace-write` and asks before tool actions. `true` enables `danger-full-access` with approvals disabled. |
 | `CODEX_TG_DIR` | no | `~/.codex/tg` | Folder holding this instance's `.env`, `logs/`, `data/`. |
 | `PROJECT_ROOTS` | no | workspace parent + home | Roots for `/projects`. |
 | `STREAM_THROTTLE_MS` | no | `1500` | Live-edit interval while streaming. |

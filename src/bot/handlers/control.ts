@@ -7,9 +7,9 @@ import { textPrompt } from "../../app/types.js";
 import type { BotDeps } from "../deps.js";
 import { HELP_TEXT } from "../commands.js";
 import { compactKeyboard } from "../menu/keyboard.js";
+import { openMainMenu } from "../menu/main.js";
 import { refreshMenu } from "../menu/refresh.js";
 import { extractReplyContext } from "../reply-context.js";
-import { openMainMenu } from "./menu.js";
 
 export function registerControl(bot: Bot, deps: BotDeps): void {
   bot.command("start", async (ctx) => {

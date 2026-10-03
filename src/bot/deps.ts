@@ -3,7 +3,9 @@
  * mapping inline-keyboard buttons back to long values (project paths).
  */
 import type { Api } from "grammy";
+import { randomBytes } from "node:crypto";
 import type { AcpClient } from "../acp/client.js";
+import type { CodexSkillInfo } from "../acp/codex-protocol.js";
 import type { AccountManager } from "../app/accounts.js";
 import type { AccountRotator } from "./account-rotator.js";
 import type { SettingsStore } from "../app/settings-store.js";
@@ -42,28 +44,95 @@ export interface BotDeps {
 
 /** Caches the last project list shown per chat for callback resolution. */
 export class MenuCache {
-  private readonly projectLists = new Map<number, ProjectEntry[]>();
-  private readonly sessionLists = new Map<number, { metas: SessionMeta[]; heading: string }>();
+  private readonly projectLists = new Map<number, { token: string; entries: ProjectEntry[] }>();
+  private readonly sessionLists = new Map<number, { token: string; metas: SessionMeta[]; heading: string }>();
+  private readonly modelLists = new Map<number, { token: string; entries: Array<{ modelId: string; name: string; description?: string }> }>();
+  private readonly skillLists = new Map<number, { token: string; entries: CodexSkillInfo[] }>();
+  private readonly projectSearchUntil = new Map<number, number>();
 
-  setProjects(chatId: number, list: ProjectEntry[]): void {
-    this.projectLists.set(chatId, list);
+  setProjects(chatId: number, entries: ProjectEntry[]): string {
+    const token = this.createToken();
+    this.projectLists.set(chatId, { token, entries });
+    return token;
   }
 
-  getProject(chatId: number, index: number): ProjectEntry | undefined {
-    return this.projectLists.get(chatId)?.[index];
+  getProject(chatId: number, index: number, token?: string): ProjectEntry | undefined {
+    const cached = this.projectLists.get(chatId);
+    if (!cached || (token !== undefined && token !== cached.token)) return undefined;
+    return cached.entries[index];
   }
 
   /** The full (sorted) project list, for paging the picker. */
-  getProjects(chatId: number): ProjectEntry[] | undefined {
-    return this.projectLists.get(chatId);
+  getProjects(chatId: number, token?: string): ProjectEntry[] | undefined {
+    const cached = this.projectLists.get(chatId);
+    return cached && (token === undefined || token === cached.token) ? cached.entries : undefined;
+  }
+
+  getProjectToken(chatId: number): string | undefined {
+    return this.projectLists.get(chatId)?.token;
+  }
+
+  beginProjectSearch(chatId: number): void {
+    this.projectSearchUntil.set(chatId, Date.now() + 2 * 60_000);
+  }
+
+  consumeProjectSearch(chatId: number): boolean {
+    const until = this.projectSearchUntil.get(chatId);
+    this.projectSearchUntil.delete(chatId);
+    return until !== undefined && until >= Date.now();
+  }
+
+  clearProjectSearch(chatId: number): void {
+    this.projectSearchUntil.delete(chatId);
   }
 
   /** Remember the session set + heading currently being paged for a chat. */
-  setSessions(chatId: number, metas: SessionMeta[], heading: string): void {
-    this.sessionLists.set(chatId, { metas, heading });
+  setSessions(chatId: number, metas: SessionMeta[], heading: string): string {
+    const token = this.createToken();
+    this.sessionLists.set(chatId, { token, metas, heading });
+    return token;
   }
 
-  getSessions(chatId: number): { metas: SessionMeta[]; heading: string } | undefined {
-    return this.sessionLists.get(chatId);
+  getSessions(chatId: number, token?: string): { token: string; metas: SessionMeta[]; heading: string } | undefined {
+    const cached = this.sessionLists.get(chatId);
+    return cached && (token === undefined || token === cached.token) ? cached : undefined;
+  }
+
+  getSession(chatId: number, token: string, index: number): SessionMeta | undefined {
+    return this.getSessions(chatId, token)?.metas[index];
+  }
+
+  setModels(chatId: number, entries: Array<{ modelId: string; name: string; description?: string }>): string {
+    const token = this.createToken();
+    this.modelLists.set(chatId, { token, entries });
+    return token;
+  }
+
+  getModels(chatId: number, token: string): Array<{ modelId: string; name: string; description?: string }> | undefined {
+    const cached = this.modelLists.get(chatId);
+    return cached?.token === token ? cached.entries : undefined;
+  }
+
+  getModel(chatId: number, token: string, index: number): { modelId: string; name: string; description?: string } | undefined {
+    return this.getModels(chatId, token)?.[index];
+  }
+
+  setSkills(chatId: number, entries: CodexSkillInfo[]): string {
+    const token = this.createToken();
+    this.skillLists.set(chatId, { token, entries });
+    return token;
+  }
+
+  getSkills(chatId: number, token: string): CodexSkillInfo[] | undefined {
+    const cached = this.skillLists.get(chatId);
+    return cached?.token === token ? cached.entries : undefined;
+  }
+
+  getSkill(chatId: number, token: string, index: number): CodexSkillInfo | undefined {
+    return this.getSkills(chatId, token)?.[index];
+  }
+
+  createToken(): string {
+    return randomBytes(8).toString("hex");
   }
 }

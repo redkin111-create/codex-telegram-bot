@@ -14,25 +14,37 @@ import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { ProjectEntry } from "../../projects/manager.js";
 import type { BotDeps } from "../deps.js";
+import { homeKeyboard } from "../menu/keyboard.js";
+import { compactLabel, INLINE_PAGE_SIZE, pageWindow } from "../menu/paging.js";
+import { openMainMenu } from "../menu/main.js";
 import { refreshMenu } from "../menu/refresh.js";
 
-const PAGE = 10; // projects per page
 const FETCH = 300; // how many projects to load before paging
 
 /** Build the inline keyboard for one page of projects + a Prev/Next nav row. */
-function projectPage(list: ProjectEntry[], page: number, itemPrefix: string, kind: "p" | "w"): InlineKeyboard {
-  const totalPages = Math.max(1, Math.ceil(list.length / PAGE));
-  const p = Math.min(Math.max(0, page), totalPages - 1);
-  const start = p * PAGE;
+export function projectPage(
+  list: ProjectEntry[],
+  page: number,
+  token: string,
+  kind: "p" | "w",
+  currentPath?: string,
+): InlineKeyboard {
+  const { page: p, pages, start, end } = pageWindow(list.length, page);
   const kb = new InlineKeyboard();
-  list.slice(start, start + PAGE).forEach((entry, i) => {
-    kb.text(`\u{1F4C1} ${entry.name}`, `${itemPrefix}${start + i}`).row();
+  list.slice(start, end).forEach((entry, i) => {
+    const selected = currentPath && samePath(entry.path, currentPath);
+    const label = `${selected ? "\u2705" : "\u25CB"} \u{1F4C1} ${compactLabel(entry.name, 28)}`;
+    const callback = kind === "w" ? `wiz:p:${token}:${start + i}` : `p:${token}:${start + i}`;
+    kb.text(label, callback).row();
   });
-  if (totalPages > 1) {
-    if (p > 0) kb.text("\u25C0 Prev", `pp:${kind}:${p - 1}`);
-    kb.text(`${p + 1}/${totalPages}`, "noop");
-    if (p < totalPages - 1) kb.text("Next \u25B6", `pp:${kind}:${p + 1}`);
+  if (pages > 1) {
+    if (p > 0) kb.text("\u25C0", `pp:${kind}:${token}:${p - 1}`);
+    kb.text(`${p + 1}/${pages}`, "noop");
+    if (p < pages - 1) kb.text("\u25B6", `pp:${kind}:${token}:${p + 1}`);
+    kb.row();
   }
+  if (kind === "p") kb.text("\u{1F50E} Search", "p:search").text("\u{1F3E0} Menu", "ui:home");
+  else kb.text("\u2716 Cancel", "wiz:cancel");
   return kb;
 }
 
@@ -43,17 +55,28 @@ export async function sendProjectMenu(
   prefix: string,
   title: string,
   entries?: ProjectEntry[],
+  reuseLatest = false,
 ): Promise<void> {
   const chatId = ctx.chat!.id;
-  await deps.ephemeral.open(ctx);
+  if (!reuseLatest) await deps.ephemeral.open(ctx);
   const list = sortByRecency(entries ?? deps.projects.list(FETCH), deps);
-  deps.menuCache.setProjects(chatId, list);
+  const token = deps.menuCache.setProjects(chatId, list);
+  const currentPath = deps.registry.get(chatId).cwd;
   if (list.length === 0) {
-    await deps.ephemeral.reply(ctx, "No matching projects. Try `/projects new <name>` to create one.");
+    const kind = prefix === "wiz:proj:" ? "w" : "p";
+    const kb = kind === "w"
+      ? new InlineKeyboard().text("\u2716 Cancel", "wiz:cancel")
+      : new InlineKeyboard().text("\u{1F50E} Search", "p:search").text("\u{1F3E0} Menu", "ui:home");
+    const text = "No matching projects. Try /projects new <name> to create one.";
+    if (reuseLatest) await deps.ephemeral.editLatest(chatId, text, { reply_markup: kb });
+    else await deps.ephemeral.reply(ctx, text, { reply_markup: kb });
     return;
   }
   const kind = prefix === "wiz:proj:" ? "w" : "p";
-  await deps.ephemeral.reply(ctx, title, { reply_markup: projectPage(list, 0, prefix, kind) });
+  const text = `${title}\n${list.length} project(s)`;
+  const extra = { reply_markup: projectPage(list, 0, token, kind, currentPath) };
+  if (reuseLatest) await deps.ephemeral.editLatest(chatId, text, extra);
+  else await deps.ephemeral.reply(ctx, text, extra);
 }
 
 /** Refine project order with Codex session recency: a project's effective
@@ -79,7 +102,7 @@ function normCwd(p: string): string {
   return p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 }
 
-export async function showProjects(ctx: Context, deps: BotDeps, query?: string): Promise<void> {
+export async function showProjects(ctx: Context, deps: BotDeps, query?: string, reuseLatest = false): Promise<void> {
   const arg = (query ?? "").trim();
 
   // Create: /projects new <name>
@@ -105,11 +128,11 @@ export async function showProjects(ctx: Context, deps: BotDeps, query?: string):
   // Search: /projects <query>
   if (arg) {
     const found = deps.projects.search(arg, FETCH);
-    await sendProjectMenu(ctx, deps, "proj:", `Projects matching "${arg}":`, found);
+    await sendProjectMenu(ctx, deps, "proj:", `Projects matching "${compactLabel(arg, 70)}":`, found, reuseLatest);
     return;
   }
 
-  await sendProjectMenu(ctx, deps, "proj:", "Choose a project:");
+  await sendProjectMenu(ctx, deps, "proj:", "Choose a project:", undefined, reuseLatest);
 }
 
 /** True when the argument looks like a filesystem path rather than a name. */
@@ -150,34 +173,67 @@ function resolvePath(p: string): string {
 export function registerProjects(bot: Bot, deps: BotDeps): void {
   bot.command(["projects", "project"], (ctx) => showProjects(ctx, deps, ctx.match?.toString()));
 
+  // Project search is an explicit two-minute text prompt; its message is removed
+  // after use so the project picker remains the only navigation surface.
+  bot.on("message:text", async (ctx, next) => {
+    const text = ctx.message.text.trim();
+    const isSearchInput = deps.menuCache.consumeProjectSearch(ctx.chat.id);
+    if (!isSearchInput || text.startsWith("/") || ["\u2630 Menu", "\u{1F9ED} Running", "\u23F9 Stop"].includes(text)) {
+      await next();
+      return;
+    }
+    await ctx.deleteMessage().catch(() => {});
+    await showProjects(ctx, deps, text, true);
+  });
+
   // Page-indicator buttons do nothing but acknowledge the tap.
   bot.callbackQuery("noop", (ctx) => ctx.answerCallbackQuery());
 
-  // Project picker pagination: pp:<p|w>:<page> edits the keyboard in place.
-  bot.callbackQuery(/^pp:(p|w):(\d+)$/, async (ctx) => {
+  // Project picker pagination uses a short snapshot token so delayed buttons
+  // cannot accidentally select an item from a newer project list.
+  bot.callbackQuery(/^pp:(p|w):([a-f0-9]{16}):(\d+)$/, async (ctx) => {
+    const token = ctx.match![2]!;
+    const list = deps.menuCache.getProjects(ctx.chat!.id, token);
+    if (!list) return void ctx.answerCallbackQuery({ text: "This list expired. Open Projects again." });
     await ctx.answerCallbackQuery();
-    const list = deps.menuCache.getProjects(ctx.chat!.id);
-    if (!list) return;
     const kind = ctx.match![1] as "p" | "w";
-    const itemPrefix = kind === "w" ? "wiz:proj:" : "proj:";
-    const kb = projectPage(list, Number(ctx.match![2]), itemPrefix, kind);
+    const currentPath = deps.registry.get(ctx.chat!.id).cwd;
+    const kb = projectPage(list, Number(ctx.match![3]), token, kind, currentPath);
     await ctx.editMessageReplyMarkup({ reply_markup: kb }).catch(() => {});
   });
 
-  bot.callbackQuery(/^proj:(\d+)$/, async (ctx) => {
-    const index = Number(ctx.match![1]);
-    const entry = deps.menuCache.getProject(ctx.chat!.id, index);
+  bot.callbackQuery(/^p:([a-f0-9]{16}):(\d+)$/, async (ctx) => {
+    const token = ctx.match![1]!;
+    const index = Number(ctx.match![2]);
+    const entry = deps.menuCache.getProject(ctx.chat!.id, index, token);
     if (!entry) {
-      await ctx.answerCallbackQuery({ text: "Selection expired, run /projects again." });
+      await ctx.answerCallbackQuery({ text: "This list expired. Open Projects again.", show_alert: true });
       return;
     }
     await ctx.answerCallbackQuery();
-    await deps.ephemeral.clear(ctx.chat!.id); // remove the project picker
     try {
       await deps.registry.controller(ctx.chat!.id).addNew(entry.path, entry.name);
-      await refreshMenu(ctx, deps, `\u{1F4C1} Now working in ${entry.name} \u2014 send a message.`);
+      await openMainMenu(ctx, deps);
     } catch (err) {
-      await ctx.reply(`\u274C Could not open ${entry.name}: ${(err as Error).message}`);
+      await deps.ephemeral.reply(ctx, `\u274C Could not open ${compactLabel(entry.name, 32)}: ${(err as Error).message}`, { reply_markup: homeKeyboard() });
     }
   });
+
+  bot.callbackQuery("p:search", async (ctx) => {
+    deps.menuCache.beginProjectSearch(ctx.chat!.id);
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText("\u{1F50E} Send a project name to search. This prompt expires in 2 minutes.", {
+      reply_markup: new InlineKeyboard().text("Cancel", "p:search:cancel").text("\u{1F3E0} Menu", "ui:home"),
+    }).catch(() => {});
+  });
+
+  bot.callbackQuery("p:search:cancel", async (ctx) => {
+    deps.menuCache.clearProjectSearch(ctx.chat!.id);
+    await ctx.answerCallbackQuery();
+    await showProjects(ctx, deps);
+  });
+}
+
+function samePath(a: string, b: string): boolean {
+  return a.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase() === b.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
 }
