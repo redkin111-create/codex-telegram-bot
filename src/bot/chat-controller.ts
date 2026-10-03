@@ -51,6 +51,7 @@ export class ChatController {
     private readonly refresh: (chatId: number) => void,
     private readonly notifyActivity: (busy: boolean) => void,
     private readonly getRotator?: () => AccountRotator | undefined,
+    private readonly recordCreatedSession?: (sessionId: string, chatId: number, cwd: string, projectName?: string) => void,
   ) {}
 
   /** The current foreground runtime (created/restored lazily). */
@@ -267,6 +268,8 @@ export class ChatController {
     const rt = new SessionRuntime(this.api, this.chatId, this.acp, this.cfg, this.settings, init);
     rt.onStateChange = () => this.refresh(this.chatId);
     rt.onActivity = (busy) => this.notifyActivity(busy);
+    rt.onSessionCreated = (sessionId, cwd, projectName) =>
+      this.recordCreatedSession?.(sessionId, this.chatId, cwd, projectName);
     rt.accountRotator = this.getRotator?.();
     // A logical fork (auto-fork-on-error / lost-session recovery) swaps the
     // runtime's session id in place — re-persist the controlled list with the

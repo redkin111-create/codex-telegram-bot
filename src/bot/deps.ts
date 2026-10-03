@@ -15,6 +15,7 @@ import type { UsageService } from "../app/usage.js";
 import type { ProjectEntry, ProjectManager } from "../projects/manager.js";
 import type { SessionMeta } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/store.js";
+import type { TelegramSessionRegistry } from "../sessions/telegram-registry.js";
 import type { TaskRunner } from "../tasks/runner.js";
 import type { TaskStore } from "../tasks/store.js";
 import type { StatusPanel } from "./menu/status-panel.js";
@@ -28,6 +29,7 @@ export interface BotDeps {
   acp: AcpClient;
   registry: RuntimeRegistry;
   store: SessionStore;
+  telegramSessions: TelegramSessionRegistry;
   projects: ProjectManager;
   menuCache: MenuCache;
   settings: SettingsStore;
@@ -45,10 +47,47 @@ export interface BotDeps {
 /** Caches the last project list shown per chat for callback resolution. */
 export class MenuCache {
   private readonly projectLists = new Map<number, { token: string; entries: ProjectEntry[] }>();
-  private readonly sessionLists = new Map<number, { token: string; metas: SessionMeta[]; heading: string }>();
+  private readonly sessionLists = new Map<number, { token: string; metas: SessionMeta[]; heading: string; project?: ProjectEntry }>();
   private readonly modelLists = new Map<number, { token: string; entries: Array<{ modelId: string; name: string; description?: string }> }>();
   private readonly skillLists = new Map<number, { token: string; entries: CodexSkillInfo[] }>();
   private readonly projectSearchUntil = new Map<number, number>();
+  private readonly selectedProjects = new Map<number, ProjectEntry>();
+  private readonly pendingSessionStarts = new Map<number, { token: string; project?: ProjectEntry }>();
+
+  setSelectedProject(chatId: number, project?: ProjectEntry): void {
+    if (project) this.selectedProjects.set(chatId, project);
+    else this.selectedProjects.delete(chatId);
+  }
+
+  getSelectedProject(chatId: number): ProjectEntry | undefined {
+    return this.selectedProjects.get(chatId);
+  }
+
+  beginSessionStart(chatId: number, project: ProjectEntry): string {
+    const token = this.createToken();
+    this.pendingSessionStarts.set(chatId, { token, project });
+    return token;
+  }
+
+  consumeSessionStart(chatId: number, token: string): ProjectEntry | undefined | false {
+    const pending = this.pendingSessionStarts.get(chatId);
+    if (!pending || pending.token !== token) return false;
+    this.pendingSessionStarts.delete(chatId);
+    return pending.project;
+  }
+
+  getPendingSessionStart(chatId: number, token: string): ProjectEntry | undefined | false {
+    const pending = this.pendingSessionStarts.get(chatId);
+    if (!pending || pending.token !== token) return false;
+    return pending.project;
+  }
+
+  cancelSessionStart(chatId: number, token: string): boolean {
+    const pending = this.pendingSessionStarts.get(chatId);
+    if (!pending || pending.token !== token) return false;
+    this.pendingSessionStarts.delete(chatId);
+    return true;
+  }
 
   setProjects(chatId: number, entries: ProjectEntry[]): string {
     const token = this.createToken();
@@ -87,13 +126,13 @@ export class MenuCache {
   }
 
   /** Remember the session set + heading currently being paged for a chat. */
-  setSessions(chatId: number, metas: SessionMeta[], heading: string): string {
+  setSessions(chatId: number, metas: SessionMeta[], heading: string, project?: ProjectEntry): string {
     const token = this.createToken();
-    this.sessionLists.set(chatId, { token, metas, heading });
+    this.sessionLists.set(chatId, { token, metas, heading, project });
     return token;
   }
 
-  getSessions(chatId: number, token?: string): { token: string; metas: SessionMeta[]; heading: string } | undefined {
+  getSessions(chatId: number, token?: string): { token: string; metas: SessionMeta[]; heading: string; project?: ProjectEntry } | undefined {
     const cached = this.sessionLists.get(chatId);
     return cached && (token === undefined || token === cached.token) ? cached : undefined;
   }

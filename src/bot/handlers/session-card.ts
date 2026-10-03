@@ -24,6 +24,7 @@ export interface SessionCardExtras {
   selfPid?: number;
   /** Latest task-completion % (0–100) for this session, if this chat runs it. */
   progress?: number;
+  origin?: "existing" | "telegram";
 }
 
 export interface SessionCard {
@@ -37,7 +38,13 @@ export function buildSessionCard(m: SessionMeta, extra: SessionCardExtras = {}):
   const state = m.active ? `выполняется${m.lockPid ? ` \u00B7 процесс ${m.lockPid}` : ""}` : "ожидание";
   const proj = m.cwd ? basename(m.cwd) : "(проект не указан)";
 
-  const lines = [`${dot} ${m.title}`, `\u{1F4C1} ${proj}`];
+  const lines = [`💬 ${m.title}`];
+  if (extra.origin === "telegram") {
+    lines.push("📱 Создан через Telegram", "Настоящая сессия сохранена в данных Codex.", "⚠ Может не отображаться в боковой панели Codex Desktop.");
+  } else if (extra.origin === "existing") {
+    lines.push("🖥 Существующий сеанс Codex");
+  }
+  lines.push(`\u{1F4C1} ${proj}`);
   if (m.cwd) lines.push(`   ${m.cwd}`);
   lines.push(`\u{1F552} обновлён ${relTime(m.updatedAt)} \u00B7 создан ${relTime(m.createdAt)}`);
   const ctx = typeof extra.contextPct === "number" ? ` \u00B7 \u{1F9E0} контекст ${Math.round(extra.contextPct)}%` : "";
@@ -45,7 +52,7 @@ export function buildSessionCard(m: SessionMeta, extra: SessionCardExtras = {}):
   if (typeof extra.progress === "number") lines.push(`\u{1F4C8} ${progressBar(extra.progress)}`);
   lines.push(`\u{1F194} ${m.sessionId.slice(0, 8)}`);
 
-  const connect = extra.openLabel ?? (m.active ? "\u{1F374} Продолжить отдельно" : "\u{1F517} Продолжить");
+  const connect = extra.openLabel ?? (m.active ? "▶️ Продолжить отдельно" : "▶️ Продолжить");
   const keyboard = new InlineKeyboard()
     .text(connect, `sess:${m.sessionId}`)
     .text("\u{1F4DC} История", `hist:${m.sessionId}`)

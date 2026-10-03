@@ -10,12 +10,14 @@
  * subagents are associated with their parent thread when Codex reports it.
  */
 import type { Api } from "grammy";
+import { basename } from "node:path";
 import type { AcpClient } from "../acp/client.js";
 import type { PendingStage, SubagentInfo } from "../acp/types.js";
 import type { SettingsStore } from "../app/settings-store.js";
 import type { AppConfig } from "../config.js";
 import { subagentSummary } from "../render/subagent.js";
 import type { SessionStore } from "../sessions/store.js";
+import type { TelegramSessionRegistry } from "../sessions/telegram-registry.js";
 import type { AccountRotator } from "./account-rotator.js";
 import { ChatController } from "./chat-controller.js";
 import type { SessionRuntime } from "./session-runtime.js";
@@ -46,6 +48,7 @@ export class RuntimeRegistry {
     private readonly cfg: AppConfig,
     private readonly settings: SettingsStore,
     private readonly store: SessionStore,
+    private readonly telegramSessions: TelegramSessionRegistry,
   ) {
     this.acp.on("subagents", (subagents, pending) => this.onSubagents(subagents, pending));
   }
@@ -72,6 +75,8 @@ export class RuntimeRegistry {
         (id) => this.refresher?.(id),
         (busy) => this.noteActivity(chatId, busy),
         () => this.rotator,
+        (sessionId, ownerChatId, cwd, projectName) =>
+          this.telegramSessions.record(sessionId, ownerChatId, cwd, projectName || basename(cwd)),
       );
       this.controllers.set(chatId, c);
     }

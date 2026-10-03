@@ -10,6 +10,7 @@ import { compactKeyboard } from "../menu/keyboard.js";
 import { openMainMenu } from "../menu/main.js";
 import { refreshMenu } from "../menu/refresh.js";
 import { extractReplyContext } from "../reply-context.js";
+import { showNewSessionConfirmation } from "./sessions.js";
 
 export function registerControl(bot: Bot, deps: BotDeps): void {
   bot.command("start", async (ctx) => {
@@ -51,13 +52,7 @@ export function registerControl(bot: Bot, deps: BotDeps): void {
   });
 
   bot.command("new", async (ctx) => {
-    const rt = deps.registry.get(ctx.chat.id);
-    try {
-      await deps.registry.controller(ctx.chat.id).addNew(rt.cwd, rt.projectName);
-      await refreshMenu(ctx, deps, `\u2728 Новый сеанс запущен в ${rt.projectName ?? rt.cwd}`);
-    } catch (err) {
-      await ctx.reply(`\u274C Не удалось начать сеанс: ${(err as Error).message}`);
-    }
+    await showNewSessionConfirmation(ctx, deps);
   });
 
   bot.command("cancel", async (ctx) => {

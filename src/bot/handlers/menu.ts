@@ -11,7 +11,7 @@ import { showMcp } from "./mcp.js";
 import { showProjects } from "./projects.js";
 import { showRunning } from "./running.js";
 import { showAccounts } from "./accounts.js";
-import { showSessions } from "./sessions.js";
+import { showNewSessionConfirmation, showSessions } from "./sessions.js";
 import { showTasks } from "./tasks.js";
 import { showUsage } from "./usage.js";
 
@@ -118,14 +118,8 @@ async function dispatchMenu(ctx: Context, deps: BotDeps, action: string): Promis
       await ctx.answerCallbackQuery();
       return showMore(ctx, deps);
     case "new":
-      await ctx.answerCallbackQuery({ text: "Начинаю новый сеанс…" });
-      try {
-        await deps.registry.controller(chatId).addNew(rt.cwd, rt.projectName);
-        await openMainMenu(ctx, deps);
-      } catch (e) {
-        await deps.ephemeral.reply(ctx, `\u274C Не удалось начать сеанс: ${(e as Error).message}`);
-      }
-      return;
+      await ctx.answerCallbackQuery();
+      return showNewSessionConfirmation(ctx, deps);
     case "stop":
       return void ctx.answerCallbackQuery({ text: (await rt.cancel()) ? "Останавливаю…" : "Сейчас ничего не выполняется" });
     default:

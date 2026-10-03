@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * Easy setup: creates/updates the bot's .env, auto-detects the codex binary
- * and sensible PROJECT_ROOTS, and optionally writes the bot token / user id:
+ * and optionally writes the bot token / user id. Project roots stay opt-in:
+ * only folders the user explicitly enters in PROJECT_ROOTS are browseable.
  *
  *   node scripts/setup.mjs [--path] [--instance <dir>] [<TELEGRAM_BOT_TOKEN> [ALLOWED_USER_ID]]
  *
@@ -99,11 +100,6 @@ function detectCodex() {
   return candidates.find((p) => existsSync(p)) || "";
 }
 
-function detectRoots() {
-  const guesses = ["H:\\Lucru\\Domains", "C:\\Lucru\\Domains", join(homedir(), "projects")];
-  return guesses.filter((p) => existsSync(p));
-}
-
 let env = existsSync(envPath)
   ? readFileSync(envPath, "utf-8")
   : readFileSync(examplePath, "utf-8");
@@ -121,12 +117,6 @@ if (codex) {
   console.log(`✓ Found codex: ${codex}`);
 } else {
   console.log("! codex not auto-detected — set CODEX_CLI_PATH in .env or ensure it's on PATH.");
-}
-
-const roots = detectRoots();
-if (roots.length) {
-  setVar("PROJECT_ROOTS", roots.join(","));
-  console.log(`✓ PROJECT_ROOTS: ${roots.join(", ")}`);
 }
 
 if (tokenArg) {

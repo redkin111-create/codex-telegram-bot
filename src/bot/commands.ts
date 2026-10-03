@@ -4,7 +4,7 @@
 export const COMMANDS: { command: string; description: string }[] = [
   { command: "start", description: "Начало работы, меню и статус" },
   { command: "menu", description: "Открыть меню" },
-  { command: "projects", description: "Проекты: список, поиск, открыть или создать" },
+  { command: "projects", description: "Недавние проекты Codex и разрешённые папки" },
   { command: "sessions", description: "Список и продолжение сеансов" },
   { command: "active", description: "Сеансы, запущенные на компьютере" },
   { command: "running", description: "Сеансы, которыми управляет этот чат" },
@@ -16,7 +16,7 @@ export const COMMANDS: { command: string; description: string }[] = [
   { command: "tasks", description: "Управление задачами по расписанию" },
   { command: "newtask", description: "Создать задачу по расписанию" },
   { command: "history", description: "Недавняя история переписки" },
-  { command: "new", description: "Начать новый сеанс" },
+  { command: "new", description: "Создать Telegram-сеанс после подтверждения" },
   { command: "status", description: "Текущий сеанс, проект и очередь" },
   { command: "usage", description: "Использование аккаунта и контекста" },
   { command: "btw", description: "Выполнить при первой возможности: /btw <текст>" },

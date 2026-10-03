@@ -46,7 +46,7 @@ codex-tg run                     # run in the foreground (Ctrl-C to stop)
 
 | Command | What it does |
 |---|---|
-| `codex-tg setup [token] [userId]` | Create/update `.env` (auto-detects `codex` + project roots). |
+| `codex-tg setup [token] [userId]` | Create/update `.env` and auto-detect `codex`; project roots are configured manually in `PROJECT_ROOTS`. |
 | `codex-tg setup --path` | Print the resolved `.env` location. |
 | `codex-tg run` | Run the bot in the foreground. |
 | `codex-tg install` | Install + start a **24/7 background service** that autostarts on boot/login. |

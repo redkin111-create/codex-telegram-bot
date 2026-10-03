@@ -16,6 +16,7 @@ import { INSTANCE_DIR } from "../config.js";
 import { createLogger } from "../logger.js";
 import { ProjectManager } from "../projects/manager.js";
 import { SessionStore } from "../sessions/store.js";
+import { TelegramSessionRegistry } from "../sessions/telegram-registry.js";
 import { TaskRunner } from "../tasks/runner.js";
 import { Scheduler } from "../tasks/scheduler.js";
 import { TaskStore } from "../tasks/store.js";
@@ -90,9 +91,11 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
 
   const settings = new SettingsStore(cfg.dataDir);
   const store = new SessionStore(cfg.sessionsDir);
-  const registry = new RuntimeRegistry(bot.api, acp, cfg, settings, store);
+  const telegramSessions = new TelegramSessionRegistry(cfg.dataDir);
+  const registry = new RuntimeRegistry(bot.api, acp, cfg, settings, store, telegramSessions);
   const tasks = new TaskStore(cfg.dataDir);
-  const taskRunner = new TaskRunner(bot.api, acp);
+  const taskRunner = new TaskRunner(bot.api, acp, (sessionId, task) =>
+    telegramSessions.record(sessionId, task.chatId, task.projectPath, task.projectName || task.projectPath.split(/[\\/]/).pop() || "Codex"));
   const wizard = new TaskWizard(tasks);
   const statusPanel = new StatusPanel(bot.api, settings, registry);
   registry.setRefresher((chatId) => void statusPanel.refresh(chatId));
@@ -106,6 +109,7 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
     acp,
     registry,
     store,
+    telegramSessions,
     projects: new ProjectManager(cfg.projectRoots),
     menuCache: new MenuCache(),
     settings,

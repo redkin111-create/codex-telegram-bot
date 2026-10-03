@@ -18,6 +18,7 @@ export class TaskRunner {
   constructor(
     private readonly api: Api,
     private readonly acp: AcpClient,
+    private readonly recordCreatedSession?: (sessionId: string, task: Task) => void,
   ) {}
 
   /** Run a task; resolves true on success, false on error. */
@@ -43,6 +44,7 @@ export class TaskRunner {
 
     try {
       sessionId = await this.acp.newSession(task.projectPath);
+      this.recordCreatedSession?.(sessionId, task);
       if (task.agent) {
         try {
           await this.acp.setMode(sessionId, task.agent);

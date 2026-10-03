@@ -107,6 +107,8 @@ export class SessionRuntime {
    *  a logical fork), so the owning ChatController can re-persist its controlled
    *  list and mark the new session seen. */
   onSessionChange: (() => void) | undefined;
+  /** Called only for a freshly returned `thread/start` id, never on resume. */
+  onSessionCreated: ((sessionId: string, cwd: string, projectName?: string) => void) | undefined;
   /** Optional multi-account rotator: when a turn gives up, cycle through the
    *  other saved logins once and retry on each. Injected by the registry. */
   accountRotator: AccountRotator | undefined;
@@ -253,6 +255,7 @@ export class SessionRuntime {
     this.rebindPending = false;
     this.cwd = cwd;
     this.projectName = projectName;
+    this.onSessionCreated?.(this.sessionId, cwd, projectName);
     await this.applySessionPrefs();
     this.persist();
     this.sessionChanged();
@@ -292,7 +295,8 @@ export class SessionRuntime {
       await this.resumeSession(sessionId, cwd, projectName);
       return "resumed";
     } catch (err) {
-      log.warn(`load failed (${(err as Error).message}); forking ${sessionId.slice(0, 8)}`);
+      if (!isLiveSessionConflict(err)) throw err;
+      log.warn(`session ${sessionId.slice(0, 8)} is already live; forking a continuation`);
       await this.startNewSession(cwd, projectName);
       if (priorEntries.length > 0) this.primingContext = buildPriming(buildTranscript(priorEntries));
       return "forked";
@@ -1022,6 +1026,12 @@ export class SessionRuntime {
       .join("\n\n");
     if (body.trim()) await sendMarkdownDoc(this.api, this.chatId, `${body}\n\n${this.tags}`);
   }
+}
+
+/** Fork only when Codex explicitly says the thread is live or locked elsewhere. */
+function isLiveSessionConflict(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /(?:thread|session).{0,48}(?:already\s+(?:active|running|loaded|in use)|locked|busy|in use)|(?:already\s+(?:active|running|loaded|in use)|locked|busy|in use).{0,48}(?:thread|session)/i.test(message);
 }
 
 /** Format an elapsed duration compactly (e.g. "8s", "2m 13s", "1h 4m"). */

@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { EventEmitter } from "node:events";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Context, InlineKeyboard } from "grammy";
-import { loadConfig, PROJECT_ROOT } from "../src/config.js";
+import { loadConfig, PROJECT_ROOT, type AppConfig } from "../src/config.js";
+import { ChatController } from "../src/bot/chat-controller.js";
 import { createAuthMiddleware } from "../src/bot/auth.js";
-import { MenuCache } from "../src/bot/deps.js";
+import { MenuCache, type BotDeps } from "../src/bot/deps.js";
 import { formatProbeResult, healthCheckKeyboard, mainPanel, snapshotMatches } from "../src/bot/handlers/mcp.js";
 import { modelPage, reasoningKeyboard, skillsPage } from "../src/bot/handlers/inline-catalog.js";
 import { COMMANDS, HELP_TEXT } from "../src/bot/commands.js";
 import { projectPage } from "../src/bot/handlers/projects.js";
-import { selectionCard, sessionPage } from "../src/bot/handlers/sessions.js";
+import { selectProject } from "../src/bot/handlers/projects.js";
+import { createConfirmedSession, selectionCard, sessionPage, showNewSessionConfirmation } from "../src/bot/handlers/sessions.js";
 import { mainMenuInline, MENU_BTN, RUNNING_BTN, STOP_BTN } from "../src/bot/menu/keyboard.js";
 import { mainMenuText } from "../src/bot/menu/main.js";
 import { buildContentBlocks } from "../src/bot/prompt-content.js";
@@ -16,6 +22,10 @@ import { callbackDataFits } from "../src/bot/menu/paging.js";
 import type { SessionMeta } from "../src/sessions/types.js";
 import type { McpServer } from "../src/mcp/types.js";
 import { isNpmInstall } from "../src/app/updater.js";
+import { canonicalExistingDirectory, isPathWithinRoot, ProjectManager, recentProjects } from "../src/projects/manager.js";
+import { TelegramSessionRegistry } from "../src/sessions/telegram-registry.js";
+import { defaultSettings } from "../src/app/types.js";
+import type { AcpClient } from "../src/acp/client.js";
 
 function callbacks(keyboard: InlineKeyboard): string[] {
   return keyboard.inline_keyboard.flatMap((row) => row.flatMap((button) => {
@@ -86,7 +96,7 @@ test("session selection opens a detail card with existing actions and safe navig
   assert(data.includes(`killsess:${meta.sessionId}`));
   assert(data.includes("sp:0123456789abcdef:1"));
   assert(data.includes("ui:home"));
-  assert(detail.keyboard.inline_keyboard[0]![0]!.text.includes("Открыть"));
+  assert(detail.keyboard.inline_keyboard[0]![0]!.text.includes("Продолжить"));
   const selfSession = selectionCard({ ...meta, lockPid: 123 }, "0123456789abcdef", 0, 123);
   assert(!callbacks(selfSession.keyboard).some((item) => item.startsWith("killsess:")));
   assertCallbacksFit(detail.keyboard, selfSession.keyboard);
@@ -171,6 +181,225 @@ test("cache tokens prevent an old button selecting a newer list", () => {
   const skillToken = cache.setSkills(42, [{ name: "New" }]);
   assert.equal(cache.getSkill(42, "stale-token", 0), undefined);
   assert.equal(cache.getSkill(42, skillToken, 0)?.name, "New");
+});
+
+test("recent Codex projects deduplicate cwd, use newest activity, and ignore missing folders", () => {
+  const base = mkdtempSync(join(tmpdir(), "codex-tg-recent-"));
+  try {
+    const project = join(base, "toy");
+    mkdirSync(project);
+    const meta = (sessionId: string, cwd: string, updatedAt: string): SessionMeta => ({
+      sessionId, cwd, title: sessionId, createdAt: updatedAt, updatedAt, active: false, historyBytes: 0,
+    });
+    const recent = recentProjects([
+      meta("old", project, "2026-01-01T00:00:00.000Z"),
+      meta("new", project + "/", "2026-01-03T00:00:00.000Z"),
+      meta("missing", join(base, "gone"), "2026-01-04T00:00:00.000Z"),
+    ]);
+    assert.equal(recent.length, 1);
+    assert.equal(recent[0]?.name, "toy");
+    assert.equal(recent[0]?.lastUsed, Date.parse("2026-01-03T00:00:00.000Z"));
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("project path allowlist accepts a folder inside root and rejects siblings and traversal", () => {
+  const base = mkdtempSync(join(tmpdir(), "codex-tg-roots-"));
+  try {
+    const root = join(base, "projects");
+    const inside = join(root, "toy");
+    const nested = join(inside, "nested");
+    const sibling = join(base, "projects2");
+    mkdirSync(nested, { recursive: true });
+    mkdirSync(sibling);
+    const canonicalRoot = canonicalExistingDirectory(root)!;
+    const canonicalInside = canonicalExistingDirectory(inside)!;
+    const canonicalSibling = canonicalExistingDirectory(sibling)!;
+    assert(canonicalRoot);
+    const manager = new ProjectManager([root]);
+    assert.deepEqual(manager.list().map((entry) => entry.name), ["toy"]);
+    assert.equal(manager.resolveAllowedPath(inside), canonicalInside);
+    assert.equal(manager.resolveAllowedPath(sibling), undefined);
+    assert.equal(manager.resolveAllowedPath(join(root, "..", "projects2")), undefined);
+    assert.equal(manager.resolveAllowedPath(sibling, [sibling]), canonicalSibling);
+    assert.equal(isPathWithinRoot("C:\\projects", "C:\\projects\\toy"), true);
+    assert.equal(isPathWithinRoot("C:\\projects", "C:\\projects2"), false);
+    assert.equal(isPathWithinRoot("C:\\projects", "C:\\projects\\..\\Windows"), false);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("unset project roots do not add HOME; explicit workspace is the only fallback root", () => {
+  const keys = ["TELEGRAM_BOT_TOKEN", "ALLOWED_USERS", "PROJECT_ROOTS", "CODEX_WORKSPACE"] as const;
+  const saved = keys.map((key) => process.env[key]);
+  try {
+    process.env.TELEGRAM_BOT_TOKEN = "test-token";
+    process.env.ALLOWED_USERS = "7";
+    process.env.PROJECT_ROOTS = "";
+    delete process.env.CODEX_WORKSPACE;
+    assert.deepEqual(loadConfig().projectRoots, []);
+    process.env.CODEX_WORKSPACE = join(tmpdir(), "safe-workspace");
+    assert.deepEqual(loadConfig().projectRoots, [join(tmpdir(), "safe-workspace")]);
+  } finally {
+    keys.forEach((key, index) => {
+      if (saved[index] === undefined) delete process.env[key];
+      else process.env[key] = saved[index]!;
+    });
+  }
+});
+
+test("choosing a project opens its filtered sessions without creating a thread", async () => {
+  let starts = 0;
+  let shown = "";
+  const cache = new MenuCache();
+  const deps = {
+    menuCache: cache,
+    store: { list: () => [], get: () => undefined },
+    telegramSessions: { prune: () => 0, get: () => undefined },
+    registry: {
+      get: () => ({ sessionId: undefined }),
+      controller: () => ({ addNew: async () => { starts++; } }),
+    },
+    ephemeral: { open: async () => {}, reply: async (_ctx: Context, text: string) => { shown = text; } },
+  } as unknown as BotDeps;
+  const ctx = { chat: { id: 44 } } as unknown as Context;
+  const project = { name: "toy", path: "C:\\work\\toy", lastUsed: 1 };
+  await selectProject(ctx, deps, project);
+  assert.equal(starts, 0);
+  assert.equal(cache.getSelectedProject(44)?.path, project.path);
+  assert(shown.includes("В этом проекте пока нет сеансов"));
+});
+
+test("new session waits for the matching confirmation token", async () => {
+  let starts = 0;
+  let keyboard: InlineKeyboard | undefined;
+  const cache = new MenuCache();
+  const deps = {
+    menuCache: cache,
+    registry: {
+      get: () => ({ cwd: "C:\\work\\toy", projectName: "toy" }),
+      controller: () => ({ addNew: async (path: string, name: string) => { starts++; return { sessionId: `${path}:${name}` }; } }),
+    },
+    ephemeral: {
+      open: async () => {},
+      reply: async (_ctx: Context, _text: string, extra: { reply_markup?: InlineKeyboard }) => { keyboard = extra.reply_markup; },
+    },
+  } as unknown as BotDeps;
+  const ctx = { chat: { id: 45 } } as unknown as Context;
+  await showNewSessionConfirmation(ctx, deps);
+  assert.equal(starts, 0);
+  assert(keyboard);
+  const createButton = callbacks(keyboard!).find((data) => data.startsWith("s:create:"));
+  assert(createButton);
+  const token = createButton.slice("s:create:".length);
+  assert.equal(await createConfirmedSession(deps, 45, "ffffffffffffffff"), undefined);
+  assert.equal(starts, 0);
+  const created = await createConfirmedSession(deps, 45, token);
+  assert.equal(starts, 1);
+  assert.equal(created?.target.path, "C:\\work\\toy");
+  assert.equal(await createConfirmedSession(deps, 45, token), undefined);
+  assert.equal(starts, 1);
+  assertCallbacksFit(keyboard!);
+});
+
+test("existing session attachment resumes the same session id without thread/start", async () => {
+  const sessionId = "00000000-0000-4000-8000-000000000001";
+  const cwd = "C:\\work\\toy";
+  let resumed: string | undefined;
+  let starts = 0;
+  const acp = Object.assign(new EventEmitter(), {
+    loadSession: async (id: string) => { resumed = id; },
+    newSession: async () => { starts++; return "new-session"; },
+  }) as unknown as AcpClient;
+  Object.defineProperty(acp, "supportsLoadSession", { value: true });
+  let currentSettings = defaultSettings();
+  const settings = {
+    get: () => currentSettings,
+    update: (_chatId: number, patch: Partial<typeof currentSettings>) => { currentSettings = { ...currentSettings, ...patch }; },
+  };
+  const store = { jsonlPath: () => join(tmpdir(), "missing-codex-rollout.jsonl") };
+  const controller = new ChatController({} as never, 46, acp, {} as AppConfig, settings as never, store as never, () => {}, () => {});
+  try {
+    const result = await controller.addAttach(sessionId, cwd, "toy", []);
+    assert.equal(result.result, "resumed");
+    assert.equal(result.rt.sessionId, sessionId);
+    assert.equal(resumed, sessionId);
+    assert.equal(starts, 0);
+  } finally {
+    controller.dispose();
+  }
+});
+
+test("a non-lock resume failure is returned instead of silently forking", async () => {
+  const sessionId = "00000000-0000-4000-8000-000000000003";
+  let starts = 0;
+  const acp = Object.assign(new EventEmitter(), {
+    loadSession: async () => { throw new Error("invalid session arguments"); },
+    newSession: async () => { starts++; return "new-session"; },
+  }) as unknown as AcpClient;
+  Object.defineProperty(acp, "supportsLoadSession", { value: true });
+  let currentSettings = defaultSettings();
+  const settings = { get: () => currentSettings, update: (_id: number, patch: Partial<typeof currentSettings>) => { currentSettings = { ...currentSettings, ...patch }; } };
+  const controller = new ChatController({} as never, 48, acp, {} as AppConfig, settings as never, { jsonlPath: () => "missing.jsonl" } as never, () => {}, () => {});
+  try {
+    await assert.rejects(controller.addAttach(sessionId, "C:\\work", "work", []), /invalid session arguments/);
+    assert.equal(starts, 0);
+  } finally {
+    controller.dispose();
+  }
+});
+
+test("a real live-session conflict keeps the existing linked-continuation fallback", async () => {
+  const sessionId = "00000000-0000-4000-8000-000000000004";
+  let starts = 0;
+  const acp = Object.assign(new EventEmitter(), {
+    loadSession: async () => { throw new Error("Thread is already active in another process"); },
+    newSession: async () => { starts++; return "linked-continuation"; },
+  }) as unknown as AcpClient;
+  Object.defineProperty(acp, "supportsLoadSession", { value: true });
+  let currentSettings = defaultSettings();
+  const settings = { get: () => currentSettings, update: (_id: number, patch: Partial<typeof currentSettings>) => { currentSettings = { ...currentSettings, ...patch }; } };
+  const controller = new ChatController({} as never, 49, acp, {} as AppConfig, settings as never, { jsonlPath: () => "missing.jsonl" } as never, () => {}, () => {});
+  try {
+    const result = await controller.addAttach(sessionId, "C:\\work", "work", []);
+    assert.equal(result.result, "forked");
+    assert.equal(result.rt.sessionId, "linked-continuation");
+    assert.equal(starts, 1);
+  } finally {
+    controller.dispose();
+  }
+});
+
+test("session origin labels and Telegram registry contain only origin metadata", () => {
+  const base = mkdtempSync(join(tmpdir(), "codex-tg-registry-"));
+  try {
+    const registry = new TelegramSessionRegistry(base);
+    const sessionId = "00000000-0000-4000-8000-000000000001";
+    registry.record(sessionId, 47, "C:\\work\\toy", "toy");
+    const stored = JSON.parse(readFileSync(join(base, "telegram-sessions.json"), "utf8")) as Record<string, Record<string, unknown>>;
+    assert.deepEqual(Object.keys(stored[sessionId]!).sort(), ["chatId", "createdAt", "createdBy", "projectName", "projectPath"]);
+    assert.equal(stored[sessionId]?.createdBy, "telegram");
+    const old = { ...stored[sessionId]!, createdAt: new Date(Date.now() - 3 * 86_400_000).toISOString() };
+    writeFileSync(join(base, "telegram-sessions.json"), JSON.stringify({ [sessionId]: old }), "utf8");
+    const staleRegistry = new TelegramSessionRegistry(base);
+    assert.equal(staleRegistry.prune(() => false), 1);
+    assert.equal(staleRegistry.get(sessionId), undefined);
+
+    const meta: SessionMeta = {
+      sessionId, cwd: "C:\\work\\toy", title: "QA", createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-02T00:00:00.000Z", active: false, historyBytes: 0,
+    };
+    const page = sessionPage([meta, { ...meta, sessionId: "00000000-0000-4000-8000-000000000002" }], "Сеансы", 0, "0123456789abcdef", undefined, (id) => id === sessionId);
+    assert(page.text.includes("📱"));
+    assert(page.text.includes("🖥"));
+    assert(selectionCard(meta, "0123456789abcdef", 0, undefined, true).text.includes("Создан через Telegram"));
+    assert(selectionCard(meta, "0123456789abcdef", 0).text.includes("Существующий сеанс Codex"));
+    assertCallbacksFit(page.keyboard);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
 });
 
 test("MCP display omits config secrets and probe details", () => {

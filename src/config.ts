@@ -166,10 +166,12 @@ export function loadConfig(): AppConfig {
   const workspaceRaw = process.env.CODEX_WORKSPACE?.trim() || process.cwd();
   const workspace = resolve(expandHome(workspaceRaw));
 
-  // Default project roots: the workspace parent + home directory.
+  // Filesystem browsing is an explicit allowlist. If the user supplied a
+  // workspace but no PROJECT_ROOTS, allow only that workspace; otherwise the
+  // bot can still show projects discovered from Codex session history.
   const roots = list(process.env.PROJECT_ROOTS).map((p) => resolve(expandHome(p)));
-  if (roots.length === 0) {
-    roots.push(dirname(workspace), homedir());
+  if (roots.length === 0 && process.env.CODEX_WORKSPACE?.trim()) {
+    roots.push(workspace);
   }
 
   const codexHome = process.env.CODEX_HOME?.trim()

@@ -25,7 +25,7 @@ Use a **different Telegram bot token** for each bot instance.
 
 | Capability | What it does |
 |---|---|
-| 🗂 **Projects** | `/projects` browses your folders and runs Codex in the one you pick. |
+| 🗂 **Projects** | `/projects` shows recent Codex projects and folders explicitly allowed in `PROJECT_ROOTS`; selecting one opens its sessions. |
 | ♻️ **Resume sessions** | `/sessions` lists recent Codex sessions (rollouts); tap to resume via `thread/resume`. |
 | 📜 **History** | `/history` shows the latest messages of any session. |
 | 🧭 **Always-visible menu** | A persistent keyboard plus a pinned status panel showing project, model, reasoning, session and queue. |
@@ -104,7 +104,7 @@ No build step — TypeScript runs directly via `tsx`.
 
 ```
 /menu         Show the persistent menu keyboard
-/projects     List · search <q> · open any <path> · new <name>
+/projects     Recent Codex projects · search · allowed folders · new <name>
 /sessions     List & resume sessions · /sessions <q> to filter
 /mcp          Live MCP inventory · health-check · enable/disable
 /models       List models reported by the running Codex app-server
@@ -145,7 +145,7 @@ Telegram  ──HTTPS──▶  Bot (grammY)
                          ▼
                  codex app-server  ◀── JSON-RPC 2.0 over stdio ──▶  Bot
                          │
-                         ├─ thread/start · thread/resume   (projects, resume)
+                         ├─ thread/start · thread/resume   (new sessions, resume)
                          ├─ turn/start                     (your messages)
                          └─ item/* · turn/* notifications  (streamed text, tools, diffs)
 ```
@@ -200,7 +200,7 @@ separate real MCP `initialize` health check for enabled configured servers.
 | `CODEX_WORKSPACE` | no | cwd | Default working directory. |
 | `CODEX_TRUST_ALL_TOOLS` | no | `false` | `false` keeps `workspace-write` and asks before tool actions. `true` enables `danger-full-access` with approvals disabled. |
 | `CODEX_TG_DIR` | no | `~/.codex/tg` | Folder holding this instance's `.env`, `logs/`, `data/`. |
-| `PROJECT_ROOTS` | no | workspace parent + home | Roots for `/projects`. |
+| `PROJECT_ROOTS` | no | none | Explicit allowlist for browsing immediate child project folders. Recent Codex projects are discovered from session history. If unset, no home-directory scan occurs; an explicitly set `CODEX_WORKSPACE` may be browsed. |
 | `STREAM_THROTTLE_MS` | no | `1500` | Live-edit interval while streaming. |
 | `MESSAGE_BATCH_MS` | no | `800` | Window to coalesce rapid text messages into one prompt. |
 | `SHOW_TOOL_CALLS` | no | `true` | Show tool-call status messages. |
