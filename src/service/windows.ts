@@ -58,7 +58,9 @@ export const windowsController: ServiceController = {
   async install(spec) {
     mkdirSync(spec.logsDir, { recursive: true });
     const vbs = vbsPath(spec);
-    writeFileSync(vbs, vbsLauncher(spec), "utf-8");
+    // Windows Script Host expects a Unicode encoding for paths containing
+    // non-ASCII characters (for example, a Cyrillic Windows user name).
+    writeFileSync(vbs, `\uFEFF${vbsLauncher(spec)}`, "utf16le");
 
     // Preferred: a hidden ONLOGON Scheduled Task. Registering a *logon-triggered*
     // task is a privileged operation, so /Create succeeds only from an elevated
@@ -101,7 +103,7 @@ export const windowsController: ServiceController = {
     }
     try {
       mkdirSync(dir, { recursive: true });
-      writeFileSync(startupVbs, vbsLauncher(spec), "utf-8");
+      writeFileSync(startupVbs, `\uFEFF${vbsLauncher(spec)}`, "utf16le");
     } catch (e) {
       return fail(`Startup-folder install failed: ${(e as Error).message}`);
     }
