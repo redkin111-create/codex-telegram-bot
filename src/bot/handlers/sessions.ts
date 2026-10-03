@@ -31,11 +31,11 @@ export async function showSessions(ctx: Context, deps: BotDeps, query?: string):
   }
   if (metas.length === 0) {
     await deps.ephemeral.open(ctx);
-    const kb = new InlineKeyboard().text("\u{1F195} New session", "s:new").row().text("\u{1F3E0} Main menu", "ui:home");
-    await deps.ephemeral.reply(ctx, q ? `No sessions match "${compactLabel(q, 80)}".` : "No saved Codex sessions found.", { reply_markup: kb });
+    const kb = new InlineKeyboard().text("\u{1F195} Новый сеанс", "s:new").row().text("\u{1F3E0} Главное меню", "ui:home");
+    await deps.ephemeral.reply(ctx, q ? `По запросу «${compactLabel(q, 80)}» сеансов нет.` : "Сохранённые сеансы Codex не найдены.", { reply_markup: kb });
     return;
   }
-  deps.menuCache.setSessions(ctx.chat!.id, metas, q ? `Sessions matching "${q}"` : "Recent sessions");
+  deps.menuCache.setSessions(ctx.chat!.id, metas, q ? `Сеансы по запросу «${q}»` : "Недавние сеансы");
   await renderSessionPage(ctx, deps, 0);
 }
 
@@ -61,7 +61,7 @@ export function sessionPage(
   for (let i = start; i < end; i++) {
     const m = metas[i]!;
     const marker = m.sessionId === currentId ? "\u2705" : "\u25CB";
-    const project = m.cwd ? basename(m.cwd) : "project unknown";
+    const project = m.cwd ? basename(m.cwd) : "проект не указан";
     kb.text(`${marker} ${compactLabel(m.title, 30)} \u00B7 ${compactLabel(project, 16)}`, `s:${token}:${i}`).row();
   }
   if (pages > 1) {
@@ -70,11 +70,11 @@ export function sessionPage(
     if (p < pages - 1) kb.text("\u25B6", `sp:${token}:${p + 1}`);
     kb.row();
   }
-  kb.text("\u{1F195} New session", "s:new").row().text("\u{1F3E0} Main menu", "ui:home");
+  kb.text("\u{1F195} Новый сеанс", "s:new").row().text("\u{1F3E0} Главное меню", "ui:home");
   const lines = [`\u{1F4AC} ${compactLabel(heading, 56)} \u00B7 ${metas.length}`, ""];
   for (const m of metas.slice(start, end)) {
     const marker = m.sessionId === currentId ? "\u2705" : "\u25CB";
-    const project = m.cwd ? basename(m.cwd) : "project unknown";
+    const project = m.cwd ? basename(m.cwd) : "проект не указан";
     lines.push(`${marker} ${compactLabel(m.title, 34)} \u00B7 ${compactLabel(project, 18)} \u00B7 ${relTime(m.updatedAt)}`);
   }
   return { text: lines.join("\n"), keyboard: kb };
@@ -82,10 +82,10 @@ export function sessionPage(
 
 /** Detail card shown after choosing a session; opening it remains an explicit action. */
 export function selectionCard(meta: SessionMeta, token: string, index: number, selfPid?: number) {
-  const card = buildSessionCard(meta, { openLabel: "\u{1F517} Open", selfPid });
+  const card = buildSessionCard(meta, { openLabel: "\u{1F517} Открыть", selfPid });
   card.keyboard.row()
-    .text("\u2B05 Back to Sessions", `sp:${token}:${Math.floor(index / PAGE_SIZE)}`)
-    .text("\u{1F3E0} Main Menu", "ui:home");
+    .text("\u2B05 К списку сеансов", `sp:${token}:${Math.floor(index / PAGE_SIZE)}`)
+    .text("\u{1F3E0} Главное меню", "ui:home");
   return card;
 }
 
@@ -96,16 +96,16 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
     const metas = deps.store.listActive();
     if (metas.length === 0) {
       await deps.ephemeral.open(ctx);
-      await deps.ephemeral.reply(ctx, "No sessions are currently running on this PC.");
+      await deps.ephemeral.reply(ctx, "Сейчас на этом компьютере нет запущенных сеансов.");
       return;
     }
-    deps.menuCache.setSessions(ctx.chat!.id, metas, "Live sessions running now");
+    deps.menuCache.setSessions(ctx.chat!.id, metas, "Сеансы, запущенные сейчас");
     await renderSessionPage(ctx, deps, 0);
   });
 
   bot.callbackQuery(/^sp:([a-f0-9]{16}):(\d+)$/, async (ctx) => {
     const cached = deps.menuCache.getSessions(ctx.chat!.id, ctx.match![1]);
-    if (!cached) return void ctx.answerCallbackQuery({ text: "This list expired. Open Sessions again." });
+    if (!cached) return void ctx.answerCallbackQuery({ text: "Срок действия списка истёк. Откройте сеансы ещё раз." });
     await ctx.answerCallbackQuery();
     await renderSessionPage(ctx, deps, Number(ctx.match![2]));
   });
@@ -115,35 +115,35 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
     const index = Number(ctx.match![2]);
     const meta = deps.menuCache.getSession(ctx.chat!.id, token, index);
     if (!meta || !deps.store.get(meta.sessionId)) {
-      await ctx.answerCallbackQuery({ text: "This session is no longer available. Refresh Sessions.", show_alert: true });
+      await ctx.answerCallbackQuery({ text: "Сеанс больше недоступен. Обновите список сеансов.", show_alert: true });
       return;
     }
-    await ctx.answerCallbackQuery({ text: "Session details" });
+    await ctx.answerCallbackQuery({ text: "Информация о сеансе" });
     const card = selectionCard(meta, token, index, deps.acp.pid);
     await deps.ephemeral.reply(ctx, card.text, { reply_markup: card.keyboard });
   });
 
   bot.callbackQuery("s:new", async (ctx) => {
-    await ctx.answerCallbackQuery({ text: "Starting a new session\u2026" });
+    await ctx.answerCallbackQuery({ text: "Начинаю новый сеанс…" });
     const rt = deps.registry.get(ctx.chat!.id);
     try {
       await deps.registry.controller(ctx.chat!.id).addNew(rt.cwd, rt.projectName);
       await openMainMenu(ctx, deps);
     } catch (err) {
-      await deps.ephemeral.reply(ctx, `\u274C Could not start session: ${(err as Error).message}`, { reply_markup: homeKeyboard() });
+      await deps.ephemeral.reply(ctx, `\u274C Не удалось начать сеанс: ${(err as Error).message}`, { reply_markup: homeKeyboard() });
     }
   });
 
   bot.command("unwatch", async (ctx) => {
     const rt = deps.registry.get(ctx.chat.id);
-    await ctx.reply(rt.stopWatch() ? "\u{1F6D1} Stopped watching." : "Not watching anything.");
+    await ctx.reply(rt.stopWatch() ? "\u{1F6D1} Слежение остановлено." : "Слежение не включено.");
   });
 
   bot.callbackQuery(new RegExp(`^sess:${UUID}$`), async (ctx) => {
     const id = ctx.match![1]!;
     const meta = deps.store.get(id);
     if (!meta) {
-      await ctx.answerCallbackQuery({ text: "Session not found." });
+      await ctx.answerCallbackQuery({ text: "Сеанс не найден." });
       return;
     }
     await ctx.answerCallbackQuery();
@@ -156,11 +156,11 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
       const { result, alreadyControlled } = await deps.registry
         .controller(ctx.chat!.id)
         .addAttach(id, cwd, projectName, prior);
-      await ctx.reply(alreadyControlled ? `\u{1F500} Switched to ${meta.title}` : connectMessage(result, meta));
+      await ctx.reply(alreadyControlled ? `\u{1F500} Переключено на «${meta.title}»` : connectMessage(result, meta));
       await refreshMenu(ctx, deps, `\u{1F4C2} ${meta.title}`);
       await showHistory(deps, ctx.chat!.id, id, meta);
     } catch (err) {
-      await ctx.reply(`\u274C Could not connect: ${(err as Error).message}`);
+      await ctx.reply(`\u274C Не удалось подключиться: ${(err as Error).message}`);
     }
   });
 
@@ -178,20 +178,20 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
     const rt = deps.registry.get(ctx.chat!.id);
     rt.startWatch(deps.store.jsonlPath(id));
     await ctx.reply(
-      `\u{1F4E1} Watching live: ${meta?.title ?? id.slice(0, 8)}\nNew activity streams here. Send /unwatch to stop.`,
+      `\u{1F4E1} Слежу за сеансом: ${meta?.title ?? id.slice(0, 8)}\nНовые события будут появляться здесь. Чтобы остановить, отправьте /unwatch.`,
     );
   });
 }
 
 function connectMessage(result: "resumed" | "forked", meta: SessionMeta): string {
   if (result === "resumed") {
-    return `\u2705 Resumed: ${meta.title}\n${meta.cwd}\n\nSend a message to continue.`;
+    return `\u2705 Сеанс «${meta.title}» продолжен.\n${meta.cwd}\n\nОтправьте сообщение, чтобы продолжить работу.`;
   }
   return [
-    `\u26A0\uFE0F ${meta.title} is live on your PC right now, so Codex keeps it locked.`,
-    `I opened a linked continuation here in the same project with its recent context.`,
+    `\u26A0\uFE0F Сеанс «${meta.title}» сейчас выполняется на компьютере, поэтому Codex его заблокировал.`,
+    `Я создал связанный сеанс в том же проекте и добавил недавний контекст.`,
     `${meta.cwd}`,
     ``,
-    `Send a message to keep going \u2014 or tap \u{1F4E1} to watch the original live.`,
+    `Отправьте сообщение, чтобы продолжить, или нажмите «Следить», чтобы наблюдать за исходным сеансом.`,
   ].join("\n");
 }

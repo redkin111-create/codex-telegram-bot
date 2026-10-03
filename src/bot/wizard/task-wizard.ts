@@ -98,7 +98,7 @@ export class TaskWizard {
       if (error) return { kind: "text", text: `\u26A0\uFE0F ${error}`, error: true };
       s.draft.schedule = schedule;
     } else {
-      return { kind: kindOf(step), text: "Please use the buttons above to continue.", error: true };
+      return { kind: kindOf(step), text: "Чтобы продолжить, используйте кнопки выше.", error: true };
     }
     return this.advance(chatId);
   }
@@ -139,13 +139,13 @@ export class TaskWizard {
     if (s.mode === "create") {
       const task = this.store.create({
         chatId,
-        name: d.name ?? "Task",
+        name: d.name ?? "Задача",
         prompt: d.prompt ?? "",
         projectPath: d.projectPath ?? "",
         projectName: d.projectName,
         schedule: d.schedule!,
       });
-      return { kind: "done", text: `\u2705 Task "${task.name}" created \u2014 ${describeSchedule(task.schedule)}.` };
+      return { kind: "done", text: `\u2705 Задача «${task.name}» создана \u2014 ${describeSchedule(task.schedule)}.` };
     }
     this.store.update(s.taskId!, {
       name: d.name,
@@ -154,7 +154,7 @@ export class TaskWizard {
       projectName: d.projectName,
       schedule: d.schedule,
     });
-    return { kind: "done", text: "\u2705 Task updated." };
+    return { kind: "done", text: "\u2705 Задача обновлена." };
   }
 
   private promptFor(chatId: number): WizardPrompt | undefined {
@@ -163,13 +163,13 @@ export class TaskWizard {
     const step = s.steps[s.index]!;
     switch (step) {
       case "name":
-        return { kind: "text", text: "\u{1F4DD} Send a name for the task." };
+        return { kind: "text", text: "\u{1F4DD} Отправьте название задачи." };
       case "prompt":
-        return { kind: "text", text: "\u{1F4AC} Send the prompt Codex should run when it fires." };
+        return { kind: "text", text: "\u{1F4AC} Напишите, что Codex должен сделать при запуске задачи." };
       case "project":
-        return { kind: "project", text: "\u{1F4C1} Pick the project to run it in:" };
+        return { kind: "project", text: "\u{1F4C1} Выберите проект для задачи:" };
       case "scheduleType":
-        return { kind: "scheduleType", text: "\u{1F5D3} How often should it run?" };
+        return { kind: "scheduleType", text: "\u{1F5D3} Как часто запускать задачу?" };
       case "detail":
         return { kind: "text", text: detailQuestion(s.draft.type!) };
       case "confirm":
@@ -180,13 +180,13 @@ export class TaskWizard {
   private summary(d: Draft): string {
     const p = d.prompt && d.prompt.length > 120 ? d.prompt.slice(0, 120) + "…" : d.prompt;
     return [
-      "\u{1F4CB} Review the task:",
-      `\u2022 Name: ${d.name}`,
-      `\u2022 Project: ${d.projectName ?? d.projectPath}`,
-      `\u2022 Schedule: ${d.schedule ? describeSchedule(d.schedule) : "?"}`,
-      `\u2022 Prompt: ${p}`,
+      "\u{1F4CB} Проверьте задачу:",
+      `\u2022 Название: ${d.name}`,
+      `\u2022 Проект: ${d.projectName ?? d.projectPath}`,
+      `\u2022 Расписание: ${d.schedule ? describeSchedule(d.schedule) : "не указано"}`,
+      `\u2022 Действие: ${p}`,
       "",
-      "Save this task?",
+      "Сохранить задачу?",
     ].join("\n");
   }
 }
@@ -201,14 +201,14 @@ function kindOf(step: WizStep): WizKind {
 function detailQuestion(type: ScheduleType): string {
   switch (type) {
     case "once":
-      return "\u{1F5D3} Enter date & time:  YYYY-MM-DD HH:MM";
+      return "\u{1F5D3} Введите дату и время: ГГГГ-ММ-ДД ЧЧ:ММ";
     case "daily":
-      return "\u{1F550} Enter time (24h):  HH:MM";
+      return "\u{1F550} Введите время (24-часовой формат): ЧЧ:ММ";
     case "weekly":
-      return "\u{1F5D3} Enter day & time:  e.g.  Mon 09:00";
+      return "\u{1F5D3} Введите день недели и время, например пн 09:00";
     case "monthly":
-      return "\u{1F5D3} Enter day-of-month & time:  e.g.  15 09:00";
+      return "\u{1F5D3} Введите число месяца и время, например 15 09:00";
     case "interval":
-      return "\u23F1 Run every how many minutes?  e.g.  90";
+      return "\u23F1 Как часто запускать задачу? Укажите число минут, например 90";
   }
 }

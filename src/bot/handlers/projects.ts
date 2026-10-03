@@ -43,8 +43,8 @@ export function projectPage(
     if (p < pages - 1) kb.text("\u25B6", `pp:${kind}:${token}:${p + 1}`);
     kb.row();
   }
-  if (kind === "p") kb.text("\u{1F50E} Search", "p:search").text("\u{1F3E0} Menu", "ui:home");
-  else kb.text("\u2716 Cancel", "wiz:cancel");
+  if (kind === "p") kb.text("\u{1F50E} Поиск", "p:search").text("\u{1F3E0} Меню", "ui:home");
+  else kb.text("\u2716 Отмена", "wiz:cancel");
   return kb;
 }
 
@@ -65,15 +65,15 @@ export async function sendProjectMenu(
   if (list.length === 0) {
     const kind = prefix === "wiz:proj:" ? "w" : "p";
     const kb = kind === "w"
-      ? new InlineKeyboard().text("\u2716 Cancel", "wiz:cancel")
-      : new InlineKeyboard().text("\u{1F50E} Search", "p:search").text("\u{1F3E0} Menu", "ui:home");
-    const text = "No matching projects. Try /projects new <name> to create one.";
+      ? new InlineKeyboard().text("\u2716 Отмена", "wiz:cancel")
+      : new InlineKeyboard().text("\u{1F50E} Поиск", "p:search").text("\u{1F3E0} Меню", "ui:home");
+    const text = "Подходящих проектов нет. Создать проект можно командой /projects new <название>.";
     if (reuseLatest) await deps.ephemeral.editLatest(chatId, text, { reply_markup: kb });
     else await deps.ephemeral.reply(ctx, text, { reply_markup: kb });
     return;
   }
   const kind = prefix === "wiz:proj:" ? "w" : "p";
-  const text = `${title}\n${list.length} project(s)`;
+  const text = `${title}\nПроектов: ${list.length}`;
   const extra = { reply_markup: projectPage(list, 0, token, kind, currentPath) };
   if (reuseLatest) await deps.ephemeral.editLatest(chatId, text, extra);
   else await deps.ephemeral.reply(ctx, text, extra);
@@ -111,10 +111,10 @@ export async function showProjects(ctx: Context, deps: BotDeps, query?: string, 
     try {
       const entry = deps.projects.create(create[1]!);
       await deps.registry.controller(ctx.chat!.id).addNew(entry.path, entry.name);
-      await refreshMenu(ctx, deps, `\u2705 Created and opened ${entry.name}\n${entry.path} \u2014 send a message.`);
+      await refreshMenu(ctx, deps, `\u2705 Проект «${entry.name}» создан и открыт.\n${entry.path}\nОтправьте сообщение, чтобы начать.`);
     } catch (e) {
       await deps.ephemeral.open(ctx);
-      await deps.ephemeral.reply(ctx, `\u274C Could not create project: ${(e as Error).message}`);
+      await deps.ephemeral.reply(ctx, `\u274C Не удалось создать проект: ${(e as Error).message}`);
     }
     return;
   }
@@ -128,11 +128,11 @@ export async function showProjects(ctx: Context, deps: BotDeps, query?: string, 
   // Search: /projects <query>
   if (arg) {
     const found = deps.projects.search(arg, FETCH);
-    await sendProjectMenu(ctx, deps, "proj:", `Projects matching "${compactLabel(arg, 70)}":`, found, reuseLatest);
+    await sendProjectMenu(ctx, deps, "proj:", `Проекты по запросу «${compactLabel(arg, 70)}»:`, found, reuseLatest);
     return;
   }
 
-  await sendProjectMenu(ctx, deps, "proj:", "Choose a project:", undefined, reuseLatest);
+  await sendProjectMenu(ctx, deps, "proj:", "Выберите проект:", undefined, reuseLatest);
 }
 
 /** True when the argument looks like a filesystem path rather than a name. */
@@ -148,7 +148,7 @@ async function openProjectPath(ctx: Context, deps: BotDeps, raw: string): Promis
     await deps.ephemeral.open(ctx);
     await deps.ephemeral.reply(
       ctx,
-      `\u274C Path not found: ${dir}\nI won't create it \u2014 use \`/projects new <name>\` to make a new project.`,
+      `\u274C Папка не найдена: ${dir}\nОна не будет создана автоматически. Чтобы создать проект, используйте \`/projects new <название>\`.`,
     );
     return;
   }
@@ -156,9 +156,9 @@ async function openProjectPath(ctx: Context, deps: BotDeps, raw: string): Promis
   const name = basename(dir) || dir;
   try {
     await deps.registry.controller(ctx.chat!.id).addNew(dir, name);
-    await refreshMenu(ctx, deps, `\u{1F4C1} Now working in ${name}\n${dir} \u2014 send a message.`);
+    await refreshMenu(ctx, deps, `\u{1F4C1} Теперь работаю в проекте «${name}».\n${dir}\nОтправьте сообщение, чтобы начать.`);
   } catch (e) {
-    await deps.ephemeral.reply(ctx, `\u274C Could not open ${dir}: ${(e as Error).message}`);
+    await deps.ephemeral.reply(ctx, `\u274C Не удалось открыть ${dir}: ${(e as Error).message}`);
   }
 }
 
@@ -178,7 +178,7 @@ export function registerProjects(bot: Bot, deps: BotDeps): void {
   bot.on("message:text", async (ctx, next) => {
     const text = ctx.message.text.trim();
     const isSearchInput = deps.menuCache.consumeProjectSearch(ctx.chat.id);
-    if (!isSearchInput || text.startsWith("/") || ["\u2630 Menu", "\u{1F9ED} Running", "\u23F9 Stop"].includes(text)) {
+    if (!isSearchInput || text.startsWith("/") || ["\u2630 Меню", "\u{1F9ED} Активные", "\u23F9 Стоп"].includes(text)) {
       await next();
       return;
     }
@@ -194,7 +194,7 @@ export function registerProjects(bot: Bot, deps: BotDeps): void {
   bot.callbackQuery(/^pp:(p|w):([a-f0-9]{16}):(\d+)$/, async (ctx) => {
     const token = ctx.match![2]!;
     const list = deps.menuCache.getProjects(ctx.chat!.id, token);
-    if (!list) return void ctx.answerCallbackQuery({ text: "This list expired. Open Projects again." });
+    if (!list) return void ctx.answerCallbackQuery({ text: "Срок действия списка истёк. Откройте проекты ещё раз." });
     await ctx.answerCallbackQuery();
     const kind = ctx.match![1] as "p" | "w";
     const currentPath = deps.registry.get(ctx.chat!.id).cwd;
@@ -207,7 +207,7 @@ export function registerProjects(bot: Bot, deps: BotDeps): void {
     const index = Number(ctx.match![2]);
     const entry = deps.menuCache.getProject(ctx.chat!.id, index, token);
     if (!entry) {
-      await ctx.answerCallbackQuery({ text: "This list expired. Open Projects again.", show_alert: true });
+      await ctx.answerCallbackQuery({ text: "Срок действия списка истёк. Откройте проекты ещё раз.", show_alert: true });
       return;
     }
     await ctx.answerCallbackQuery();
@@ -215,15 +215,15 @@ export function registerProjects(bot: Bot, deps: BotDeps): void {
       await deps.registry.controller(ctx.chat!.id).addNew(entry.path, entry.name);
       await openMainMenu(ctx, deps);
     } catch (err) {
-      await deps.ephemeral.reply(ctx, `\u274C Could not open ${compactLabel(entry.name, 32)}: ${(err as Error).message}`, { reply_markup: homeKeyboard() });
+      await deps.ephemeral.reply(ctx, `\u274C Не удалось открыть проект «${compactLabel(entry.name, 32)}»: ${(err as Error).message}`, { reply_markup: homeKeyboard() });
     }
   });
 
   bot.callbackQuery("p:search", async (ctx) => {
     deps.menuCache.beginProjectSearch(ctx.chat!.id);
     await ctx.answerCallbackQuery();
-    await ctx.editMessageText("\u{1F50E} Send a project name to search. This prompt expires in 2 minutes.", {
-      reply_markup: new InlineKeyboard().text("Cancel", "p:search:cancel").text("\u{1F3E0} Menu", "ui:home"),
+    await ctx.editMessageText("\u{1F50E} Отправьте название проекта для поиска. Запрос действует 2 минуты.", {
+      reply_markup: new InlineKeyboard().text("Отмена", "p:search:cancel").text("\u{1F3E0} Меню", "ui:home"),
     }).catch(() => {});
   });
 

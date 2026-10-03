@@ -29,11 +29,11 @@ export function createAuthMiddleware(cfg: AppConfig) {
     }
     log.warn(`blocked unauthorized user ${userId}`);
     if (ctx.callbackQuery) {
-      await ctx.answerCallbackQuery({ text: "\u26D4 Not authorized.", show_alert: true }).catch(() => {});
+      await ctx.answerCallbackQuery({ text: "\u26D4 Нет доступа.", show_alert: true }).catch(() => {});
       return;
     }
     if (ctx.chat) {
-      await ctx.reply("\u26D4 Not authorized. Ask the bot owner to add your Telegram ID.");
+      await ctx.reply("\u26D4 Нет доступа. Попросите владельца бота добавить ваш Telegram ID.");
     }
   };
 }

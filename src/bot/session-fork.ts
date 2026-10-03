@@ -24,12 +24,12 @@ export function recentTranscript(sessionsDir: string, sessionId: string, entries
 /** Priming preamble injected as context into a forked (linked) continuation. */
 export function buildPriming(transcript: string): string {
   return [
-    "You are resuming a conversation that is currently still running in another",
-    "window on this machine, so this is a linked continuation. Below is the recent",
-    "transcript for context — use it to continue seamlessly.",
+    "Ты продолжаешь разговор, который всё ещё открыт в другом окне на этом компьютере.",
+    "Это связанное продолжение. Ниже приведена недавняя история разговора для контекста.",
+    "Продолжай с того же места.",
     "",
-    "=== RECENT TRANSCRIPT ===",
+    "=== НЕДАВНЯЯ ИСТОРИЯ ===",
     transcript,
-    "=== END TRANSCRIPT ===",
+    "=== КОНЕЦ ИСТОРИИ ===",
   ].join("\n");
 }

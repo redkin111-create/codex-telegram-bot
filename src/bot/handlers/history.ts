@@ -21,7 +21,7 @@ export function registerHistory(bot: Bot, deps: BotDeps): void {
   bot.command("history", async (ctx) => {
     const rt = deps.registry.get(ctx.chat.id);
     if (!rt.sessionId) {
-      await ctx.reply("No active session. Use /sessions or send a message first.");
+      await ctx.reply("Нет активного сеанса. Откройте /sessions или сначала отправьте сообщение.");
       return;
     }
     const meta = deps.store.get(rt.sessionId);
@@ -40,12 +40,12 @@ export async function showHistory(
 ): Promise<void> {
   const entries = readHistory(deps.store.jsonlPath(sessionId), count);
   if (entries.length === 0) {
-    await deps.api.sendMessage(chatId, "No history found for this session yet.");
+    await deps.api.sendMessage(chatId, "История этого сеанса пока пуста.");
     return;
   }
   const title = meta?.title || sessionId.slice(0, 8);
   const proj = meta?.cwd ? basename(meta.cwd) : "";
-  const header = `\u{1F4DC} **History** \u2014 ${title}${proj ? ` (${proj})` : ""}`;
+  const header = `\u{1F4DC} **История** \u2014 ${title}${proj ? ` (${proj})` : ""}`;
 
   const body = entries
     .map((e) => {

@@ -71,12 +71,12 @@ async function flush(deps: BotDeps, batches: Map<number, TextBatch>, chatId: num
   // user instead of forwarding it to the agent. Split content never trips
   // this: it arrives as multiple parts, and multi-line text is never a command.
   if (batch.parts.length === 1 && !combined.includes("\n") && combined.startsWith("/")) {
-    await send(deps, chatId, "Unknown command. Type /help to see what I can do.");
+    await send(deps, chatId, "Неизвестная команда. Отправьте /help, чтобы открыть справку.");
     return;
   }
 
   const rt = deps.registry.get(chatId);
-  const note = batch.parts.length > 1 ? ` (combined ${batch.parts.length} messages)` : "";
+  const note = batch.parts.length > 1 ? ` (объединено сообщений: ${batch.parts.length})` : "";
   try {
     // Thread the reply to the prompt message (the user's message is left intact;
     // the agent's response + Done reply to it, and carry searchable hashtags).
@@ -85,12 +85,12 @@ async function flush(deps: BotDeps, batches: Map<number, TextBatch>, chatId: num
       await send(
         deps,
         chatId,
-        `\u{1F4E5} Queued (position ${rt.queueLength})${note} \u2014 I'm still working on the previous task. It'll run next.`,
+        `\u{1F4E5} Добавлено в очередь (место ${rt.queueLength})${note}. Сначала завершу текущую задачу, затем выполню это сообщение.`,
       );
     }
   } catch (err) {
     log.warn(`submit failed for chat ${chatId}: ${(err as Error).message}`);
-    await send(deps, chatId, `\u274C Couldn't start your message: ${(err as Error).message}`);
+    await send(deps, chatId, `\u274C Не удалось отправить сообщение в Codex: ${(err as Error).message}`);
   }
 }
 

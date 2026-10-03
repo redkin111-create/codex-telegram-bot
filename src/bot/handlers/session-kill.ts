@@ -28,8 +28,8 @@ function cardKeyboard(deps: BotDeps, meta: SessionMeta, chatId: number): InlineK
   const index = cached?.metas.findIndex((item) => item.sessionId === meta.sessionId) ?? -1;
   if (cached && index >= 0) {
     keyboard.row()
-      .text("\u2B05 Back to Sessions", `sp:${cached.token}:${Math.floor(index / INLINE_PAGE_SIZE)}`)
-      .text("\u{1F3E0} Main Menu", "ui:home");
+      .text("\u2B05 К списку сеансов", `sp:${cached.token}:${Math.floor(index / INLINE_PAGE_SIZE)}`)
+      .text("\u{1F3E0} Главное меню", "ui:home");
   }
   return keyboard;
 }
@@ -40,12 +40,12 @@ function killable(
   id: string,
 ): { ok: true; meta: SessionMeta; pid: number } | { ok: false; meta?: SessionMeta; reason: string } {
   const meta = deps.store.get(id);
-  if (!meta) return { ok: false, reason: "Session not found." };
+  if (!meta) return { ok: false, reason: "Сеанс не найден." };
   if (!meta.active || typeof meta.lockPid !== "number") {
-    return { ok: false, meta, reason: "Session is no longer running." };
+    return { ok: false, meta, reason: "Сеанс больше не выполняется." };
   }
   if (meta.lockPid === deps.acp.pid) {
-    return { ok: false, meta, reason: "That's the bot's own agent — can't kill it." };
+    return { ok: false, meta, reason: "Это собственный процесс бота — его нельзя остановить отсюда." };
   }
   return { ok: true, meta, pid: meta.lockPid };
 }
@@ -63,8 +63,8 @@ export function registerSessionKill(bot: Bot, deps: BotDeps): void {
     }
     await ctx.answerCallbackQuery();
     const kb = new InlineKeyboard()
-      .text(`\u{1F6D1} Kill pid ${check.pid}`, `killsess:do:${id}`)
-      .text("\u21A9 Cancel", `killsess:cancel:${id}`);
+      .text(`\u{1F6D1} Остановить процесс ${check.pid}`, `killsess:do:${id}`)
+      .text("\u21A9 Отмена", `killsess:cancel:${id}`);
     await ctx.editMessageReplyMarkup({ reply_markup: kb }).catch(() => {});
   });
 
@@ -79,17 +79,17 @@ export function registerSessionKill(bot: Bot, deps: BotDeps): void {
     }
     const title = check.meta.title;
     const ok = killPid(check.pid);
-    await ctx.answerCallbackQuery({ text: ok ? "Killed" : "Kill failed" });
+    await ctx.answerCallbackQuery({ text: ok ? "Сеанс остановлен" : "Не удалось остановить сеанс" });
     const note = ok
-      ? `\u{1F6D1} Killed ${title} (pid ${check.pid}).`
-      : `\u26A0\uFE0F Could not kill pid ${check.pid} (already gone, or not permitted).`;
+      ? `\u{1F6D1} Сеанс «${title}» остановлен (процесс ${check.pid}).`
+      : `\u26A0\uFE0F Не удалось остановить процесс ${check.pid}: возможно, он уже завершился или нет прав.`;
     await appendStatus(ctx, note);
   });
 
   // Step 2b — cancelled. Put the card's normal buttons back.
   bot.callbackQuery(new RegExp(`^killsess:cancel:${UUID}$`), async (ctx) => {
     const id = ctx.match![1]!;
-    await ctx.answerCallbackQuery({ text: "Cancelled" });
+    await ctx.answerCallbackQuery({ text: "Отменено" });
     const meta = deps.store.get(id);
     if (meta) await ctx.editMessageReplyMarkup({ reply_markup: cardKeyboard(deps, meta, ctx.chat!.id) }).catch(() => {});
     else await ctx.editMessageReplyMarkup().catch(() => {});

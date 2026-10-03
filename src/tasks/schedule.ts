@@ -4,8 +4,9 @@
  */
 import type { Schedule, ScheduleType } from "./types.js";
 
-const DAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
-const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const DAYS = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
+const DAY_NAMES = ["воскресеньям", "понедельникам", "вторникам", "средам", "четвергам", "пятницам", "субботам"];
+const ENGLISH_DAYS: Record<string, number> = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
 
 export function parseTime(s: string): { h: number; m: number } | undefined {
   const m = /^(\d{1,2}):(\d{2})$/.exec(s.trim());
@@ -25,20 +26,21 @@ export function parseScheduleDetail(
   switch (type) {
     case "once": {
       const ms = Date.parse(t.replace(" ", "T"));
-      if (Number.isNaN(ms)) return { error: "Use format: YYYY-MM-DD HH:MM" };
-      if (ms <= Date.now()) return { error: "That time is in the past." };
+      if (Number.isNaN(ms)) return { error: "Укажите дату и время в формате ГГГГ-ММ-ДД ЧЧ:ММ." };
+      if (ms <= Date.now()) return { error: "Указанное время уже прошло." };
       return { schedule: { type, at: new Date(ms).toISOString() } };
     }
     case "daily": {
       const time = parseTime(t);
-      if (!time) return { error: "Use format: HH:MM (e.g. 09:30)" };
+      if (!time) return { error: "Укажите время в формате ЧЧ:ММ, например 09:30." };
       return { schedule: { type, time: fmt(time) } };
     }
     case "weekly": {
       const [dayStr, timeStr] = t.split(/\s+/);
-      const weekday = DAYS.indexOf((dayStr ?? "").slice(0, 3).toLowerCase());
+      const day = (dayStr ?? "").slice(0, 3).toLowerCase();
+      const weekday = DAYS.indexOf(day.slice(0, 2)) >= 0 ? DAYS.indexOf(day.slice(0, 2)) : ENGLISH_DAYS[day];
       const time = parseTime(timeStr ?? "");
-      if (weekday < 0 || !time) return { error: "Use format: Mon 09:30" };
+      if (weekday === undefined || weekday < 0 || !time) return { error: "Укажите день недели и время, например пн 09:30." };
       return { schedule: { type, weekday, time: fmt(time) } };
     }
     case "monthly": {
@@ -46,17 +48,17 @@ export function parseScheduleDetail(
       const day = Number(dayStr);
       const time = parseTime(timeStr ?? "");
       if (!Number.isInteger(day) || day < 1 || day > 31 || !time) {
-        return { error: "Use format: 15 09:30 (day-of-month time)" };
+        return { error: "Укажите число месяца и время, например 15 09:30." };
       }
       return { schedule: { type, day, time: fmt(time) } };
     }
     case "interval": {
       const mins = Number(t);
-      if (!Number.isInteger(mins) || mins < 1) return { error: "Enter minutes, e.g. 90" };
+      if (!Number.isInteger(mins) || mins < 1) return { error: "Укажите количество минут, например 90." };
       return { schedule: { type, everyMinutes: mins } };
     }
     default:
-      return { error: "Unknown schedule type." };
+      return { error: "Неизвестный тип расписания." };
   }
 }
 
@@ -118,17 +120,17 @@ function nextMonthly(s: Schedule, from: number): number {
 export function describeSchedule(s: Schedule): string {
   switch (s.type) {
     case "once":
-      return `once at ${s.at ? new Date(s.at).toLocaleString() : "?"}`;
+      return `один раз: ${s.at ? new Date(s.at).toLocaleString("ru-RU") : "время не указано"}`;
     case "daily":
-      return `daily at ${s.time}`;
+      return `ежедневно в ${s.time}`;
     case "weekly":
-      return `weekly on ${DAY_NAMES[s.weekday ?? 1]} at ${s.time}`;
+      return `еженедельно по ${DAY_NAMES[s.weekday ?? 1]} в ${s.time}`;
     case "monthly":
-      return `monthly on day ${s.day} at ${s.time}`;
+      return `ежемесячно, ${s.day}-го числа в ${s.time}`;
     case "interval":
-      return `every ${s.everyMinutes} min`;
+      return `каждые ${s.everyMinutes} мин.`;
     default:
-      return "unknown";
+      return "неизвестно";
   }
 }
 

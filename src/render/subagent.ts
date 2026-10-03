@@ -42,17 +42,21 @@ export function renderSubagentTransition(s: SubagentInfo, kind: "start" | "statu
   const label = subagentLabel(s);
   if (kind === "start") {
     const q = s.initialQuery ? `\n    \u2197 ${trunc(s.initialQuery.trim(), 140)}` : "";
-    return `\u{1F916} Subagent **${label}** started${q}`;
+    return `\u{1F916} Дополнительный агент **${label}** запущен${q}`;
   }
   const icon = STATUS_ICON[key] ?? "\u{1F916}";
   const verb =
     key === "terminated" || key === "completed" || key === "done"
-      ? "finished"
+      ? "завершил работу"
       : key === "failed" || key === "error"
-        ? "failed"
-        : key;
+        ? "завершился с ошибкой"
+        : key === "cancelled" || key === "canceled"
+          ? "отменён"
+          : key === "pending" || key === "queued"
+            ? "ожидает запуска"
+            : "выполняется";
   const msg = s.status?.message && !/^running$/i.test(s.status.message) ? ` \u2014 ${trunc(s.status.message, 80)}` : "";
-  return `${icon} Subagent **${label}** ${verb}${msg}`;
+  return `${icon} Дополнительный агент **${label}**: ${verb}${msg}`;
 }
 
 /** A compact summary for the status panel, e.g. "🤖 2 running · 1 pending". */
@@ -64,8 +68,8 @@ export function subagentSummary(subagents: SubagentInfo[], pending: PendingStage
   const pend = pending.length;
   if (running === 0 && pend === 0) return undefined;
   const parts: string[] = [];
-  if (running > 0) parts.push(`${running} running`);
-  if (pend > 0) parts.push(`${pend} pending`);
+  if (running > 0) parts.push(`активных: ${running}`);
+  if (pend > 0) parts.push(`ожидают: ${pend}`);
   return `\u{1F916} ${parts.join(" \u00B7 ")}`;
 }
 

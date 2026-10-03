@@ -65,20 +65,20 @@ export function mergeFileOp(prev: FileOp | undefined, next: FileOp): FileOp {
  * Always returns a line — "No files modified" when nothing changed.
  */
 export function summarizeFileOps(ops: Map<string, FileOp>, cwd: string, maxList = 15): string {
-  if (ops.size === 0) return "\u{1F4C4} No files modified";
+  if (ops.size === 0) return "\u{1F4C4} Файлы не изменены";
 
   const entries = [...ops.entries()].sort(
     (a, b) => ORDER[a[1]] - ORDER[b[1]] || a[0].localeCompare(b[0]),
   );
   const shown = entries.slice(0, maxList).map(([p, op]) => `${SIGN[op]} ${rel(cwd, p)}`);
-  const more = entries.length > maxList ? `\n  \u2026and ${entries.length - maxList} more` : "";
+  const more = entries.length > maxList ? `\n  \u2026и ещё ${entries.length - maxList}` : "";
 
   return `\u{1F4DD} ${countsLine(ops)}\n  ${shown.join("\n  ")}${more}`;
 }
 
 /** Compact, one-line counts (no file list) — used for "other session" pings. */
 export function summarizeFileOpsShort(ops: Map<string, FileOp>): string {
-  return ops.size === 0 ? "\u{1F4C4} No files modified" : `\u{1F4DD} ${countsLine(ops)}`;
+  return ops.size === 0 ? "\u{1F4C4} Файлы не изменены" : `\u{1F4DD} ${countsLine(ops)}`;
 }
 
 /** "+2 created · ~3 edited · −1 deleted" — only the non-zero buckets. */
@@ -86,10 +86,10 @@ function countsLine(ops: Map<string, FileOp>): string {
   const counts: Record<FileOp, number> = { created: 0, edited: 0, deleted: 0, moved: 0 };
   for (const op of ops.values()) counts[op]++;
   const parts: string[] = [];
-  if (counts.created) parts.push(`+${counts.created} created`);
-  if (counts.edited) parts.push(`~${counts.edited} edited`);
-  if (counts.deleted) parts.push(`\u2212${counts.deleted} deleted`);
-  if (counts.moved) parts.push(`\u2192${counts.moved} moved`);
+  if (counts.created) parts.push(`+${counts.created} создано`);
+  if (counts.edited) parts.push(`~${counts.edited} изменено`);
+  if (counts.deleted) parts.push(`\u2212${counts.deleted} удалено`);
+  if (counts.moved) parts.push(`\u2192${counts.moved} перемещено`);
   return parts.join(" \u00B7 ");
 }
 

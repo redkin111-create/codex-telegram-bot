@@ -38,8 +38,8 @@ export class StatusPanel {
     // Project comes from the live foreground runtime — not the persisted single
     // session — so it always matches the session id shown below, even right
     // after switching between controlled sessions in different projects.
-    const project = rt.projectName || (rt.cwd ? basename(rt.cwd) : "(none)");
-    const session = rt.sessionId ? rt.sessionId.slice(0, 8) : "none";
+    const project = rt.projectName || (rt.cwd ? basename(rt.cwd) : "(не выбран)");
+    const session = rt.sessionId ? rt.sessionId.slice(0, 8) : "нет";
     const meta = rt.contextInfo();
     const ctxPct = meta?.contextUsagePercentage;
     const running = this.registry.controller(chatId).count();
@@ -54,20 +54,20 @@ export class StatusPanel {
     if (progress !== undefined) lines.push(`\u{1F4C8} ${progressBar(progress)}`);
 
     // 2) Activity: state + only the counters that currently apply.
-    const activity: string[] = [rt.isBusy ? "\u23F3 Working" : "\u2705 Idle"];
-    if (rt.queueLength > 0) activity.push(`\u{1F4E5} ${rt.queueLength} queued`);
-    if (running > 1) activity.push(`\u{1F9ED} ${running} sessions`);
-    if (rt.isWatching) activity.push("\u{1F4E1} watching");
+    const activity: string[] = [rt.isBusy ? "\u23F3 Выполняется" : "\u2705 Ожидание"];
+    if (rt.queueLength > 0) activity.push(`\u{1F4E5} в очереди: ${rt.queueLength}`);
+    if (running > 1) activity.push(`\u{1F9ED} сеансов: ${running}`);
+    if (rt.isWatching) activity.push("\u{1F4E1} слежение включено");
     if (subagents) activity.push(`\u{1F465} ${subagents}`);
     lines.push(activity.join(SEP));
 
     // 3) Where: project | session | context usage.
     const loc = [`\u{1F4C1} ${project}`, `\u{1F9F5} ${session}`];
-    if (ctxPct !== undefined) loc.push(`\u{1F4CA} ${ctxPct.toFixed(0)}% context`);
+    if (ctxPct !== undefined) loc.push(`\u{1F4CA} контекст: ${ctxPct.toFixed(0)}%`);
     lines.push(loc.join(SEP));
 
     // 4) How: agent | reasoning | model.
-    lines.push([`\u{1F916} ${s.agent || "default"}`, `\u{1F9E0} ${reasoningLabel(s.reasoning)}`, `\u{1F9E9} ${s.model || "default"}`].join(SEP));
+    lines.push([`\u{1F916} Режим: ${s.agent || "по умолчанию"}`, `\u{1F9E0} Рассуждения: ${reasoningLabel(s.reasoning)}`, `\u{1F9E9} Модель: ${s.model || "по умолчанию"}`].join(SEP));
 
     return lines.join("\n");
   }

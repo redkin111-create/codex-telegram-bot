@@ -17,7 +17,7 @@ export async function showKillConfirm(ctx: Context, deps: BotDeps): Promise<void
   await deps.ephemeral.open(ctx);
   const active = targets(deps);
   if (active.length === 0) {
-    await deps.ephemeral.reply(ctx, "\u2705 No other active Codex sessions to kill.");
+    await deps.ephemeral.reply(ctx, "\u2705 Нет других активных сеансов Codex для остановки.");
     return;
   }
   const list = active
@@ -25,11 +25,11 @@ export async function showKillConfirm(ctx: Context, deps: BotDeps): Promise<void
     .map((s) => `\u2022 ${s.title.slice(0, 40)} (pid ${s.lockPid})`)
     .join("\n");
   const kb = new InlineKeyboard()
-    .text(`\u{1F6D1} Kill ${active.length}`, "killall:confirm")
-    .text("Cancel", "killall:cancel");
+    .text(`\u{1F6D1} Остановить (${active.length})`, "killall:confirm")
+    .text("Отмена", "killall:cancel");
   await deps.ephemeral.reply(
     ctx,
-    `\u{1F6D1} Kill ${active.length} active session(s)?\n${list}\n\n(The bot's own session is excluded.)`,
+    `\u{1F6D1} Остановить активные сеансы (${active.length})?\n${list}\n\nТекущий сеанс бота не затрагивается.`,
     { reply_markup: kb },
   );
 }
@@ -39,7 +39,7 @@ export function registerKill(bot: Bot, deps: BotDeps): void {
 
   bot.callbackQuery("killall:cancel", async (ctx) => {
     await ctx.answerCallbackQuery();
-    await ctx.editMessageText("Cancelled.").catch(() => {});
+    await ctx.editMessageText("Действие отменено.").catch(() => {});
   });
 
   bot.callbackQuery("killall:confirm", async (ctx) => {
@@ -49,6 +49,6 @@ export function registerKill(bot: Bot, deps: BotDeps): void {
     for (const s of active) {
       if (s.lockPid && killPid(s.lockPid)) killed++;
     }
-    await ctx.editMessageText(`\u{1F6D1} Killed ${killed} of ${active.length} active session(s).`).catch(() => {});
+    await ctx.editMessageText(`\u{1F6D1} Остановлено сеансов: ${killed} из ${active.length}.`).catch(() => {});
   });
 }

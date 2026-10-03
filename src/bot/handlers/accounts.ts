@@ -37,40 +37,40 @@ async function view(deps: BotDeps, note?: string): Promise<{ text: string; keybo
   const active = activeKey ? list.find((a) => (a.email || a.key) === activeKey)?.id : undefined;
   const loggedIn = await deps.usage.isLoggedIn().catch(() => false);
 
-  const lines = ["\u{1F465} Codex accounts", ""];
+  const lines = ["\u{1F465} Аккаунты Codex", ""];
   // Always surface who you're signed in as — including an unsaved login.
   if (activeLabel && !active) {
-    lines.push(`\u{1F7E2} Signed in as ${activeLabel}${loggedIn ? "" : " (codex: not logged in)"}`);
-    if (loggedIn) lines.push("  \u2514 Not saved yet \u2014 tap \u201C\u{1F4BE} Save current login\u201D to keep it.");
+    lines.push(`\u{1F7E2} Выполнен вход: ${activeLabel}${loggedIn ? "" : " (в Codex вход не выполнен)"}`);
+    if (loggedIn) lines.push("  \u2514 Аккаунт ещё не сохранён. Нажмите «\u{1F4BE} Сохранить текущий аккаунт».");
     lines.push("");
   }
   if (list.length === 0) {
-    lines.push("No saved accounts yet.", "", "Save the current login below, or add one via /reauth.");
+    lines.push("Сохранённых аккаунтов пока нет.", "", "Сохраните текущий аккаунт или добавьте его командой /reauth.");
   } else {
     for (const a of list) lines.push(accountLine(a, a.id === active));
   }
   const rotate = deps.accounts.autoRotateEnabled();
   lines.push(
     "",
-    `\u{1F501} Auto-rotate on errors: ${rotate ? "ON" : "OFF"}`,
+    `\u{1F501} Переключать аккаунт при ошибках: ${rotate ? "ВКЛ" : "ВЫКЛ"}`,
     rotate
-      ? "  \u2514 If a turn gives up, it cycles through the other accounts once."
-      : "  \u2514 Turns stay on the active account.",
+      ? "  \u2514 Если задача завершится с ошибкой, бот один раз попробует другие аккаунты."
+      : "  \u2514 Задачи продолжат выполняться с текущего аккаунта.",
   );
   if (note) lines.push("", note);
 
   const kb = new InlineKeyboard();
   for (const a of list) {
-    const sw = a.id === active ? `\u2705 ${trim(a.label)} (active)` : `\u{1F504} ${trim(a.label)}`;
+    const sw = a.id === active ? `\u2705 ${trim(a.label)} (текущий)` : `\u{1F504} ${trim(a.label)}`;
     kb.text(sw, a.id === active ? "acct:noop" : `acct:switch:${a.id}`)
       .text("\u270F\uFE0F", `acct:rename:${a.id}`)
       .text("\u{1F5D1}", `acct:del:${a.id}`)
       .row();
   }
-  kb.text("\u{1F4BE} Save current login", "acct:save").text("\u270F\uFE0F Save as\u2026", "acct:saveas").row();
-  kb.text("\u{1F4E5} Import existing", "acct:import").text("\u{1F511} Log in\u2026", "acct:login").row();
-  kb.text(`\u{1F501} Auto-rotate: ${deps.accounts.autoRotateEnabled() ? "ON" : "OFF"}`, "acct:rotate").row();
-  kb.text("\u2716 Close", "acct:close");
+  kb.text("\u{1F4BE} Сохранить текущий аккаунт", "acct:save").text("\u270F\uFE0F Сохранить как…", "acct:saveas").row();
+  kb.text("\u{1F4E5} Импортировать", "acct:import").text("\u{1F511} Войти…", "acct:login").row();
+  kb.text(`\u{1F501} Автопереключение: ${deps.accounts.autoRotateEnabled() ? "ВКЛ" : "ВЫКЛ"}`, "acct:rotate").row();
+  kb.text("\u2716 Закрыть", "acct:close");
   return { text: lines.join("\n"), keyboard: kb };
 }
 
@@ -92,7 +92,7 @@ async function rerender(ctx: Context, deps: BotDeps, note?: string): Promise<voi
 
 /** Guard: switching/importing touches the shared agent + global credentials. */
 function busyReason(deps: BotDeps): string | undefined {
-  if (deps.acp.hasInflightPrompt()) return "\u23F3 Codex is running a turn — try again when idle (or /cancel first).";
+  if (deps.acp.hasInflightPrompt()) return "\u23F3 Codex занят. Повторите, когда задача завершится, или сначала отправьте /cancel.";
   return undefined;
 }
 
@@ -106,8 +106,8 @@ export function registerAccounts(bot: Bot, deps: BotDeps): void {
     if (chatId === undefined) return;
     const ask =
       mode === "save"
-        ? "\u270F\uFE0F Send a name for the current login (e.g. \u201CWork\u201D or \u201CPersonal\u201D)."
-        : "\u270F\uFE0F Send a new name for this account.";
+        ? "\u270F\uFE0F Отправьте название для текущего аккаунта, например «Работа» или «Личный»."
+        : "\u270F\uFE0F Отправьте новое название аккаунта.";
     const msgId = await deps.ephemeral.reply(ctx, ask);
     pending.set(chatId, { mode, id, promptId: msgId });
   };
@@ -127,13 +127,13 @@ export function registerAccounts(bot: Bot, deps: BotDeps): void {
     try {
       if (p.mode === "rename" && p.id) {
         const meta = deps.accounts.rename(p.id, name);
-        note = meta ? `\u270F\uFE0F Renamed to ${meta.label}` : "That account is no longer saved.";
+        note = meta ? `\u270F\uFE0F Новое название: ${meta.label}` : "Этот аккаунт уже не сохранён.";
       } else if (!(await deps.usage.isLoggedIn())) {
         note = `\u274C ${UNSUPPORTED_LOGIN_HELP}`;
       } else {
         const acct = await deps.usage.account().catch(() => undefined);
         const saved = await deps.accounts.captureCurrent(acct, name);
-        note = `\u{1F4BE} Saved: ${saved.label}`;
+        note = `\u{1F4BE} Сохранено: ${saved.label}`;
       }
     } catch (e) {
       note = `\u274C ${(e as Error).message}`;
@@ -145,7 +145,7 @@ export function registerAccounts(bot: Bot, deps: BotDeps): void {
 
   bot.command("accounts", (ctx) => showAccounts(ctx, deps));
 
-  bot.callbackQuery("acct:noop", (ctx) => ctx.answerCallbackQuery({ text: "Already active" }));
+  bot.callbackQuery("acct:noop", (ctx) => ctx.answerCallbackQuery({ text: "Этот аккаунт уже выбран" }));
 
   bot.callbackQuery("acct:saveas", async (ctx) => {
     await ctx.answerCallbackQuery();
@@ -154,8 +154,8 @@ export function registerAccounts(bot: Bot, deps: BotDeps): void {
 
   bot.callbackQuery("acct:rotate", async (ctx) => {
     const on = deps.accounts.setAutoRotate();
-    await ctx.answerCallbackQuery({ text: `Auto-rotate ${on ? "on" : "off"}` });
-    await rerender(ctx, deps, on ? "\u{1F501} Auto-rotate enabled." : "\u{1F501} Auto-rotate disabled.");
+    await ctx.answerCallbackQuery({ text: `Автопереключение ${on ? "включено" : "выключено"}` });
+    await rerender(ctx, deps, on ? "\u{1F501} Автопереключение включено." : "\u{1F501} Автопереключение выключено.");
   });
 
   bot.callbackQuery(/^acct:rename:(.+)$/, async (ctx) => {
@@ -170,14 +170,14 @@ export function registerAccounts(bot: Bot, deps: BotDeps): void {
 
   bot.callbackQuery("acct:save", async (ctx) => {
     if (!(await deps.usage.isLoggedIn())) {
-      await ctx.answerCallbackQuery({ text: "codex isn't logged in", show_alert: true });
+      await ctx.answerCallbackQuery({ text: "В Codex не выполнен вход", show_alert: true });
       return void rerender(ctx, deps, `\u274C ${UNSUPPORTED_LOGIN_HELP}`);
     }
     try {
       const acct = await deps.usage.account().catch(() => undefined);
       const saved = await deps.accounts.captureCurrent(acct);
-      await ctx.answerCallbackQuery({ text: `Saved ${saved.label}` });
-      await rerender(ctx, deps, `\u{1F4BE} Saved: ${saved.label}`);
+      await ctx.answerCallbackQuery({ text: `Сохранено: ${saved.label}` });
+      await rerender(ctx, deps, `\u{1F4BE} Сохранено: ${saved.label}`);
     } catch (e) {
       await ctx.answerCallbackQuery({ text: (e as Error).message.slice(0, 190), show_alert: true });
     }
@@ -185,30 +185,30 @@ export function registerAccounts(bot: Bot, deps: BotDeps): void {
 
   bot.callbackQuery("acct:login", async (ctx) => {
     await ctx.answerCallbackQuery();
-    await rerender(ctx, deps, "\u{1F511} Run /reauth to log in (ChatGPT or an API key), then tap \u201CSave current login\u201D.");
+    await rerender(ctx, deps, "\u{1F511} Выполните вход командой /reauth (через ChatGPT или ключ API), затем нажмите «Сохранить текущий аккаунт».");
   });
 
   bot.callbackQuery("acct:import", async (ctx) => {
     const reason = busyReason(deps);
     if (reason) return void ctx.answerCallbackQuery({ text: reason, show_alert: true });
-    await ctx.answerCallbackQuery({ text: "Importing\u2026" });
-    await ctx.editMessageText("\u{1F4E5} Importing your existing Codex login\u2026").catch(() => {});
+    await ctx.answerCallbackQuery({ text: "Импортирую…" });
+    await ctx.editMessageText("\u{1F4E5} Импортирую текущий аккаунт Codex…").catch(() => {});
     const res = await auth.importExisting();
-    if (!res.ok) return void rerender(ctx, deps, `\u274C ${res.error ?? "Import failed."}`);
+    if (!res.ok) return void rerender(ctx, deps, `\u274C ${res.error ?? "Не удалось импортировать аккаунт."}`);
     try {
       await deps.acp.restart();
     } catch (e) {
-      return void rerender(ctx, deps, `\u26A0\uFE0F Imported, but agent restart failed: ${(e as Error).message}`);
+      return void rerender(ctx, deps, `\u26A0\uFE0F Аккаунт импортирован, но Codex не удалось перезапустить: ${(e as Error).message}`);
     }
     // Confirm codex actually accepts the imported login before saving it.
     if (!(await deps.usage.isLoggedIn())) {
       return void rerender(ctx, deps, `\u274C ${UNSUPPORTED_LOGIN_HELP}`);
     }
     const acct = await deps.usage.account().catch(() => undefined);
-    let note = "\u2705 Imported the existing Codex login.";
+    let note = "\u2705 Текущий аккаунт Codex импортирован.";
     try {
       const saved = await deps.accounts.captureCurrent(acct);
-      note = `\u2705 Imported & saved ${saved.label}.`;
+      note = `\u2705 Импортирован и сохранён аккаунт ${saved.label}.`;
     } catch {
       /* capture is best-effort */
     }
@@ -219,17 +219,17 @@ export function registerAccounts(bot: Bot, deps: BotDeps): void {
     const id = ctx.match![1]!;
     const reason = busyReason(deps);
     if (reason) return void ctx.answerCallbackQuery({ text: reason, show_alert: true });
-    await ctx.answerCallbackQuery({ text: "Switching\u2026" });
+    await ctx.answerCallbackQuery({ text: "Переключаю…" });
     try {
       // Don't lose the current login: snapshot it before overwriting (dedupes).
       await deps.accounts.captureCurrent(await deps.usage.account().catch(() => undefined)).catch(() => {});
       const meta = deps.accounts.get(id);
-      if (!meta) throw new Error("That account is no longer saved.");
-      await ctx.editMessageText(`\u{1F504} Switching to ${meta.label}\u2026 restarting agent`).catch(() => {});
+      if (!meta) throw new Error("Этот аккаунт уже не сохранён.");
+      await ctx.editMessageText(`\u{1F504} Переключаюсь на ${meta.label} и перезапускаю Codex…`).catch(() => {});
       const loggedIn = await deps.accountRotator.runExclusive(id, () => deps.usage.isLoggedIn());
       const note = loggedIn
-        ? `\u2705 Now signed in as ${meta.label}. Your session re-binds on the next message.`
-        : `\u26A0\uFE0F Switched to ${meta.label}, but codex reports it's not logged in. ${UNSUPPORTED_LOGIN_HELP}`;
+        ? `\u2705 Выбран аккаунт ${meta.label}. Сеанс подключится при следующем сообщении.`
+        : `\u26A0\uFE0F Выбран аккаунт ${meta.label}, но Codex сообщает, что вход не выполнен. ${UNSUPPORTED_LOGIN_HELP}`;
       await rerender(ctx, deps, note);
     } catch (e) {
       log.warn("account switch failed:", (e as Error).message);
@@ -241,7 +241,7 @@ export function registerAccounts(bot: Bot, deps: BotDeps): void {
     const id = ctx.match![1]!;
     const meta = deps.accounts.get(id);
     await deps.accounts.forget(id);
-    await ctx.answerCallbackQuery({ text: meta ? `Removed ${meta.label}` : "Removed" });
+    await ctx.answerCallbackQuery({ text: meta ? `Удалён аккаунт ${meta.label}` : "Аккаунт удалён" });
     await rerender(ctx, deps);
   });
 }

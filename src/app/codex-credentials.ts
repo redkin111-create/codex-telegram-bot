@@ -18,9 +18,8 @@ const log = createLogger("codex-cred");
 
 /** Guidance shown when a login can't be verified. */
 export const UNSUPPORTED_LOGIN_HELP =
-  "Codex reports no active login. Sign in with an OpenAI API key (send it here), " +
-  "or run `codex login` in a terminal on the machine hosting the bot to sign in " +
-  "with ChatGPT, then use /accounts \u2192 Save current login.";
+  "Codex сообщает, что вход не выполнен. Отправьте сюда ключ API OpenAI или выполните `codex login` " +
+  "через терминал на компьютере с ботом, чтобы войти через ChatGPT. Затем сохраните аккаунт командой /accounts.";
 
 /** Resolved CODEX_HOME. */
 export function codexHomeDir(): string {

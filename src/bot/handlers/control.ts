@@ -16,11 +16,11 @@ export function registerControl(bot: Bot, deps: BotDeps): void {
     const rt = deps.registry.get(ctx.chat.id);
     const agent = deps.acp.agentInfo;
     const lines = [
-      "\u{1F44B} Welcome! I bridge Telegram to Codex CLI over the app-server protocol.",
-      agent?.name ? `Connected to ${agent.name} ${agent.version ?? ""}`.trim() : "",
+      "\u{1F44B} Добро пожаловать! Я связываю Telegram с Codex на этом компьютере.",
+      agent?.name ? `Подключено: ${agent.name} ${agent.version ?? ""}`.trim() : "",
       "",
-      "Tap \u2630 Menu for everything. A live status panel appears while I work",
-      "(\u2630 Menu \u2192 Status shows it anytime). Just send a message to start.",
+      "Нажмите «☰ Меню», чтобы увидеть действия. Пока я работаю, здесь будет статус",
+      "(его можно открыть в меню: «Статус»). Просто отправьте сообщение, чтобы начать.",
     ].filter(Boolean);
     await ctx.reply(lines.join("\n"), { reply_markup: compactKeyboard() });
     await deps.statusPanel.refresh(ctx.chat.id);
@@ -38,15 +38,15 @@ export function registerControl(bot: Bot, deps: BotDeps): void {
   bot.command("status", async (ctx) => {
     const rt = deps.registry.get(ctx.chat.id);
     const lines = [
-      "\u{1F4CA} Status",
-      `Project: ${rt.projectName ?? (basename(rt.cwd) || rt.cwd)}`,
-      `Folder: ${rt.cwd}`,
-      `Session: ${rt.sessionId ?? "(none yet)"}`,
-      `State: ${rt.isBusy ? "\u23F3 working" : "\u2705 idle"}`,
-      `Queued follow-ups: ${rt.queueLength}`,
+      "\u{1F4CA} Статус",
+      `Проект: ${rt.projectName ?? (basename(rt.cwd) || rt.cwd)}`,
+      `Папка: ${rt.cwd}`,
+      `Сеанс: ${rt.sessionId ?? "ещё не создан"}`,
+      `Состояние: ${rt.isBusy ? "\u23F3 выполняется" : "\u2705 ожидание"}`,
+      `Сообщений в очереди: ${rt.queueLength}`,
     ];
     const subagents = deps.registry.subagentSummaryForChat(ctx.chat.id);
-    if (subagents) lines.push(`Subagents: ${subagents}`);
+    if (subagents) lines.push(`Дополнительные агенты: ${subagents}`);
     await ctx.reply(lines.join("\n"));
   });
 
@@ -54,22 +54,22 @@ export function registerControl(bot: Bot, deps: BotDeps): void {
     const rt = deps.registry.get(ctx.chat.id);
     try {
       await deps.registry.controller(ctx.chat.id).addNew(rt.cwd, rt.projectName);
-      await refreshMenu(ctx, deps, `\u2728 New session started in ${rt.projectName ?? rt.cwd}`);
+      await refreshMenu(ctx, deps, `\u2728 Новый сеанс запущен в ${rt.projectName ?? rt.cwd}`);
     } catch (err) {
-      await ctx.reply(`\u274C Could not start session: ${(err as Error).message}`);
+      await ctx.reply(`\u274C Не удалось начать сеанс: ${(err as Error).message}`);
     }
   });
 
   bot.command("cancel", async (ctx) => {
     const rt = deps.registry.get(ctx.chat.id);
     const cancelled = await rt.cancel();
-    await ctx.reply(cancelled ? "\u23F9 Cancelling current turn\u2026" : "Nothing is running.");
+    await ctx.reply(cancelled ? "\u23F9 Останавливаю текущую задачу…" : "Сейчас ничего не выполняется.");
   });
 
   bot.command("btw", async (ctx) => {
     const text = (ctx.match || "").toString().trim();
     if (!text) {
-      await ctx.reply("Usage: /btw <something for the agent to do — now if idle, otherwise next>");
+      await ctx.reply("Напишите задачу после команды: /btw <что нужно сделать>");
       return;
     }
     const rt = deps.registry.get(ctx.chat.id);
@@ -78,25 +78,25 @@ export function registerControl(bot: Bot, deps: BotDeps): void {
     const outcome = await rt.submit(textPrompt(text, undefined, extractReplyContext(ctx)));
     if (outcome === "queued") {
       await ctx.reply(
-        `\u{1F4E5} Queued (position ${rt.queueLength}) \u2014 it'll run automatically as soon as the current task finishes.`,
+        `\u{1F4E5} Добавлено в очередь (место ${rt.queueLength}). Выполню после текущей задачи.`,
       );
     } else {
-      await ctx.reply("\u25B6\uFE0F On it\u2026");
+      await ctx.reply("\u25B6\uFE0F Принято, выполняю…");
     }
   });
 
   bot.command("flush", async (ctx) => {
     const rt = deps.registry.get(ctx.chat.id);
     if (rt.queueLength === 0) {
-      await ctx.reply("Queue is empty.");
+      await ctx.reply("Очередь пуста.");
       return;
     }
     if (rt.isBusy) {
-      await ctx.reply(`\u23F3 ${rt.queueLength} queued \u2014 they'll run automatically when the current turn ends.`);
+      await ctx.reply(`\u23F3 В очереди: ${rt.queueLength}. Сообщения выполнятся после текущей задачи.`);
       return;
     }
     // Idle: drain the queue by submitting an empty trigger that flushes.
-    await ctx.reply("\u25B6\uFE0F Running queued follow-ups\u2026");
+    await ctx.reply("\u25B6\uFE0F Выполняю сообщения из очереди…");
     const drained = rt.drainQueueToPrompt();
     if (drained) await rt.submit(drained);
   });

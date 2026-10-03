@@ -36,7 +36,7 @@ export function registerDocuments(bot: Bot, deps: BotDeps): void {
 
     const chatId = ctx.chat.id;
     if (deps.wizard.isActive(chatId)) {
-      await ctx.reply("Finish or /cancel the current task wizard before sending files.");
+      await ctx.reply("Сначала завершите создание задачи или отмените его командой /cancel, затем отправьте файл.");
       return;
     }
 
@@ -49,8 +49,8 @@ export function registerDocuments(bot: Bot, deps: BotDeps): void {
     } catch (e) {
       log.warn(`download failed for "${name}":`, (e as Error).message);
       await ctx.reply(
-        `\u274C I couldn't download "${name}": ${(e as Error).message}. ` +
-          `(Telegram bots can fetch files up to 20 MB.)`,
+        `\u274C Не удалось скачать файл «${name}»: ${(e as Error).message}. ` +
+          `(Боты Telegram могут скачивать файлы размером до 20 МБ.)`,
       );
       return;
     }
@@ -78,11 +78,11 @@ export function registerDocuments(bot: Bot, deps: BotDeps): void {
       const rt = deps.registry.get(chatId);
       const outcome = await rt.submit(textPrompt(promptText, replyTo, quoted));
       if (outcome === "queued") {
-        await ctx.reply(`\u{1F4E5} Queued "${name}" \u2014 will run after the current task.`);
+        await ctx.reply(`\u{1F4E5} Файл «${name}» добавлен в очередь и будет обработан после текущей задачи.`);
       }
     } catch (e) {
       log.warn(`submit failed for "${name}":`, (e as Error).message);
-      await ctx.reply(`\u274C Couldn't process "${name}": ${(e as Error).message}`);
+      await ctx.reply(`\u274C Не удалось обработать файл «${name}»: ${(e as Error).message}`);
     }
   });
 }

@@ -32,7 +32,7 @@ export function registerPhotos(bot: Bot, deps: BotDeps): void {
 
     // Don't hijack the task wizard.
     if (deps.wizard.isActive(chatId)) {
-      await ctx.reply("Finish or /cancel the current task wizard before sending images.");
+      await ctx.reply("Сначала завершите создание задачи или отмените его командой /cancel, затем отправьте изображение.");
       return;
     }
 
@@ -97,7 +97,7 @@ async function submit(
   if (outcome === "queued") {
     await deps.api.sendMessage(
       chatId,
-      `\u{1F4E5} Queued ${images.length} image${images.length > 1 ? "s" : ""} \u2014 will run after the current task.`,
+      `\u{1F4E5} Изображений в очереди: ${images.length}. Они будут обработаны после текущей задачи.`,
     );
   }
 }

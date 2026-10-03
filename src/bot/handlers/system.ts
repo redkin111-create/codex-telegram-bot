@@ -8,44 +8,44 @@ export function registerSystem(bot: Bot, deps: BotDeps): void {
   bot.command("queue", async (ctx) => {
     const rt = deps.registry.get(ctx.chat.id);
     if (rt.queueLength === 0) {
-      await ctx.reply("Queue is empty. Send a message while I'm busy, or use /btw <text>.");
+      await ctx.reply("Очередь пуста. Отправьте сообщение, пока бот занят, или используйте /btw <текст>.");
       return;
     }
-    await ctx.reply(`\u{1F4E5} ${rt.queueLength} follow-up(s) queued. They run automatically after the current turn, or use /flush.`);
+    await ctx.reply(`\u{1F4E5} В очереди сообщений: ${rt.queueLength}. Они выполнятся после текущей задачи. Чтобы запустить сразу, используйте /flush.`);
   });
 
   bot.command("clearqueue", async (ctx) => {
     const rt = deps.registry.get(ctx.chat.id);
     const n = rt.clearQueue();
-    await ctx.reply(n > 0 ? `\u{1F5D1} Cleared ${n} queued message(s).` : "Queue was already empty.");
+    await ctx.reply(n > 0 ? `\u{1F5D1} Удалено сообщений из очереди: ${n}.` : "Очередь уже пуста.");
   });
 
   bot.command("model", async (ctx) => {
     const modelId = (ctx.match || "").toString().trim();
     const rt = deps.registry.get(ctx.chat.id);
     if (!modelId) {
-      await ctx.reply("Usage: /model <model-id>  (changes the model for the current session)");
+      await ctx.reply("Укажите модель: /model <название>. Изменение затронет текущий сеанс.");
       return;
     }
     if (!rt.sessionId) {
-      await ctx.reply("No active session yet. Send a message or pick a /projects folder first.");
+      await ctx.reply("Сначала начните сеанс: отправьте сообщение или выберите папку командой /projects.");
       return;
     }
     try {
       await deps.acp.setModel(rt.sessionId, modelId);
-      await ctx.reply(`\u2705 Model set to \`${modelId}\` for this session.`, { parse_mode: "Markdown" });
+      await ctx.reply(`\u2705 Для этого сеанса выбрана модель \`${modelId}\`.`, { parse_mode: "Markdown" });
     } catch (err) {
-      await ctx.reply(`\u274C Could not set model: ${(err as Error).message}`);
+      await ctx.reply(`\u274C Не удалось сменить модель: ${(err as Error).message}`);
     }
   });
 
   bot.command("restart", async (ctx) => {
-    await ctx.reply("\u{1F501} Restarting the Codex agent\u2026");
+    await ctx.reply("\u{1F501} Перезапускаю Codex…");
     try {
       await deps.acp.restart();
-      await ctx.reply("\u2705 Codex agent restarted. Your session will re-bind on the next message.");
+      await ctx.reply("\u2705 Codex перезапущен. Сеанс подключится снова при следующем сообщении.");
     } catch (err) {
-      await ctx.reply(`\u274C Restart failed: ${(err as Error).message}`);
+      await ctx.reply(`\u274C Не удалось перезапустить Codex: ${(err as Error).message}`);
     }
   });
 }

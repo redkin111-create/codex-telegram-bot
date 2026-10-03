@@ -151,8 +151,8 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
 
   bot.callbackQuery(/^perm:(\d+):(\d+)$/, async (ctx) => {
     const label = permissions.resolveChoice(ctx.match![1]!, Number(ctx.match![2]));
-    await ctx.answerCallbackQuery({ text: label ?? "Expired" });
-    await ctx.editMessageText(label ? `\u{1F510} ${label}` : "\u{1F510} (expired)").catch(() => {});
+    await ctx.answerCallbackQuery({ text: label ?? "Срок действия кнопки истёк" });
+    await ctx.editMessageText(label ? `\u{1F510} ${label}` : "\u{1F510} Кнопка устарела").catch(() => {});
   });
 
   bot.callbackQuery(/^permsw:(\d+)$/, async (ctx) => {
@@ -185,7 +185,7 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
   // Never leave old/unknown buttons spinning in Telegram after a menu changes
   // or the process restarts.
   bot.on("callback_query:data", async (ctx) => {
-    await ctx.answerCallbackQuery({ text: "This button expired. Open /menu and try again." }).catch(() => {});
+    await ctx.answerCallbackQuery({ text: "Кнопка устарела. Откройте /menu и попробуйте ещё раз." }).catch(() => {});
   });
 
   bot.catch((err) => {

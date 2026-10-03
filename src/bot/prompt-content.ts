@@ -6,6 +6,9 @@
 import type { ContentBlock } from "../acp/types.js";
 import type { PromptInput } from "../app/types.js";
 
+export const RESPONSE_LANGUAGE_DIRECTIVE =
+  "Пиши пояснения и сообщения пользователю по-русски. Сохраняй исходный язык кода, цитат и контента. Если пользователь явно просит другой язык, выполни просьбу.";
+
 export interface ContentOptions {
   reasoning?: string;
   priming?: string;
@@ -22,16 +25,17 @@ export function buildContentBlocks(input: PromptInput, opts: ContentOptions = {}
 
   let text = input.text.trim();
   if (!text && input.images.length > 0) {
-    text = input.images.length === 1 ? "Please analyze the attached image." : "Please analyze the attached images.";
+    text = input.images.length === 1 ? "Проанализируй приложенное изображение." : "Проанализируй приложенные изображения.";
   }
   if (input.quotedText?.trim()) {
     const quoted = input.quotedText.trim();
-    const body = text || "(the user's reply carried no additional text)";
-    text = `The user is replying to this earlier message:\n\n<<<\n${quoted}\n>>>\n\n${body}`;
+    const body = text || "(в сообщении пользователя нет дополнительного текста)";
+    text = `Пользователь отвечает на это сообщение:\n\n<<<\n${quoted}\n>>>\n\n${body}`;
   }
   if (opts.priming) {
-    text = `${opts.priming}\n\n---\n\nUser's new message:\n${text}`;
+    text = `${opts.priming}\n\n---\n\nНовое сообщение пользователя:\n${text}`;
   }
+  text = `${RESPONSE_LANGUAGE_DIRECTIVE}\n\n${text}`;
   if (opts.reasoning) {
     text = `(${opts.reasoning})\n\n${text}`;
   }

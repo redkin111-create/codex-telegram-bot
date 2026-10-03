@@ -25,7 +25,7 @@ export function registerMenu(bot: Bot, deps: BotDeps): void {
         return showRunning(ctx, deps);
       case STOP_BTN: {
         const rt = deps.registry.get(ctx.chat.id);
-        return void ctx.reply((await rt.cancel()) ? "\u23F9 Cancelling\u2026" : "Nothing is running.");
+        return void ctx.reply((await rt.cancel()) ? "\u23F9 Останавливаю…" : "Сейчас ничего не выполняется.");
       }
     }
   });
@@ -42,15 +42,15 @@ export function registerMenu(bot: Bot, deps: BotDeps): void {
 
   bot.callbackQuery(/^agent:set:(\d+)$/, async (ctx) => {
     const mode = deps.acp.availableModes[Number(ctx.match![1])];
-    if (!mode) return void ctx.answerCallbackQuery({ text: "Expired. Open More → Agent again." });
+    if (!mode) return void ctx.answerCallbackQuery({ text: "Кнопка устарела. Откройте «Ещё» → «Режим» ещё раз." });
     await deps.registry.get(ctx.chat!.id).setAgentPref(mode.id);
-    await confirm(ctx, deps, `\u{1F916} Agent: ${mode.name}`);
+    await confirm(ctx, deps, `\u{1F916} Режим: ${mode.name}`);
   });
 
   bot.callbackQuery(/^reason:(minimal|low|medium|high|max)$/, async (ctx) => {
     const level = ctx.match![1] as ReasoningEffort;
     deps.registry.get(ctx.chat!.id).setReasoningPref(level);
-    await confirm(ctx, deps, `\u{1F9E0} Reasoning: ${reasoningLabel(level)}`);
+    await confirm(ctx, deps, `\u{1F9E0} Уровень рассуждений: ${reasoningLabel(level)}`);
   });
 
   registerInlineCatalog(bot, deps);
@@ -66,12 +66,12 @@ async function dispatchMenu(ctx: Context, deps: BotDeps, action: string): Promis
     case "hidebar":
       await ctx.answerCallbackQuery();
       await ctx.deleteMessage().catch(() => {});
-      return void ctx.reply("\u{1F648} Bar hidden \u2014 send /menu to bring it back.", {
+      return void ctx.reply("\u{1F648} Панель скрыта. Чтобы вернуть её, отправьте /menu.", {
         reply_markup: { remove_keyboard: true },
       });
     case "showbar":
       await ctx.answerCallbackQuery();
-      return void ctx.reply("\u2328\uFE0F Bar restored.", { reply_markup: compactKeyboard() });
+      return void ctx.reply("\u2328\uFE0F Панель восстановлена.", { reply_markup: compactKeyboard() });
     case "project":
       await ctx.answerCallbackQuery();
       return showProjects(ctx, deps);
@@ -118,38 +118,38 @@ async function dispatchMenu(ctx: Context, deps: BotDeps, action: string): Promis
       await ctx.answerCallbackQuery();
       return showMore(ctx, deps);
     case "new":
-      await ctx.answerCallbackQuery({ text: "Starting a new session\u2026" });
+      await ctx.answerCallbackQuery({ text: "Начинаю новый сеанс…" });
       try {
         await deps.registry.controller(chatId).addNew(rt.cwd, rt.projectName);
         await openMainMenu(ctx, deps);
       } catch (e) {
-        await deps.ephemeral.reply(ctx, `\u274C Could not start session: ${(e as Error).message}`);
+        await deps.ephemeral.reply(ctx, `\u274C Не удалось начать сеанс: ${(e as Error).message}`);
       }
       return;
     case "stop":
-      return void ctx.answerCallbackQuery({ text: (await rt.cancel()) ? "Cancelling\u2026" : "Nothing is running" });
+      return void ctx.answerCallbackQuery({ text: (await rt.cancel()) ? "Останавливаю…" : "Сейчас ничего не выполняется" });
     default:
-      return void ctx.answerCallbackQuery({ text: "Unknown menu action. Open /menu again." });
+      return void ctx.answerCallbackQuery({ text: "Неизвестное действие. Откройте меню командой /menu." });
   }
 }
 
 async function showMore(ctx: Context, deps: BotDeps): Promise<void> {
   await deps.ephemeral.open(ctx);
   const kb = new InlineKeyboard()
-    .text("\u{1F9ED} Running sessions", "m:running")
-    .text("\u{1F4C5} Tasks", "m:tasks")
+    .text("\u{1F9ED} Активные сеансы", "m:running")
+    .text("\u{1F4C5} Задачи", "m:tasks")
     .row()
-    .text("\u{1F4B3} Usage", "m:usage")
-    .text("\u{1F465} Accounts", "m:accounts")
+    .text("\u{1F4B3} Использование", "m:usage")
+    .text("\u{1F465} Аккаунты", "m:accounts")
     .row()
-    .text("\u{1F916} Agent mode", "m:agent")
-    .text("\u{1F6D1} Kill other sessions", "m:killall")
+    .text("\u{1F916} Режим работы", "m:agent")
+    .text("\u{1F6D1} Остановить другие сеансы", "m:killall")
     .row()
-    .text("\u2328\uFE0F Show bar", "m:showbar")
-    .text("\u{1F648} Hide bar", "m:hidebar")
+    .text("\u2328\uFE0F Показать панель", "m:showbar")
+    .text("\u{1F648} Скрыть панель", "m:hidebar")
     .row()
-    .text("\u{1F3E0} Main menu", "ui:home");
-  await deps.ephemeral.reply(ctx, "More controls", { reply_markup: kb });
+    .text("\u{1F3E0} Главное меню", "ui:home");
+  await deps.ephemeral.reply(ctx, "Дополнительные действия", { reply_markup: kb });
 }
 
 async function confirm(ctx: Context, deps: BotDeps, text: string): Promise<void> {
@@ -164,15 +164,15 @@ async function showAgentMenu(ctx: Context, deps: BotDeps): Promise<void> {
   await deps.ephemeral.open(ctx);
   const modes = deps.acp.availableModes.slice(0, 60);
   if (modes.length === 0) {
-    await deps.ephemeral.reply(ctx, `Current agent: ${rt.agent || "default"}\nNo collaboration presets were reported by this Codex build.`, {
-      reply_markup: new InlineKeyboard().text("\u{1F3E0} Main menu", "ui:home"),
+    await deps.ephemeral.reply(ctx, `Текущий режим: ${rt.agent || "по умолчанию"}\nВ этой версии Codex нет доступных режимов совместной работы.`, {
+      reply_markup: new InlineKeyboard().text("\u{1F3E0} Главное меню", "ui:home"),
     });
     return;
   }
   const kb = new InlineKeyboard();
   modes.forEach((m, i) => kb.text(`${m.id === rt.agent ? "\u2705 " : ""}${m.name}`, `agent:set:${i}`).row());
-  kb.text("\u{1F3E0} Main menu", "ui:home");
-  await deps.ephemeral.reply(ctx, `Current agent: ${rt.agent || "default"}\nChoose an agent:`, { reply_markup: kb });
+  kb.text("\u{1F3E0} Главное меню", "ui:home");
+  await deps.ephemeral.reply(ctx, `Текущий режим: ${rt.agent || "по умолчанию"}\nВыберите режим:`, { reply_markup: kb });
 }
 
 async function ensureReady(ctx: Context, rt: { prepare: () => Promise<void> }): Promise<void> {

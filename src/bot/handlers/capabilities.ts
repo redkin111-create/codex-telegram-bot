@@ -15,7 +15,7 @@ function boundedList(header: string, lines: string[], empty: string): string {
     length += line.length + 1;
   }
   const omitted = lines.length - kept.length;
-  return `${header}\n\n${kept.join("\n")}${omitted ? `\n\n…and ${omitted} more.` : ""}`;
+  return `${header}\n\n${kept.join("\n")}${omitted ? `\n\n…и ещё ${omitted}.` : ""}`;
 }
 
 export function registerCapabilities(bot: Bot, deps: BotDeps): void {
@@ -24,7 +24,7 @@ export function registerCapabilities(bot: Bot, deps: BotDeps): void {
     await deps.acp.refreshInventories();
     const skills = deps.acp.availableSkills.filter((s) => s.enabled !== false);
     const lines = skills.map((s) => `• ${s.name}${s.description ? ` — ${clip(s.description)}` : ""}`);
-    await ctx.reply(boundedList(`📚 Codex skills (${lines.length})`, lines, "No enabled skills were reported by Codex."));
+    await ctx.reply(boundedList(`📚 Навыки Codex (${lines.length})`, lines, "Codex не сообщил о включённых навыках."));
   });
 
   bot.command("models", async (ctx) => {
@@ -32,18 +32,29 @@ export function registerCapabilities(bot: Bot, deps: BotDeps): void {
     await deps.acp.refreshInventories();
     const current = deps.acp.currentModelId;
     const lines = deps.acp.availableModels.map((m) => `${m.modelId === current ? "✓" : "•"} ${m.name} (${m.modelId})`);
-    await ctx.reply(boundedList(`🧩 Codex models (${lines.length})`, lines, "No models were reported by Codex."));
+    await ctx.reply(boundedList(`🧩 Модели Codex (${lines.length})`, lines, "Codex не сообщил о доступных моделях."));
   });
 
   bot.command("agents", async (ctx) => {
     await ctx.replyWithChatAction("typing").catch(() => {});
     await deps.acp.refreshInventories();
     const modes = deps.acp.availableModes.map((m) => `• ${m.name}${m.description ? ` — ${m.description}` : ""}`);
-    const running = deps.acp.currentSubagents().map((a) => `• ${a.sessionName || a.sessionId.slice(0, 8)} — ${a.status?.type || "unknown"}`);
+    const running = deps.acp.currentSubagents().map((a) => `• ${a.sessionName || a.sessionId.slice(0, 8)} — ${statusLabel(a.status?.type)}`);
     const sections = [
-      modes.length ? `Selectable collaboration modes:\n${modes.join("\n")}` : "No selectable collaboration modes reported.",
-      running.length ? `Active/recent subagents:\n${running.join("\n")}` : "No subagents reported in the current process.",
+      modes.length ? `Доступные режимы:\n${modes.join("\n")}` : "Нет доступных режимов совместной работы.",
+      running.length ? `Активные и недавние агенты:\n${running.join("\n")}` : "В этом процессе нет дополнительных агентов.",
     ];
-    await ctx.reply(boundedList("🤖 Codex agents", sections, "No agent data was reported by Codex."));
+    await ctx.reply(boundedList("🤖 Режимы и агенты Codex", sections, "Codex не сообщил данные о режимах и агентах."));
   });
+}
+
+function statusLabel(status?: string): string {
+  switch (status?.toLowerCase()) {
+    case "working": case "running": return "выполняется";
+    case "pending": case "queued": return "в очереди";
+    case "completed": case "done": case "terminated": return "завершён";
+    case "failed": case "error": return "ошибка";
+    case "cancelled": case "canceled": return "отменён";
+    default: return "неизвестно";
+  }
 }

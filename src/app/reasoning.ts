@@ -6,19 +6,19 @@
 import type { ReasoningEffort } from "./types.js";
 
 const DIRECTIVE: Record<ReasoningEffort, string> = {
-  minimal: "Answer directly and briefly with minimal deliberation.",
-  low: "Keep reasoning light; prefer a quick, concise solution.",
+  minimal: "Отвечай прямо и кратко, не трать время на лишние рассуждения.",
+  low: "Рассуждай кратко; по возможности выбирай быстрое и простое решение.",
   medium: "", // default behaviour — no directive
-  high: "Think carefully and thoroughly before answering; verify your work.",
-  max: "Use maximum rigor: explore edge cases, double-check assumptions, and verify the result before finishing.",
+  high: "Перед ответом тщательно всё обдумай и проверь результат.",
+  max: "Работай предельно тщательно: проверь граничные случаи и предположения, затем перепроверь результат.",
 };
 
 const LABEL: Record<ReasoningEffort, string> = {
-  minimal: "Minimal",
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  max: "Max",
+  minimal: "Минимальный",
+  low: "Низкий",
+  medium: "Средний",
+  high: "Высокий",
+  max: "Максимальный",
 };
 
 export function reasoningDirective(effort: ReasoningEffort): string {

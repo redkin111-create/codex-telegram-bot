@@ -31,8 +31,8 @@ export type LoginMethod = "chatgpt" | "apikey" | "import";
 
 const METHOD_LABEL: Record<LoginMethod, string> = {
   chatgpt: "ChatGPT",
-  apikey: "API key",
-  import: "Import existing login",
+  apikey: "Ключ API",
+  import: "Импортировать аккаунт",
 };
 
 type Phase =
@@ -98,7 +98,7 @@ export class ReauthController {
     if (this.isBusy(chatId)) return;
     let messageId = existingMessageId;
     if (messageId === undefined) {
-      const m = await this.api.sendMessage(chatId, "\u{1F510} Re-authenticate Codex\u2026").catch(() => undefined);
+      const m = await this.api.sendMessage(chatId, "\u{1F510} Вход в Codex…").catch(() => undefined);
       if (!m) return;
       messageId = m.message_id;
     }
@@ -134,7 +134,7 @@ export class ReauthController {
     if (!s || s.phase !== "apikey_input") return;
     const key = text.trim();
     if (!/^sk-[A-Za-z0-9_-]{10,}$/.test(key)) {
-      s.errorMsg = "That doesn't look like an OpenAI API key (should start with `sk-`). Send it again.";
+      s.errorMsg = "Похоже, это не ключ API OpenAI. Он должен начинаться с `sk-`. Отправьте ключ ещё раз.";
       s.lastText = undefined;
       await this.render(s);
       return;
@@ -147,7 +147,7 @@ export class ReauthController {
   async cancelChoice(chatId: number, messageId: number): Promise<void> {
     const s = this.sessions.get(chatId);
     if (s && (s.phase === "choosing" || s.phase === "apikey_input")) this.sessions.delete(chatId);
-    await this.api.editMessageText(chatId, messageId, "\u{1F510} Re-authentication cancelled.").catch(() => {});
+    await this.api.editMessageText(chatId, messageId, "\u{1F510} Вход отменён.").catch(() => {});
   }
 
   /** Start (or restart) the flow. Reuses `existingMessageId` for the Retry button. */
@@ -155,19 +155,19 @@ export class ReauthController {
     if (this.isBusy(chatId)) return;
     if (this.anyActive()) {
       await this.api
-        .sendMessage(chatId, "\u{1F510} A re-authentication is already in progress in another chat — try again shortly.")
+        .sendMessage(chatId, "\u{1F510} В другом чате уже выполняется вход. Попробуйте немного позже.")
         .catch(() => {});
       return;
     }
     if (this.acp.hasInflightPrompt()) {
       await this.api
-        .sendMessage(chatId, "\u23F3 Codex is busy running a turn — try /reauth when idle (or /cancel first).")
+        .sendMessage(chatId, "\u23F3 Codex занят. Повторите /reauth после завершения задачи или сначала отправьте /cancel.")
         .catch(() => {});
       return;
     }
     let messageId = existingMessageId;
     if (messageId === undefined) {
-      const m = await this.api.sendMessage(chatId, "\u{1F510} Re-authenticating Codex\u2026").catch(() => undefined);
+      const m = await this.api.sendMessage(chatId, "\u{1F510} Выполняю вход в Codex…").catch(() => undefined);
       if (!m) return;
       messageId = m.message_id;
     }
@@ -236,7 +236,7 @@ export class ReauthController {
         const res = await this.auth.importExisting();
         if (!res.ok) {
           s.phase = "failed_login";
-          s.errorMsg = res.error ?? "No importable Codex login found.";
+          s.errorMsg = res.error ?? "Не найден аккаунт Codex для импорта.";
           return;
         }
         const up = await this.finishWithRestart(s);
@@ -282,7 +282,7 @@ export class ReauthController {
       }
       if (!result.ok) {
         s.phase = "failed_login";
-        s.errorMsg = result.error ?? `Login did not complete (exit ${result.code ?? "?"}).`;
+        s.errorMsg = result.error ?? `Вход не завершён (код завершения: ${result.code ?? "?"}).`;
         return;
       }
 
@@ -313,7 +313,7 @@ export class ReauthController {
       const ok = this.verifyLogin ? await this.verifyLogin().catch(() => false) : true;
       if (!ok) {
         s.phase = "failed_login";
-        s.errorMsg = "Codex still reports no active login. Try another method.";
+        s.errorMsg = "Codex сообщает, что вход не выполнен. Попробуйте другой способ.";
         return true; // agent restarted fine; the login just didn't take
       }
       s.accountLabel = accountLabel(await this.getAccount?.().catch(() => undefined));
@@ -362,48 +362,48 @@ export class ReauthController {
     switch (s.phase) {
       case "choosing":
         return (
-          "\u{1F510} Re-authenticate Codex\nChoose how you want to log in:\n\n" +
-          "\u{1F4AC} ChatGPT \u2014 opens a browser link to approve.\n" +
-          "\u{1F511} API key \u2014 send your OpenAI `sk-...` key.\n" +
-          "\u{1F4E5} Import \u2014 reuse a `codex login` already on this machine."
+          "\u{1F510} Вход в Codex\nВыберите способ входа:\n\n" +
+          "\u{1F4AC} ChatGPT \u2014 откроется ссылка для подтверждения в браузере.\n" +
+          "\u{1F511} Ключ API \u2014 отправьте ключ OpenAI вида `sk-...`.\n" +
+          "\u{1F4E5} Импорт \u2014 использовать аккаунт Codex, уже сохранённый на этом компьютере."
         );
       case "apikey_input":
         return (
-          "\u{1F511} Sign in with an OpenAI API key\n\n" +
-          "Send your key in a message (it starts with `sk-`). It's used only to run " +
-          "`codex login --api-key` on this machine and is never stored by the bot." +
+          "\u{1F511} Вход с ключом API OpenAI\n\n" +
+          "Отправьте ключ сообщением (он начинается с `sk-`). Он будет использован только для команды " +
+          "`codex login --api-key` на этом компьютере и не сохраняется ботом." +
           (s.errorMsg ? `\n\n\u26A0\uFE0F ${s.errorMsg}` : "")
         );
       case "logout":
-        return `\u{1F510} Re-authenticating Codex\u2026\n\u{1F6AA} Signing out\u2026  ${loader}`;
+        return `\u{1F510} Вход в Codex…\n\u{1F6AA} Выполняю выход…  ${loader}`;
       case "login": {
-        if (s.method === "import") return `\u{1F4E5} Importing your existing Codex login\u2026  ${loader}`;
-        if (s.method === "apikey") return `\u{1F511} Signing in with your API key\u2026  ${loader}`;
-        const lines = ["\u{1F511} ChatGPT login", ""];
-        if (s.url) lines.push(`\u{1F517} Open this link to approve:\n${s.url}`, "");
-        if (s.code) lines.push(`\u{1F522} Verification code: ${s.code}`, "");
-        if (!s.url && !s.code) lines.push("Starting login\u2026", "");
-        else lines.push("Approve it in the browser, then this updates automatically.", "");
-        lines.push(`${loader} Waiting for approval\u2026`);
+        if (s.method === "import") return `\u{1F4E5} Импортирую аккаунт Codex…  ${loader}`;
+        if (s.method === "apikey") return `\u{1F511} Вхожу с ключом API…  ${loader}`;
+        const lines = ["\u{1F511} Вход через ChatGPT", ""];
+        if (s.url) lines.push(`\u{1F517} Откройте ссылку для подтверждения:\n${s.url}`, "");
+        if (s.code) lines.push(`\u{1F522} Код подтверждения: ${s.code}`, "");
+        if (!s.url && !s.code) lines.push("Начинаю вход…", "");
+        else lines.push("Подтвердите вход в браузере. Сообщение обновится автоматически.", "");
+        lines.push(`${loader} Ожидаю подтверждения…`);
         return lines.join("\n");
       }
       case "restarting":
-        return `\u2705 Logged in.\n\u{1F504} Restarting the Codex agent\u2026  ${loader}`;
+        return `\u2705 Вход выполнен.\n\u{1F504} Перезапускаю Codex…  ${loader}`;
       case "done":
         return (
-          `\u2705 Re-authenticated${s.accountLabel ? ` as ${s.accountLabel}` : ""} and agent restarted.\n` +
-          "Your session re-binds on the next message." +
-          (s.accountLabel ? "" : "\n(Tip: /usage shows the active account.)")
+          `\u2705 Вход выполнен${s.accountLabel ? `: ${s.accountLabel}` : ""}, Codex перезапущен.\n` +
+          "Сеанс подключится при следующем сообщении." +
+          (s.accountLabel ? "" : "\nТекущий аккаунт можно посмотреть командой /usage.")
         );
       case "cancelled":
-        return "\u{1F6D1} Login cancelled \u2014 you're signed out. Tap Retry, or Change method to pick another.";
+        return "\u{1F6D1} Вход отменён, аккаунт отключён. Нажмите «Повторить» или выберите другой способ.";
       case "failed_login":
         return (
-          `\u274C ${s.errorMsg ?? "Login failed."}\n` +
-          "Tap Retry to try the same method again, or Change method to pick another."
+          `\u274C ${s.errorMsg ?? "Не удалось выполнить вход."}\n` +
+          "Нажмите «Повторить» или выберите другой способ входа."
         );
       case "failed_restart":
-        return `\u26A0\uFE0F Logged in, but the agent restart failed: ${s.errorMsg ?? "unknown error"}.`;
+        return `\u26A0\uFE0F Вход выполнен, но не удалось перезапустить Codex: ${s.errorMsg ?? "неизвестная ошибка"}.`;
       default:
         return "";
     }
@@ -415,26 +415,26 @@ export class ReauthController {
         return new InlineKeyboard()
           .text("\u{1F4AC} ChatGPT", "reauth:method:chatgpt")
           .row()
-          .text("\u{1F511} API key", "reauth:method:apikey")
-          .text("\u{1F4E5} Import existing", "reauth:method:import")
+          .text("\u{1F511} Ключ API", "reauth:method:apikey")
+          .text("\u{1F4E5} Импортировать", "reauth:method:import")
           .row()
-          .text("\u274C Cancel", "reauth:choose-cancel");
+          .text("\u274C Отмена", "reauth:choose-cancel");
       case "apikey_input":
         return new InlineKeyboard()
-          .text("\u2B05 Back", "reauth:choose-back")
-          .text("\u274C Cancel", "reauth:choose-cancel");
+          .text("\u2B05 Назад", "reauth:choose-back")
+          .text("\u274C Отмена", "reauth:choose-cancel");
       case "logout":
       case "login":
-        return new InlineKeyboard().text("\u274C Cancel", "reauth:cancel");
+        return new InlineKeyboard().text("\u274C Отмена", "reauth:cancel");
       case "cancelled":
       case "failed_login":
         return new InlineKeyboard()
-          .text("\u{1F501} Retry", "reauth:retry")
-          .text("\u{1F504} Change method", "reauth:choose-back");
+          .text("\u{1F501} Повторить", "reauth:retry")
+          .text("\u{1F504} Другой способ", "reauth:choose-back");
       case "failed_restart":
         return new InlineKeyboard()
-          .text("\u{1F504} Restart agent", "reauth:restart")
-          .text("\u{1F501} Retry login", "reauth:retry");
+          .text("\u{1F504} Перезапустить Codex", "reauth:restart")
+          .text("\u{1F501} Повторить вход", "reauth:retry");
       default:
         return undefined;
     }

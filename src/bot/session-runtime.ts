@@ -52,10 +52,10 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  * work (which is why we resume rather than re-send the original prompt).
  */
 const RESUME_INSTRUCTION =
-  "Your previous response was interrupted by a transient service error (the model stream was throttled), " +
-  "so your last turn did not finish. Continue from exactly where you stopped and complete the response. " +
-  "Do NOT repeat any file edits, commands, or other tool calls you already completed — their results are " +
-  "already in this conversation. If you had already fully answered, just briefly conclude.";
+  "Предыдущий ответ прервался из-за временной ошибки сервиса, поэтому задача не завершилась. " +
+  "Продолжи ровно с того места, где остановился, и закончи ответ. " +
+  "Не повторяй уже выполненные изменения файлов, команды и вызовы инструментов: их результаты есть в истории. " +
+  "Если ответ уже был полностью готов, кратко подведи итог.";
 
 export class SessionRuntime {
   sessionId: string | undefined;
@@ -467,8 +467,8 @@ export class SessionRuntime {
     if (this.foreground) {
       await this.notify(
         transcript
-          ? "\u{1F517} Couldn't reopen the previous session, so I started a linked continuation primed with the recent transcript \u2014 we can keep going from where we left off."
-          : "\u{1F517} Couldn't reopen the previous session, so I started a fresh one here.",
+          ? "\u{1F517} Не удалось открыть прежний сеанс, поэтому я создал связанный новый сеанс с недавней историей. Можно продолжать с того же места."
+          : "\u{1F517} Не удалось открыть прежний сеанс, поэтому я создал новый.",
       );
     }
   }
@@ -543,10 +543,10 @@ export class SessionRuntime {
     } catch (err) {
       // Unexpected failure outside the prompt path (e.g. while finalizing).
       await this.streamer?.finalize().catch(() => {});
-      const msg = `\u274C Error after ${fmtDuration(Date.now() - startedAt)}: ${(err as Error).message}`;
+      const msg = `\u274C Ошибка после ${fmtDuration(Date.now() - startedAt)}: ${(err as Error).message}`;
       this.lastCompletion = msg;
       if (this.foreground || this.cfg.notifyOtherSessions) {
-        const from = this.foreground ? "" : `\u{1F4E8} From other session ${this.sessionTag()}\n`;
+        const from = this.foreground ? "" : `\u{1F4E8} Из другого сеанса ${this.sessionTag()}\n`;
         await this.notify(`${from}${msg}`, { loud: true, replyTo: this.turnReplyTo, replyMarkup: this.switchKeyboard() });
       }
     } finally {
@@ -632,10 +632,10 @@ export class SessionRuntime {
     const transcript = recentTranscript(this.cfg.sessionsDir, lostId);
     if (this.foreground) {
       const reason = contextRelated
-        ? "That session's context looks full \u2014 compacting into a fresh continuation and retrying"
-        : "That session looks exhausted or stuck \u2014 forking a fresh continuation and retrying";
+        ? "Похоже, контекст сеанса заполнен. Создаю продолжение и повторяю задачу"
+        : "Похоже, сеанс завис или исчерпал ресурсы. Создаю продолжение и повторяю задачу";
       await this.notify(
-        `\u26A0\uFE0F ${outcome.error.message}\n\n\u{1F517} ${reason}${transcript ? " (primed with the recent transcript)" : ""}\u2026`,
+          `\u26A0\uFE0F ${outcome.error.message}\n\n\u{1F517} ${reason}${transcript ? " (добавлена недавняя история)" : ""}…`,
         { replyTo: this.turnReplyTo },
       );
     }
@@ -680,13 +680,13 @@ export class SessionRuntime {
     if (targets.length === 0) return undefined;
 
     const transcript = this.sessionId ? recentTranscript(this.cfg.sessionsDir, this.sessionId) : undefined;
-    const errors: string[] = [`\u2022 previous: ${final.error.message}`];
+    const errors: string[] = [`\u2022 предыдущая попытка: ${final.error.message}`];
     let last = final;
 
     for (const t of targets) {
       if (this.cancelled) return last;
       if (this.foreground) {
-        await this.notify(`\u{1F501} Auto-rotating accounts \u2014 trying ${t.label}\u2026`, { replyTo: this.turnReplyTo });
+        await this.notify(`\u{1F501} Переключаю аккаунт и пробую ${t.label}…`, { replyTo: this.turnReplyTo });
       }
       try {
         last = await rotator.runExclusive(t.id, async () => {
@@ -703,19 +703,19 @@ export class SessionRuntime {
           return this.runPromptWithRetries(content);
         });
       } catch (e) {
-        errors.push(`\u2022 ${t.label}: couldn't switch or run \u2014 ${(e as Error).message}`);
+        errors.push(`\u2022 ${t.label}: не удалось переключиться или выполнить задачу \u2014 ${(e as Error).message}`);
         continue;
       }
       if (last.result && !this.cancelled) {
-        if (this.foreground) await this.notify(`\u2705 Recovered on ${t.label}.`, { replyTo: this.turnReplyTo });
+        if (this.foreground) await this.notify(`\u2705 Задача выполнена с аккаунтом ${t.label}.`, { replyTo: this.turnReplyTo });
         return last;
       }
       if (this.cancelled || (this.streamer?.hasOutput ?? false)) return last;
-      errors.push(`\u2022 ${t.label}: ${last.error?.message ?? "failed"}`);
+      errors.push(`\u2022 ${t.label}: ${last.error?.message ?? "ошибка"}`);
     }
 
     // One full cycle done and still failing — stop with a combined report.
-    const combined = new Error(`Tried ${targets.length + 1} account(s), all failed:\n${errors.join("\n")}`);
+    const combined = new Error(`Проверено аккаунтов: ${targets.length + 1}. Все попытки завершились ошибкой:\n${errors.join("\n")}`);
     return { error: combined, attempts: last.attempts };
   }
 
@@ -815,7 +815,7 @@ export class SessionRuntime {
       const waitMs = delays[i]!;
       if (this.foreground) {
         await this.notify(
-          `\u26A0\uFE0F ${last.error!.message}\n\n\u{1F501} The reply was cut off mid-stream \u2014 resuming in ${fmtSeconds(waitMs)} (attempt ${i + 1} of ${delays.length})\u2026`,
+          `\u26A0\uFE0F ${last.error!.message}\n\n\u{1F501} Ответ оборвался. Продолжу через ${fmtSeconds(waitMs)} (попытка ${i + 1} из ${delays.length})…`,
           { replyTo: this.turnReplyTo },
         );
       }
@@ -863,24 +863,24 @@ export class SessionRuntime {
       // the Done line when there was no response to tag (tool-only / no output).
       return streamedOutput ? base : `${base}\n\n${tags}`;
     }
-    return `\u{1F4E8} From other session ${this.sessionTag()}\n${head}\n${summarizeFileOpsShort(this.fileOps)}\n\n${tags}`;
+    return `\u{1F4E8} Из другого сеанса ${this.sessionTag()}\n${head}\n${summarizeFileOpsShort(this.fileOps)}\n\n${tags}`;
   }
 
   /** The compact one-line status of a finished turn (no "end_turn" noise). */
   private doneHead(stopReason: string | undefined, startedAt: number, streamedOutput: boolean): string {
     const elapsed = fmtDuration(Date.now() - startedAt);
-    if (this.cancelled || stopReason === "cancelled") return `\u23F9 Stopped \u00B7 ${elapsed}`;
-    const reason = stopReason && stopReason !== "end_turn" ? ` \u00B7 ${stopReason}` : "";
+    if (this.cancelled || stopReason === "cancelled") return `\u23F9 Остановлено \u00B7 ${elapsed}`;
+    const reason = stopReason && stopReason !== "end_turn" ? ` \u00B7 ${translateStopReason(stopReason)}` : "";
     const meta = this.contextInfo();
     const ctx = meta?.contextUsagePercentage;
-    const ctxStr = ctx !== undefined ? ` \u00B7 ctx ${ctx.toFixed(0)}%` : "";
+    const ctxStr = ctx !== undefined ? ` \u00B7 контекст ${ctx.toFixed(0)}%` : "";
     // Credits consumed this turn — only shown when the agent actually reports it
     // (not part of ACP today; degrades to nothing rather than guessing).
     const credits = meta?.credits;
     const creditStr = credits !== undefined ? ` \u00B7 \u{1FA99} ${fmtCredits(credits)}` : "";
     // Only claim "no text output" when we were actually streaming (foreground).
-    const noOut = this.foreground && !streamedOutput ? " \u00B7 no text output" : "";
-    return `\u2705 Done${reason} \u00B7 ${elapsed}${ctxStr}${creditStr}${noOut}`;
+    const noOut = this.foreground && !streamedOutput ? " \u00B7 текстового ответа нет" : "";
+    return `\u2705 Готово${reason} \u00B7 ${elapsed}${ctxStr}${creditStr}${noOut}`;
   }
 
   /** Build the turn-failed message and record `lastCompletion`. */
@@ -891,12 +891,12 @@ export class SessionRuntime {
     this.lastCompletion = `${summary}${files}\n\n${tags}`;
     if (this.foreground) return this.lastCompletion;
     const shortFiles = this.fileOps.size > 0 ? `\n${summarizeFileOpsShort(this.fileOps)}` : "";
-    return `\u{1F4E8} From other session ${this.sessionTag()}\n${summary}${shortFiles}\n\n${tags}`;
+    return `\u{1F4E8} Из другого сеанса ${this.sessionTag()}\n${summary}${shortFiles}\n\n${tags}`;
   }
 
   /** "[project · 1a2b3c4d]" — identifies which background session a ping is from. */
   private sessionTag(): string {
-    const name = this.projectName || basename(this.cwd) || "session";
+    const name = this.projectName || basename(this.cwd) || "сеанс";
     const id = this.sessionId ? ` \u00B7 ${this.sessionId.slice(0, 8)}` : "";
     return `[${name}${id}]`;
   }
@@ -906,7 +906,7 @@ export class SessionRuntime {
    *  are already in view, so they get no button. */
   private switchKeyboard(): InlineKeyboard | undefined {
     if (this.foreground || !this.sessionId) return undefined;
-    return new InlineKeyboard().text("\u{1F500} Switch to this session", `run:switch:${this.sessionId}`);
+    return new InlineKeyboard().text("\u{1F500} Перейти к этому сеансу", `run:switch:${this.sessionId}`);
   }
 
   /** Searchable Telegram hashtags so you can pull up every message of a session
@@ -922,7 +922,7 @@ export class SessionRuntime {
   private async flushQueue(): Promise<void> {
     if (this.queue.length === 0 || this.busy) return;
     const batch = mergeInputs(this.queue.splice(0, this.queue.length));
-    if (this.foreground) await this.notify("\u25B6\uFE0F Processing queued message\u2026");
+    if (this.foreground) await this.notify("\u25B6\uFE0F Выполняю сообщение из очереди…");
     void this.runTurn(batch);
   }
 
@@ -1027,17 +1027,27 @@ export class SessionRuntime {
 /** Format an elapsed duration compactly (e.g. "8s", "2m 13s", "1h 4m"). */
 function fmtDuration(ms: number): string {
   const s = Math.round(ms / 1000);
-  if (s < 60) return `${s}s`;
+  if (s < 60) return `${s} с`;
   const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${s % 60}s`;
-  return `${Math.floor(m / 60)}h ${m % 60}m`;
+  if (m < 60) return `${m} мин. ${s % 60} с`;
+  return `${Math.floor(m / 60)} ч. ${m % 60} мин.`;
 }
 
 /** Format a credits/cost figure compactly (drops noise decimals). */
 function fmtCredits(n: number): string {
   if (!Number.isFinite(n)) return String(n);
-  if (Number.isInteger(n)) return n.toLocaleString("en-US");
+  if (Number.isInteger(n)) return n.toLocaleString("ru-RU");
   return n.toFixed(2);
+}
+
+function translateStopReason(reason: string): string {
+  const labels: Record<string, string> = {
+    max_tokens: "достигнут предел ответа",
+    length: "достигнут предел ответа",
+    tool_calls: "вызовы инструментов завершены",
+    cancelled: "отменено",
+  };
+  return labels[reason.toLowerCase()] ?? reason;
 }
 
 /** Convenience for callers that only have text. */

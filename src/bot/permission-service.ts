@@ -22,6 +22,10 @@ const KIND_ICON: Record<string, string> = {
   move: "\u{1F4E6}",
   fetch: "\u{1F310}",
 };
+const KIND_LABEL: Record<string, string> = {
+  read: "Чтение", edit: "Изменение", execute: "Запуск команды",
+  delete: "Удаление", move: "Перемещение", fetch: "Загрузка",
+};
 
 interface Pending {
   resolve: (o: PermissionOutcome) => void;
@@ -60,7 +64,7 @@ export class PermissionService {
     const kb = new InlineKeyboard();
     params.options.forEach((o, i) => kb.text(buttonLabel(o), `perm:${reqId}:${i}`));
     kb.row();
-    if (canSwitch) kb.text(`\u{1F500} Switch to ${label}`, `permsw:${reqId}`);
+    if (canSwitch) kb.text(`\u{1F500} Перейти к ${label}`, `permsw:${reqId}`);
 
     let messageId: number | undefined;
     try {
@@ -81,7 +85,7 @@ export class PermissionService {
     return new Promise<PermissionOutcome>((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(reqId);
-        void this.api.editMessageText(chatId, messageId!, "\u231B Approval timed out \u2014 denied.").catch(() => {});
+        void this.api.editMessageText(chatId, messageId!, "\u231B Время ожидания истекло. Действие отклонено.").catch(() => {});
         resolve({ outcome: { outcome: "cancelled" } });
       }, TIMEOUT_MS);
       this.pending.set(reqId, { resolve, options: params.options, chatId, sessionId: params.sessionId, messageId, timer });
@@ -100,7 +104,7 @@ export class PermissionService {
       return undefined;
     }
     p.resolve({ outcome: { outcome: "selected", optionId: opt.optionId } });
-    return opt.name;
+    return optionLabel(opt.name);
   }
 
   /** The session a pending request belongs to (for the Switch button). */
@@ -116,28 +120,36 @@ function describe(
   const tc = params.toolCall;
   const kind = (tc?.kind || "other").toLowerCase();
   const icon = KIND_ICON[kind] ?? "\u{1F527}";
-  const title = tc?.title || kind;
+  const title = tc?.title || KIND_LABEL[kind] || kind;
   const raw = (tc?.rawInput || {}) as Record<string, unknown>;
   const cmd = typeof raw.command === "string" ? raw.command : undefined;
   const path = typeof raw.path === "string" ? raw.path : undefined;
   const detail = cmd ? `\n\n$ ${cmd}` : path ? `\n\n${path}` : "";
   const who = ctx.subagent
-    ? `\u{1F916}\u{1F510} Subagent "${ctx.label}" needs approval to run a tool:`
+    ? `\u{1F916}\u{1F510} Дополнительному агенту «${ctx.label}» нужно разрешение на действие:`
     : ctx.label
-      ? `\u{1F510} Session "${ctx.label}" needs approval to run a tool:`
-      : "\u{1F510} Codex wants to run a tool:";
+      ? `\u{1F510} Сеансу «${ctx.label}» нужно разрешение на действие:`
+      : "\u{1F510} Codex запрашивает разрешение на действие:";
   const tail = ctx.canSwitch
-    ? "\n\nApprove here (no switch), or \u{1F500} switch to that session."
+    ? "\n\nРазрешите действие здесь или нажмите \u{1F500}, чтобы перейти к этому сеансу."
     : ctx.subagent
-      ? "\n\nApprove for the subagent to continue?"
-      : "\n\nApprove?";
+      ? "\n\nРазрешить дополнительному агенту продолжить?"
+      : "\n\nРазрешить действие?";
   return `${who}\n${icon} ${title}${detail}${tail}`;
 }
 
 function buttonLabel(o: { name: string; kind?: string }): string {
   const k = `${o.kind ?? ""} ${o.name}`.toLowerCase();
   const icon = /reject|deny|no|cancel/.test(k) ? "\u26D4" : /always|all/.test(k) ? "\u2705\u267E\uFE0F" : "\u2705";
-  return `${icon} ${o.name}`;
+  return `${icon} ${optionLabel(o.name)}`;
+}
+
+function optionLabel(name: string): string {
+  const k = name.toLowerCase();
+  if (/reject|deny|no|cancel/.test(k)) return "Отклонить";
+  if (/always|all/.test(k)) return "Всегда разрешать";
+  if (/allow|approve|yes|once|session/.test(k)) return "Разрешить";
+  return name;
 }
 
 function deny(): PermissionOutcome {

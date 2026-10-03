@@ -34,10 +34,10 @@ export function backoffSchedule(maxRetries: number): number[] {
 /** Human-friendly seconds label, e.g. 6000 → "6s", 90000 → "1m 30s". */
 export function fmtSeconds(ms: number): string {
   const s = Math.round(ms / 1000);
-  if (s < 60) return `${s}s`;
+  if (s < 60) return `${s} с`;
   const m = Math.floor(s / 60);
   const rem = s % 60;
-  return rem ? `${m}m ${rem}s` : `${m}m`;
+  return rem ? `${m} мин. ${rem} с` : `${m} мин.`;
 }
 
 /**
@@ -54,17 +54,17 @@ export function formatRetryNotice(
   return [
     `\u26A0\uFE0F ${error.message}`,
     "",
-    `\u{1F501} Retrying in ${fmtSeconds(waitMs)} \u2014 attempt ${nextAttempt} of ${totalAttempts}\u2026`,
+    `\u{1F501} Повтор через ${fmtSeconds(waitMs)} \u2014 попытка ${nextAttempt} из ${totalAttempts}…`,
   ].join("\n");
 }
 
 /** Final summary shown after all retries are exhausted (or retry was unsafe). */
 export function formatErrorSummary(error: Error, elapsed: string, attempts: number, transient: boolean): string {
   const tip = transient
-    ? "\n\n\u{1F4A1} Try a different model (tap \u{1F9E9} Model or /model <id>), or send again later."
+    ? "\n\n\u{1F4A1} Попробуйте другую модель в меню или укажите её командой /model <название>. Либо повторите запрос позже."
     : "";
   if (attempts <= 1) {
-    return `\u274C Error after ${elapsed}: ${error.message}${tip}`;
+    return `\u274C Ошибка через ${elapsed}: ${error.message}${tip}`;
   }
-  return `\u274C Gave up after ${attempts} attempts over ${elapsed}.\nLast error: ${error.message}${tip}`;
+  return `\u274C Не удалось выполнить задачу за ${attempts} попыток (${elapsed}).\nПоследняя ошибка: ${error.message}${tip}`;
 }

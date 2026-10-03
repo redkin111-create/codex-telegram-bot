@@ -30,12 +30,12 @@ function trunc(s: string, n: number): string {
 /** Compact "time ago" label from an elapsed-milliseconds value. */
 function timeAgo(ms: number): string {
   const s = Math.round(ms / 1000);
-  if (s < 45) return "just now";
+  if (s < 45) return "только что";
   const m = Math.round(s / 60);
-  if (m < 60) return `${m}m ago`;
+  if (m < 60) return `${m} мин. назад`;
   const h = Math.round(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.round(h / 24)}d ago`;
+  if (h < 24) return `${h} ч. назад`;
+  return `${Math.round(h / 24)} дн. назад`;
 }
 
 /** Reduce a stored first prompt to a clean one-liner: drop the leading reasoning
@@ -52,9 +52,9 @@ function cleanPrompt(raw: string): string {
  *  session: Switch / History / Close. */
 function buildRunningCard(s: RunningSession, deps: BotDeps, now: number): { text: string; kb: InlineKeyboard } {
   const dot = s.foreground ? "\u25B6\uFE0F" : s.busy ? "\u{1F7E0}" : "\u26AA";
-  const state = s.foreground ? "foreground" : s.busy ? "working" : "idle";
+  const state = s.foreground ? "текущий" : s.busy ? "выполняется" : "ожидание";
 
-  let when = "new";
+  let when = "новый";
   let prompt = "";
   if (s.sessionId) {
     const path = deps.store.jsonlPath(s.sessionId);
@@ -65,11 +65,11 @@ function buildRunningCard(s: RunningSession, deps: BotDeps, now: number): { text
 
   const meta = [when, state];
   if (s.busy) meta.push("\u23F3");
-  if (s.unread > 0) meta.push(`${s.unread} \u{1F4EC} unread`);
+  if (s.unread > 0) meta.push(`${s.unread} \u{1F4EC} непрочитано`);
 
   const lines = [
     `${dot} ${s.projectName}`,
-    prompt ? `\u{1F4AC} \u201C${trunc(prompt, 120)}\u201D` : "\u{1F4AC} (no messages yet)",
+    prompt ? `\u{1F4AC} \u201C${trunc(prompt, 120)}\u201D` : "\u{1F4AC} сообщений пока нет",
     `\u{1F552} ${meta.join(" \u00B7 ")}`,
   ];
   if (s.progress !== undefined) lines.push(`\u{1F4C8} ${progressBar(s.progress)}`);
@@ -77,12 +77,12 @@ function buildRunningCard(s: RunningSession, deps: BotDeps, now: number): { text
 
   const kb = new InlineKeyboard();
   if (!s.sessionId) {
-    kb.text("\u23F3 starting\u2026", "run:noop");
+    kb.text("\u23F3 Запускается…", "run:noop");
     return { text: lines.join("\n"), kb };
   }
-  if (s.foreground) kb.text("\u25B6\uFE0F Current", "run:noop");
-  else kb.text("\u{1F500} Switch", `run:switch:${s.sessionId}`);
-  kb.text("\u{1F4DC} History", `hist:${s.sessionId}`).text("\u2716 Close", `run:close:${s.sessionId}`);
+  if (s.foreground) kb.text("\u25B6\uFE0F Текущий", "run:noop");
+  else kb.text("\u{1F500} Переключиться", `run:switch:${s.sessionId}`);
+  kb.text("\u{1F4DC} История", `hist:${s.sessionId}`).text("\u2716 Закрыть", `run:close:${s.sessionId}`);
   return { text: lines.join("\n"), kb };
 }
 
@@ -90,18 +90,18 @@ export async function showRunning(ctx: Context, deps: BotDeps): Promise<void> {
   await deps.ephemeral.open(ctx);
   const list = dedupeBySession(deps.registry.controller(ctx.chat!.id).list());
   if (list.length === 0) {
-    await deps.ephemeral.reply(ctx, "No sessions controlled yet. Use \u{1F4C1} Project or /new to start one.");
+    await deps.ephemeral.reply(ctx, "Пока нет сеансов для управления. Выберите проект или отправьте /new, чтобы начать.");
     return;
   }
   const now = Date.now();
   const shown = list.slice(0, CARD_LIMIT);
-  await deps.ephemeral.reply(ctx, `\u{1F9ED} Sessions controlled by this chat (${list.length}) \u2014 tap \u{1F500} Switch on a card:`);
+  await deps.ephemeral.reply(ctx, `\u{1F9ED} Сеансы этого чата (${list.length}). Нажмите «Переключиться» на нужной карточке:`);
   for (const s of shown) {
     const { text, kb } = buildRunningCard(s, deps, now);
     await deps.ephemeral.reply(ctx, text, { reply_markup: kb });
   }
   if (list.length > shown.length) {
-    await deps.ephemeral.reply(ctx, `\u2026and ${list.length - shown.length} more.`);
+    await deps.ephemeral.reply(ctx, `…и ещё ${list.length - shown.length}.`);
   }
 }
 
@@ -121,7 +121,7 @@ function dedupeBySession(list: RunningSession[]): RunningSession[] {
 export async function switchAndShow(ctx: Context, deps: BotDeps, sessionId: string): Promise<void> {
   const res = await deps.registry.controller(ctx.chat!.id).switchTo(sessionId);
   if (!res) {
-    await ctx.reply("Session not found (it may have been closed).");
+    await ctx.reply("Сеанс не найден — возможно, он уже закрыт.");
     return;
   }
   await deliverSwitch(ctx, deps, res);
@@ -130,7 +130,7 @@ export async function switchAndShow(ctx: Context, deps: BotDeps, sessionId: stri
 export function registerRunning(bot: Bot, deps: BotDeps): void {
   bot.command("running", (ctx) => showRunning(ctx, deps));
 
-  bot.callbackQuery("run:noop", (ctx) => ctx.answerCallbackQuery({ text: "Already in foreground" }));
+  bot.callbackQuery("run:noop", (ctx) => ctx.answerCallbackQuery({ text: "Это уже текущий сеанс" }));
 
   bot.callbackQuery(new RegExp(`^run:switch:${UUID}$`), async (ctx) => {
     await ctx.answerCallbackQuery();
@@ -141,28 +141,28 @@ export function registerRunning(bot: Bot, deps: BotDeps): void {
   bot.callbackQuery(new RegExp(`^run:close:${UUID}$`), async (ctx) => {
     const id = ctx.match![1]!;
     await deps.registry.controller(ctx.chat!.id).close(id);
-    await ctx.answerCallbackQuery({ text: "Closed" });
+    await ctx.answerCallbackQuery({ text: "Сеанс закрыт" });
     await ctx.deleteMessage().catch(() => {}); // remove just this card
   });
 }
 
 async function deliverSwitch(ctx: Context, deps: BotDeps, res: SwitchResult): Promise<void> {
-  const proj = res.projectName ?? "session";
+  const proj = res.projectName ?? "сеанс";
   const sid = res.sessionId ? res.sessionId.slice(0, 8) : "?";
   if (res.alreadyForeground) {
-    await ctx.reply(`You're already on ${proj} (${sid}).`);
+    await ctx.reply(`Уже открыт проект «${proj}» (сеанс ${sid}).`);
     return;
   }
-  const working = res.busy ? " \u00B7 \u23F3 still working (live updates follow)" : "";
-  await refreshMenu(ctx, deps, `\u{1F500} Switched to ${proj} (${sid})${working}`);
+  const working = res.busy ? " \u00B7 \u23F3 задача ещё выполняется, обновления будут приходить сюда" : "";
+  await refreshMenu(ctx, deps, `\u{1F500} Переключено на «${proj}» (сеанс ${sid})${working}`);
 
   if (res.unread.length === 0) {
-    if (!res.busy) await ctx.reply(res.firstView ? "No earlier messages here." : "\u2705 Nothing new while you were away.");
+    if (!res.busy) await ctx.reply(res.firstView ? "Предыдущих сообщений здесь нет." : "\u2705 Пока вас не было, новых сообщений не появилось.");
     return;
   }
   const header = res.firstView
-    ? `\u{1F4DC} **Recent history** \u2014 ${proj}`
-    : `\u{1F4EC} **${res.unread.length} message(s) while away** \u2014 ${proj}`;
+    ? `\u{1F4DC} **Недавняя история** \u2014 ${proj}`
+    : `\u{1F4EC} **Сообщения, появившиеся в ваше отсутствие: ${res.unread.length}** \u2014 ${proj}`;
   const body = res.unread.map(fmtEntry).join("\n\n");
   await sendMarkdownDoc(deps.api, ctx.chat!.id, `${header}\n\n${body}\n\n${res.rt.tags}`);
 
@@ -175,7 +175,7 @@ async function deliverSwitch(ctx: Context, deps: BotDeps, res: SwitchResult): Pr
 
 function fmtEntry(e: HistoryEntry): string {
   const icon = ROLE_ICON[e.role] ?? "\u2022";
-  if (e.role === "tool") return `${icon} ${e.tool ? `\`${e.tool}\`` : "tool"}`;
+  if (e.role === "tool") return `${icon} ${e.tool ? `\`${e.tool}\`` : "инструмент"}`;
   const text = e.text.length > ENTRY_MAX ? e.text.slice(0, ENTRY_MAX) + " \u2026" : e.text;
   return `${icon} ${text}`;
 }

@@ -38,7 +38,7 @@ export function registerReauth(bot: Bot, deps: BotDeps): void {
 
   bot.command("reauth", async (ctx) => {
     if (controller.isBusy(ctx.chat.id)) {
-      await ctx.reply("\u{1F510} A re-authentication is already in progress.");
+      await ctx.reply("\u{1F510} Вход уже выполняется.");
       return;
     }
     await controller.chooseMethod(ctx.chat.id);
@@ -61,7 +61,7 @@ export function registerReauth(bot: Bot, deps: BotDeps): void {
   });
 
   bot.callbackQuery("reauth:choose-cancel", async (ctx) => {
-    await ctx.answerCallbackQuery({ text: "Cancelled" });
+    await ctx.answerCallbackQuery({ text: "Отменено" });
     const chatId = ctx.chat?.id;
     const messageId = ctx.callbackQuery.message?.message_id;
     if (chatId !== undefined && messageId !== undefined) await controller.cancelChoice(chatId, messageId);
@@ -70,18 +70,18 @@ export function registerReauth(bot: Bot, deps: BotDeps): void {
   bot.callbackQuery("reauth:cancel", async (ctx) => {
     const chatId = ctx.chat?.id;
     const ok = chatId !== undefined && controller.cancel(chatId);
-    await ctx.answerCallbackQuery({ text: ok ? "Cancelling\u2026" : "Nothing to cancel" });
+    await ctx.answerCallbackQuery({ text: ok ? "Останавливаю…" : "Нечего отменять" });
   });
 
   bot.callbackQuery("reauth:retry", async (ctx) => {
-    await ctx.answerCallbackQuery({ text: "Retrying\u2026" });
+    await ctx.answerCallbackQuery({ text: "Повторяю…" });
     const chatId = ctx.chat?.id;
     const messageId = ctx.callbackQuery.message?.message_id;
     if (chatId !== undefined && messageId !== undefined) await controller.retry(chatId, messageId);
   });
 
   bot.callbackQuery("reauth:restart", async (ctx) => {
-    await ctx.answerCallbackQuery({ text: "Restarting agent\u2026" });
+    await ctx.answerCallbackQuery({ text: "Перезапускаю Codex…" });
     const chatId = ctx.chat?.id;
     const messageId = ctx.callbackQuery.message?.message_id;
     if (chatId !== undefined && messageId !== undefined) await controller.restartAgent(chatId, messageId);

@@ -18,15 +18,15 @@ export interface MainMenuState {
 
 export function mainMenuText(state: MainMenuState): string {
   const lines = [
-    "\u{1F916} Codex Remote",
-    `\u{1F4C1} Project: ${compactLabel(state.project, 48)}`,
-    `\u{1F4AC} Session: ${compactLabel(state.session, 48)}`,
-    `\u{1F9E0} Model: ${compactLabel(state.model, 48)}`,
-    `\u2699\uFE0F Reasoning: ${state.reasoning}`,
-    `\u{1F512} Sandbox: ${state.sandbox}`,
-    `Approval: ${state.approval}`,
+    "\u{1F916} Удалённый Codex",
+    `\u{1F4C1} Проект: ${compactLabel(state.project, 48)}`,
+    `\u{1F4AC} Сеанс: ${compactLabel(state.session, 48)}`,
+    `\u{1F9E0} Модель: ${compactLabel(state.model, 48)}`,
+    `\u2699\uFE0F Уровень рассуждений: ${state.reasoning}`,
+    `\u{1F512} Доступ: ${state.sandbox}`,
+    `Подтверждение действий: ${state.approval}`,
   ];
-  if (state.unsafe) lines.push("\u26A0\uFE0F Full access is enabled in local config.");
+  if (state.unsafe) lines.push("\u26A0\uFE0F В настройках включён полный доступ.");
   return lines.join("\n");
 }
 
@@ -37,12 +37,12 @@ export async function openMainMenu(ctx: Context, deps: BotDeps): Promise<void> {
   const rt = deps.registry.get(chatId);
   const meta = rt.sessionId ? deps.store.get(rt.sessionId) : undefined;
   const state: MainMenuState = {
-    project: rt.projectName || (rt.cwd ? basename(rt.cwd) : "Not selected"),
-    session: meta?.title || (rt.sessionId ? rt.sessionId.slice(0, 8) : "Not started"),
-    model: rt.model || deps.acp.currentModelId || "Default",
+    project: rt.projectName || (rt.cwd ? basename(rt.cwd) : "Не выбран"),
+    session: meta?.title || (rt.sessionId ? rt.sessionId.slice(0, 8) : "Не запущен"),
+    model: rt.model || deps.acp.currentModelId || "По умолчанию",
     reasoning: reasoningLabel(rt.reasoning),
-    sandbox: deps.cfg.trustAllTools ? "danger-full-access" : "workspace-write",
-    approval: deps.cfg.trustAllTools ? "disabled (never)" : "on request",
+    sandbox: deps.cfg.trustAllTools ? "полный" : "только к рабочим папкам",
+    approval: deps.cfg.trustAllTools ? "выключено" : "по запросу",
     unsafe: deps.cfg.trustAllTools,
     busy: rt.isBusy,
   };

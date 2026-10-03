@@ -37,28 +37,28 @@ export async function renderWizardPrompt(ctx: Context, deps: BotDeps, p: WizardP
       return;
     case "scheduleType": {
       const kb = new InlineKeyboard()
-        .text("Once", "wiz:sched:once")
-        .text("Daily", "wiz:sched:daily")
+        .text("Один раз", "wiz:sched:once")
+        .text("Каждый день", "wiz:sched:daily")
         .row()
-        .text("Weekly", "wiz:sched:weekly")
-        .text("Monthly", "wiz:sched:monthly")
+        .text("Каждую неделю", "wiz:sched:weekly")
+        .text("Каждый месяц", "wiz:sched:monthly")
         .row()
-        .text("Every N minutes", "wiz:sched:interval");
+        .text("Каждые N минут", "wiz:sched:interval");
       await reply(p.text, { reply_markup: kb });
       return;
     }
     case "confirm": {
-      const kb = new InlineKeyboard().text("\u2705 Save", "wiz:confirm").text("\u2716 Cancel", "wiz:cancel");
+      const kb = new InlineKeyboard().text("\u2705 Сохранить", "wiz:confirm").text("\u2716 Отмена", "wiz:cancel");
       await reply(p.text, { reply_markup: kb });
       return;
     }
     case "done":
       await reply(p.text, {
-        reply_markup: new InlineKeyboard().text("\u{1F5D3} Tasks", "m:tasks").text("\u{1F3E0} Main menu", "ui:home"),
+        reply_markup: new InlineKeyboard().text("\u{1F5D3} Задачи", "m:tasks").text("\u{1F3E0} Главное меню", "ui:home"),
       });
       return;
     case "aborted":
-      await reply("Cancelled.", { reply_markup: new InlineKeyboard().text("\u{1F3E0} Main menu", "ui:home") });
+      await reply("Действие отменено.", { reply_markup: new InlineKeyboard().text("\u{1F3E0} Главное меню", "ui:home") });
       return;
   }
 }
@@ -99,7 +99,7 @@ export function registerTasks(bot: Bot, deps: BotDeps): void {
   bot.callbackQuery(new RegExp(`^task:view:${UUID}$`), async (ctx) => {
     await ctx.answerCallbackQuery();
     const task = deps.tasks.get(ctx.match![1]!);
-    if (!task) return void ctx.editMessageText("Task not found.");
+    if (!task) return void ctx.editMessageText("Задача не найдена.");
     const { text, kb } = detailView(task);
     await ctx.editMessageText(text, { reply_markup: kb });
   });
@@ -112,9 +112,9 @@ export function registerTasks(bot: Bot, deps: BotDeps): void {
 
   bot.callbackQuery(new RegExp(`^task:toggle:${UUID}$`), async (ctx) => {
     const task = deps.tasks.get(ctx.match![1]!);
-    if (!task) return void ctx.answerCallbackQuery({ text: "Not found" });
+    if (!task) return void ctx.answerCallbackQuery({ text: "Задача не найдена" });
     const updated = deps.tasks.update(task.id, { enabled: !task.enabled });
-    await ctx.answerCallbackQuery({ text: updated?.enabled ? "Enabled" : "Disabled" });
+    await ctx.answerCallbackQuery({ text: updated?.enabled ? "Задача включена" : "Задача выключена" });
     if (updated) {
       const { text, kb } = detailView(updated);
       await ctx.editMessageText(text, { reply_markup: kb });
@@ -123,14 +123,14 @@ export function registerTasks(bot: Bot, deps: BotDeps): void {
 
   bot.callbackQuery(new RegExp(`^task:run:${UUID}$`), async (ctx) => {
     const task = deps.tasks.get(ctx.match![1]!);
-    if (!task) return void ctx.answerCallbackQuery({ text: "Not found" });
-    await ctx.answerCallbackQuery({ text: "Running now\u2026" });
+    if (!task) return void ctx.answerCallbackQuery({ text: "Задача не найдена" });
+    await ctx.answerCallbackQuery({ text: "Запускаю…" });
     void deps.taskRunner.run(task);
   });
 
   bot.callbackQuery(new RegExp(`^task:del:${UUID}$`), async (ctx) => {
     deps.tasks.delete(ctx.match![1]!);
-    await ctx.answerCallbackQuery({ text: "Deleted" });
+    await ctx.answerCallbackQuery({ text: "Задача удалена" });
     const { text, kb } = listView(deps, ctx.chat!.id);
     await ctx.editMessageText(text, { reply_markup: kb });
   });
@@ -139,7 +139,7 @@ export function registerTasks(bot: Bot, deps: BotDeps): void {
     await ctx.answerCallbackQuery();
     const task = deps.tasks.get(ctx.match![1]!);
     if (!task) return;
-    await ctx.editMessageText(`Edit "${task.name}" — choose what to change:`, {
+    await ctx.editMessageText(`Задача «${task.name}». Что изменить?`, {
       reply_markup: editMenu(task.id),
     });
   });
@@ -149,13 +149,13 @@ export function registerTasks(bot: Bot, deps: BotDeps): void {
     const field = ctx.match![1] as "name" | "prompt" | "project" | "schedule";
     const p = deps.wizard.startEdit(ctx.chat!.id, ctx.match![2]!, field);
     if (p) await renderWizardPrompt(ctx, deps, p);
-    else await ctx.reply("Task not found.");
+    else await ctx.reply("Задача не найдена.");
   });
 
   // ── wizard inline steps ────────────────────────────────────────────────
   bot.callbackQuery(/^wiz:p:([a-f0-9]{16}):(\d+)$/, async (ctx) => {
     const entry = deps.menuCache.getProject(ctx.chat!.id, Number(ctx.match![2]), ctx.match![1]);
-    if (!entry) return void ctx.answerCallbackQuery({ text: "Project list expired. Restart the task." });
+    if (!entry) return void ctx.answerCallbackQuery({ text: "Срок действия списка проектов истёк. Начните создание задачи заново." });
     await ctx.answerCallbackQuery();
     const p = deps.wizard.setProject(ctx.chat!.id, entry.path, entry.name);
     if (p) await renderWizardPrompt(ctx, deps, p);
@@ -176,7 +176,7 @@ export function registerTasks(bot: Bot, deps: BotDeps): void {
   bot.callbackQuery("wiz:cancel", async (ctx) => {
     await ctx.answerCallbackQuery();
     deps.wizard.abort(ctx.chat!.id);
-    await ctx.editMessageText("Cancelled.");
+    await ctx.editMessageText("Действие отменено.");
   });
 }
 
@@ -186,51 +186,60 @@ function listView(deps: BotDeps, chatId: number): { text: string; kb: InlineKeyb
   const tasks = deps.tasks.forChat(chatId);
   const kb = new InlineKeyboard();
   if (tasks.length === 0) {
-    kb.text("\u2795 New task", "task:new").row().text("\u{1F3E0} Main menu", "ui:home");
-    return { text: "You have no scheduled tasks yet.", kb };
+    kb.text("\u2795 Новая задача", "task:new").row().text("\u{1F3E0} Главное меню", "ui:home");
+    return { text: "Пока нет задач по расписанию.", kb };
   }
   for (const t of tasks) {
     const dot = t.enabled ? "\u{1F7E2}" : "\u26AA";
     const name = t.name.length > 24 ? t.name.slice(0, 24) + "\u2026" : t.name;
     kb.text(`${dot} ${name} \u00B7 ${describeSchedule(t.schedule)}`, `task:view:${t.id}`).row();
   }
-  kb.text("\u2795 New task", "task:new").row().text("\u{1F3E0} Main menu", "ui:home");
-  return { text: `\u{1F5D3} Your scheduled tasks (${tasks.length}):`, kb };
+  kb.text("\u2795 Новая задача", "task:new").row().text("\u{1F3E0} Главное меню", "ui:home");
+  return { text: `\u{1F5D3} Задачи по расписанию (${tasks.length}):`, kb };
 }
 
 function detailView(t: Task): { text: string; kb: InlineKeyboard } {
-  const next = t.nextRun ? new Date(t.nextRun).toLocaleString() : "\u2014";
-  const last = t.lastRun ? `${new Date(t.lastRun).toLocaleString()} (${t.lastStatus ?? "?"})` : "never";
+  const next = t.nextRun ? new Date(t.nextRun).toLocaleString("ru-RU") : "\u2014";
+  const last = t.lastRun ? `${new Date(t.lastRun).toLocaleString("ru-RU")} (${translateStatus(t.lastStatus)})` : "ещё не запускалась";
   const prompt = t.prompt.length > 300 ? t.prompt.slice(0, 300) + "\u2026" : t.prompt;
   const text = [
-    `\u{1F5D3} ${t.name}  ${t.enabled ? "\u{1F7E2} enabled" : "\u26AA disabled"}`,
-    `\u{1F4C1} Project: ${t.projectName || basename(t.projectPath)}`,
-    `\u{1F501} Schedule: ${describeSchedule(t.schedule)}`,
-    `\u23ED Next run: ${next}`,
-    `\u23EE Last run: ${last}`,
+    `\u{1F5D3} ${t.name}  ${t.enabled ? "\u{1F7E2} включена" : "\u26AA выключена"}`,
+    `\u{1F4C1} Проект: ${t.projectName || basename(t.projectPath)}`,
+    `\u{1F501} Расписание: ${describeSchedule(t.schedule)}`,
+    `\u23ED Следующий запуск: ${next}`,
+    `\u23EE Последний запуск: ${last}`,
     "",
     `\u{1F4AC} ${prompt}`,
   ].join("\n");
   const kb = new InlineKeyboard()
-    .text("\u25B6 Run now", `task:run:${t.id}`)
-    .text(t.enabled ? "\u23F8 Disable" : "\u25B6 Enable", `task:toggle:${t.id}`)
+    .text("\u25B6 Запустить", `task:run:${t.id}`)
+    .text(t.enabled ? "\u23F8 Выключить" : "\u25B6 Включить", `task:toggle:${t.id}`)
     .row()
-    .text("\u270F\uFE0F Edit", `task:editmenu:${t.id}`)
-    .text("\u{1F5D1} Delete", `task:del:${t.id}`)
+    .text("\u270F\uFE0F Изменить", `task:editmenu:${t.id}`)
+    .text("\u{1F5D1} Удалить", `task:del:${t.id}`)
     .row()
-    .text("\u2B05 Back", "task:list")
-    .text("\u{1F3E0} Menu", "ui:home");
+    .text("\u2B05 Назад", "task:list")
+    .text("\u{1F3E0} Меню", "ui:home");
   return { text, kb };
 }
 
 function editMenu(id: string): InlineKeyboard {
   return new InlineKeyboard()
-    .text("Rename", `task:edit:name:${id}`)
-    .text("Prompt", `task:edit:prompt:${id}`)
+    .text("Название", `task:edit:name:${id}`)
+    .text("Действие", `task:edit:prompt:${id}`)
     .row()
-    .text("Project", `task:edit:project:${id}`)
-    .text("Schedule", `task:edit:schedule:${id}`)
+    .text("Проект", `task:edit:project:${id}`)
+    .text("Расписание", `task:edit:schedule:${id}`)
     .row()
-    .text("\u2B05 Back", `task:view:${id}`)
-    .text("\u{1F3E0} Menu", "ui:home");
+    .text("\u2B05 Назад", `task:view:${id}`)
+    .text("\u{1F3E0} Меню", "ui:home");
+}
+
+function translateStatus(status: string | undefined): string {
+  switch (status?.toLowerCase()) {
+    case "completed": case "success": case "ok": return "успешно";
+    case "failed": case "error": return "ошибка";
+    case "running": return "выполняется";
+    default: return status ?? "неизвестно";
+  }
 }

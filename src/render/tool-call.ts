@@ -41,19 +41,19 @@ export function formatToolCall(u: SessionUpdate, opts: ToolFormatOptions): strin
   // deletes of a SKILL.md (skill authoring) as a "load".
   if (kind !== "edit" && kind !== "delete" && kind !== "move") {
     const skill = detectSkill(u, raw);
-    if (skill) return `\u{1F4DA} **Loaded skill: ${skill}**${tail}`;
+    if (skill) return `\u{1F4DA} **Загружен навык: ${skill}**${tail}`;
   }
 
   // MCP / extension tool call → "Call MCP <server>: <method>" (or "Call MCP:
   // <tool>" when the call carries no server name).
   const mcp = detectMcp(u, raw, kind);
   if (mcp) {
-    const label = mcp.server ? `Call MCP ${mcp.server}: ${mcp.method}` : `Call MCP: ${mcp.method}`;
+    const label = mcp.server ? `Вызов MCP ${mcp.server}: ${mcp.method}` : `Вызов MCP: ${mcp.method}`;
     return `\u{1F9E9} **${label}**${tail}`;
   }
 
   const icon = KIND_ICON[kind] ?? KIND_ICON.other;
-  const title = u.title || titleFromRaw(kind, raw);
+  const title = translateTitle(u.title || titleFromRaw(kind, raw), kind);
 
   let out = `${icon} **${title}**${tail}`;
 
@@ -178,8 +178,26 @@ function buildEditDiff(u: SessionUpdate, raw: Record<string, unknown>, maxLines:
 
 function titleFromRaw(kind: string, raw: Record<string, unknown>): string {
   const path = strOf(raw.path ?? raw.file_path ?? raw.filename);
-  if (path) return `${capitalize(kind)} ${path}`;
-  return capitalize(kind);
+  const label = KIND_LABEL[kind] ?? "Действие";
+  if (path) return `${label}: ${path}`;
+  return label;
+}
+
+const KIND_LABEL: Record<string, string> = {
+  read: "Чтение", edit: "Изменение", execute: "Запуск команды", search: "Поиск",
+  delete: "Удаление", move: "Перемещение", fetch: "Загрузка", think: "Обдумывание",
+};
+
+function translateTitle(title: string, kind: string): string {
+  const labels: Array<[RegExp, string]> = [
+    [/^read\b/i, "Чтение"], [/^edit\b/i, "Изменение"], [/^execute\b/i, "Запуск"],
+    [/^search\b/i, "Поиск"], [/^delete\b/i, "Удаление"], [/^move\b/i, "Перемещение"],
+    [/^fetch\b/i, "Загрузка"], [/^create\b/i, "Создание"], [/^write\b/i, "Запись"],
+  ];
+  for (const [pattern, label] of labels) {
+    if (pattern.test(title)) return `${label}${title.slice(title.match(pattern)![0].length)}`;
+  }
+  return KIND_LABEL[kind] && title.toLowerCase() === kind ? KIND_LABEL[kind] : title;
 }
 
 function collectContent(u: SessionUpdate): ToolCallContent[] {
@@ -192,8 +210,4 @@ function collectContent(u: SessionUpdate): ToolCallContent[] {
 
 function strOf(v: unknown): string {
   return typeof v === "string" ? v : "";
-}
-
-function capitalize(s: string): string {
-  return s.length ? s[0]!.toUpperCase() + s.slice(1) : s;
 }

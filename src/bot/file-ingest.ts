@@ -164,12 +164,12 @@ export function formatBytes(bytes: number): string {
 export function formatTextFilePrompt(name: string, content: string, caption: string, truncated: boolean): string {
   const fence = pickFence(content);
   const block = `${fence}\n${content}\n${fence}`;
-  const note = truncated ? "\n\n(Note: the file was long and has been truncated above.)" : "";
+  const note = truncated ? "\n\n(Примечание: файл слишком длинный, выше приведена только его часть.)" : "";
   const cap = caption.trim();
   if (cap) {
-    return `${cap}\n\nAttached file "${name}":\n${block}${note}`;
+    return `${cap}\n\nВложенный файл «${name}»:\n${block}${note}`;
   }
-  return `The user's message was sent as a file "${name}" (Telegram turns long messages into files). Its contents:\n${block}${note}`;
+  return `Сообщение пользователя отправлено файлом «${name}». Telegram использует файлы для длинных сообщений. Содержимое:\n${block}${note}`;
 }
 
 /** Build the prompt text for a binary document we can't inline. */
@@ -180,11 +180,11 @@ export function formatBinaryFilePrompt(
   caption: string,
   savedPath: string | undefined,
 ): string {
-  const meta = `name "${name}", type ${mimeType || "unknown"}, ${formatBytes(size)}`;
+  const meta = `название «${name}», тип ${mimeType || "неизвестен"}, размер ${formatBytes(size)}`;
   const loc = savedPath
-    ? ` It has been saved to: ${savedPath} — open it with your file tools if that helps.`
+    ? ` Файл сохранён по пути: ${savedPath}. При необходимости откройте его доступными инструментами.`
     : "";
   const cap = caption.trim();
   const head = cap ? `${cap}\n\n` : "";
-  return `${head}The user sent a binary file (${meta}) whose contents can't be shown as text.${loc}`;
+  return `${head}Пользователь отправил файл (${meta}), содержимое которого нельзя показать как текст.${loc}`;
 }

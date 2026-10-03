@@ -14,30 +14,30 @@ export function registerVoice(bot: Bot, deps: BotDeps): void {
   const handle = async (ctx: Context, fileId: string, mime: string, name: string): Promise<void> => {
     const chatId = ctx.chat!.id;
     if (deps.wizard.isActive(chatId)) {
-      await ctx.reply("Finish or /cancel the task wizard before sending voice.");
+      await ctx.reply("Сначала завершите создание задачи или отмените его командой /cancel, затем отправьте голосовое сообщение.");
       return;
     }
     if (!deps.stt.enabled) {
-      await ctx.reply("\u{1F399} Voice isn't configured. Set STT_API_URL (and STT_API_KEY) in .env.");
+      await ctx.reply("\u{1F399} Распознавание речи не настроено. Укажите STT_API_URL и STT_API_KEY в файле .env.");
       return;
     }
     await ctx.replyWithChatAction("typing").catch(() => {});
     try {
       const bytes = await download(ctx, fileId, deps.cfg.token);
-      if (!bytes) throw new Error("could not download the audio");
+      if (!bytes) throw new Error("не удалось скачать аудиофайл");
       const text = await deps.stt.transcribe(bytes, mime, name);
       if (!text) {
-        await ctx.reply("\u{1F399} I couldn't make out any speech.");
+        await ctx.reply("\u{1F399} Не удалось распознать речь.");
         return;
       }
       await ctx.reply(`\u{1F399} \u201C${text}\u201D`);
       const rt = deps.registry.get(chatId);
       const quoted = extractReplyContext(ctx);
       const outcome = await rt.submit(textPrompt(text, ctx.message?.message_id, quoted));
-      if (outcome === "queued") await ctx.reply("\u{1F4E5} Queued \u2014 will run after the current task.");
+      if (outcome === "queued") await ctx.reply("\u{1F4E5} Сообщение добавлено в очередь и будет обработано после текущей задачи.");
     } catch (e) {
       log.warn("voice failed:", (e as Error).message);
-      await ctx.reply(`\u274C Voice transcription failed: ${(e as Error).message}`);
+      await ctx.reply(`\u274C Не удалось распознать голосовое сообщение: ${(e as Error).message}`);
     }
   };
 

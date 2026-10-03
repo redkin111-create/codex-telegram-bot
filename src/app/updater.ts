@@ -110,7 +110,7 @@ export class Updater {
     this.tried.add(latest);
     log.info(`updating ${this.current} -> ${latest}`);
     await this.opts.announce(
-      `\u{1F504} #update Updating ${PKG} v${this.current} \u2192 v${latest}\u2026\nThe bot is idle, so it's safe \u2014 it will restart and report what changed.`,
+      `\u{1F504} #update Обновляю ${PKG} v${this.current} \u2192 v${latest}…\nБот свободен, поэтому обновление безопасно. После перезапуска сообщу об изменениях.`,
       false,
     );
 
@@ -118,7 +118,7 @@ export class Updater {
     if (!ok) {
       this.attempting = false;
       await this.opts.announce(
-        `\u26A0\uFE0F #update Update to v${latest} failed (\`npm install -g\`). I'll try again after the next restart.`,
+        `\u26A0\uFE0F #update Не удалось установить обновление v${latest} (\`npm install -g\`). Повторю попытку после следующего перезапуска.`,
         false,
       );
       return;
@@ -139,8 +139,8 @@ export class Updater {
     }
     const notes = this.changelogFor(pending.to);
     const body = notes
-      ? `\u{1F680} #update Updated v${pending.from} \u2192 **v${pending.to}**\n\n${notes}`
-      : `\u{1F680} #update Updated to **v${pending.to}**.`;
+      ? `\u{1F680} #update Обновление: v${pending.from} \u2192 **v${pending.to}**\n\n${notes}`
+      : `\u{1F680} #update Обновлено до версии **v${pending.to}**.`;
     await this.opts.announce(body, true);
   }
 

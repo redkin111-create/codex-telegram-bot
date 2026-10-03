@@ -6,10 +6,12 @@ import { createAuthMiddleware } from "../src/bot/auth.js";
 import { MenuCache } from "../src/bot/deps.js";
 import { formatProbeResult, healthCheckKeyboard, mainPanel, snapshotMatches } from "../src/bot/handlers/mcp.js";
 import { modelPage, reasoningKeyboard, skillsPage } from "../src/bot/handlers/inline-catalog.js";
+import { COMMANDS, HELP_TEXT } from "../src/bot/commands.js";
 import { projectPage } from "../src/bot/handlers/projects.js";
 import { selectionCard, sessionPage } from "../src/bot/handlers/sessions.js";
-import { mainMenuInline } from "../src/bot/menu/keyboard.js";
+import { mainMenuInline, MENU_BTN, RUNNING_BTN, STOP_BTN } from "../src/bot/menu/keyboard.js";
 import { mainMenuText } from "../src/bot/menu/main.js";
+import { buildContentBlocks } from "../src/bot/prompt-content.js";
 import { callbackDataFits } from "../src/bot/menu/paging.js";
 import type { SessionMeta } from "../src/sessions/types.js";
 import type { McpServer } from "../src/mcp/types.js";
@@ -84,7 +86,7 @@ test("session selection opens a detail card with existing actions and safe navig
   assert(data.includes(`killsess:${meta.sessionId}`));
   assert(data.includes("sp:0123456789abcdef:1"));
   assert(data.includes("ui:home"));
-  assert(detail.keyboard.inline_keyboard[0]![0]!.text.includes("Open"));
+  assert(detail.keyboard.inline_keyboard[0]![0]!.text.includes("Открыть"));
   const selfSession = selectionCard({ ...meta, lockPid: 123 }, "0123456789abcdef", 0, 123);
   assert(!callbacks(selfSession.keyboard).some((item) => item.startsWith("killsess:")));
   assertCallbacksFit(detail.keyboard, selfSession.keyboard);
@@ -98,8 +100,8 @@ test("model, skill, reasoning, and home keyboards use short callback data", () =
   const reasoning = reasoningKeyboard("high");
   const home = mainMenuInline({ busy: true });
   assert(model.text.includes("✅"));
-  assert(emptyModel.text.includes("No selectable models"));
-  assert(emptySkill.text.includes("No enabled skills"));
+  assert(emptyModel.text.includes("Codex не сообщил о доступных моделях"));
+  assert(emptySkill.text.includes("Codex не сообщил о включённых навыках"));
   assert(callbacks(reasoning).some((data) => data === "reason:high"));
   assert(callbacks(home).includes("m:stop"));
   assertCallbacksFit(model.kb, emptyModel.kb, skill.kb, emptySkill.kb, reasoning, home);
@@ -111,17 +113,41 @@ test("main menu has home navigation and avoids exposing a full project path", ()
     project: "Example project",
     session: "Current session",
     model: "Codex",
-    reasoning: "High",
-    sandbox: "workspace-write",
-    approval: "on request",
+    reasoning: "Высокий",
+    sandbox: "только к рабочим папкам",
+    approval: "по запросу",
     unsafe: false,
     busy: false,
   });
   assert(callbacks(keyboard).includes("m:settings"));
   assert(callbacks(keyboard).includes("m:project"));
   assert(!callbacks(keyboard).includes("C:\\private\\workspace"));
+  const labels = keyboard.inline_keyboard.flat().map((button) => button.text);
+  assert(labels.includes("\u{1F4C1} Проекты"));
+  assert(labels.includes("\u{1F4AC} Сеансы"));
+  assert([MENU_BTN, RUNNING_BTN, STOP_BTN].every((label) => /[А-Яа-яЁё]/.test(label)));
+  assert(COMMANDS.every(({ description }) => /[А-Яа-яЁё]/.test(description)));
+  assert(HELP_TEXT.includes("КАК ЭТО РАБОТАЕТ"));
   assert(text.includes("Example project"));
+  assert(text.includes("Проект: Example project"));
+  assert(text.includes("Уровень рассуждений"));
+  assert(!text.includes("workspace-write"));
   assertCallbacksFit(keyboard);
+});
+
+test("Codex prompts use Russian by default and allow an explicitly requested language", () => {
+  const prompt = buildContentBlocks({ text: "Ответь по-русски.", images: [] })[0];
+  if (!prompt || prompt.type !== "text" || typeof prompt.text !== "string") assert.fail("expected a text prompt");
+  assert(prompt.text.includes("Пиши пояснения и сообщения пользователю по-русски"));
+  assert(prompt.text.includes("Если пользователь явно просит другой язык, выполни просьбу."));
+
+  const imagePrompt = buildContentBlocks({ text: "", images: [{ data: "", mimeType: "image/jpeg" }] });
+  assert.equal(imagePrompt[0]?.type, "image");
+  const imageInstruction = imagePrompt[1];
+  if (!imageInstruction || imageInstruction.type !== "text" || typeof imageInstruction.text !== "string") {
+    assert.fail("expected a text instruction after the image");
+  }
+  assert(imageInstruction.text.includes("Проанализируй приложенное изображение."));
 });
 
 test("cache tokens prevent an old button selecting a newer list", () => {
@@ -164,10 +190,10 @@ test("MCP display omits config secrets and probe details", () => {
   const failed = formatProbeResult({ name: "safe-server", ok: false, error: "process exited (code 1) — API_SECRET in stderr" });
   const displayed = `${panel.text}\n${livePanel.text}\n${liveOnlyPanel.text}\n${disabledPanel.text}\n${failed}`;
   for (const secret of ["TOKEN_SHOULD_NOT_APPEAR", "password", "API_SECRET", "ENV_SECRET", "secret.example"]) assert(!displayed.includes(secret));
-  assert(livePanel.text.includes("1 tools · 1 resources · auth needed"));
-  assert(liveOnlyPanel.text.includes("Reported by Codex app-server"));
+  assert(livePanel.text.includes("инструментов: 1 · ресурсов: 1 · требуется вход"));
+  assert(liveOnlyPanel.text.includes("Обнаружены Codex"));
   assert(callbacks(disabledPanel.kb).some((data) => data.startsWith("mcp:restart:")));
-  assert(failed.includes("Process exited (code 1)"));
+  assert(failed.includes("Процесс завершился (code 1)"));
   assertCallbacksFit(panel.kb, livePanel.kb, liveOnlyPanel.kb, disabledPanel.kb);
 });
 
@@ -224,7 +250,7 @@ test("unauthorized callback taps are rejected without entering handlers", async 
   assert.equal(entered, false);
   assert.equal(replied, false);
   assert.equal(answer?.show_alert, true);
-  assert.equal(answer?.text, "⛔ Not authorized.");
+  assert.equal(answer?.text, "⛔ Нет доступа.");
 });
 
 test("authorized callback taps continue to their selected handler", async () => {

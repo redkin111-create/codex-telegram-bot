@@ -9,6 +9,7 @@ import type { AcpClient } from "../acp/client.js";
 import type { SessionUpdate } from "../acp/types.js";
 import { createLogger } from "../logger.js";
 import { sendMarkdownDoc } from "../bot/telegram-io.js";
+import { RESPONSE_LANGUAGE_DIRECTIVE } from "../bot/prompt-content.js";
 import type { Task } from "./types.js";
 
 const log = createLogger("task-runner");
@@ -50,7 +51,7 @@ export class TaskRunner {
         }
       }
       this.acp.on("session-update", listener);
-      await this.acp.prompt(sessionId, [{ type: "text", text: task.prompt }]);
+      await this.acp.prompt(sessionId, [{ type: "text", text: `${RESPONSE_LANGUAGE_DIRECTIVE}\n\n${task.prompt}` }]);
       this.acp.off("session-update", listener);
       await this.deliver(task, text, tools);
       return true;
@@ -64,15 +65,15 @@ export class TaskRunner {
 
   private async deliver(task: Task, text: string, tools: number): Promise<void> {
     const project = task.projectName || basename(task.projectPath);
-    const body = text.trim() || "_(no text output)_";
-    const footer = tools > 0 ? `\n\n\u{1F527} ${tools} tool call(s)` : "";
-    const header = `\u23F0 **Task: ${task.name}** \u00B7 ${project}`;
+    const body = text.trim() || "_(ответ не содержит текста)_";
+    const footer = tools > 0 ? `\n\n\u{1F527} Вызовов инструментов: ${tools}` : "";
+    const header = `\u23F0 **Задача: ${task.name}** \u00B7 ${project}`;
     await sendMarkdownDoc(this.api, task.chatId, `${header}\n\n${body}${footer}`, { loud: true });
   }
 
   private async deliverError(task: Task, message: string): Promise<void> {
     try {
-      await this.api.sendMessage(task.chatId, `\u274C Task "${task.name}" failed: ${message}`, {
+      await this.api.sendMessage(task.chatId, `\u274C Не удалось выполнить задачу «${task.name}»: ${message}`, {
         disable_notification: false,
       });
     } catch {
