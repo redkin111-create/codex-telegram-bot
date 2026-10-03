@@ -39,8 +39,8 @@ codex-tg setup                   # auto-detects codex, writes ~/.codex/tg/.env
 codex-tg run                     # run in the foreground (Ctrl-C to stop)
 ```
 
-> ⚠️ **Set `ALLOWED_USERS`** in `.env` to your Telegram user ID(s). Empty means
-> *anyone* who finds the bot can run commands on your machine.
+> **Set `ALLOWED_USERS`** in `.env` to your Telegram user ID(s). The bot refuses
+> to start if the list is empty.
 >
 ### Startup options (`codex-tg <command>`)
 

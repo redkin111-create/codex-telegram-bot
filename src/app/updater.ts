@@ -164,7 +164,7 @@ export class Updater {
   }
 
   private isNpmInstall(): boolean {
-    return this.opts.projectRoot.replace(/\\/g, "/").includes("/node_modules/");
+    return isNpmInstall(this.opts.projectRoot);
   }
 
   private announceChats(): number[] {
@@ -180,6 +180,10 @@ export class Updater {
       return "";
     }
   }
+}
+
+export function isNpmInstall(projectRoot: string): boolean {
+  return projectRoot.replace(/\\/g, "/").includes("/node_modules/");
 }
 
 /** Read the installed version from package.json (falls back to "0.0.0"). */

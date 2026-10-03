@@ -15,14 +15,23 @@ import { type Bot, type Context, InlineKeyboard } from "grammy";
 import { killPid } from "../../sessions/process.js";
 import type { SessionMeta } from "../../sessions/types.js";
 import type { BotDeps } from "../deps.js";
+import { INLINE_PAGE_SIZE } from "../menu/paging.js";
 import { buildSessionCard } from "./session-card.js";
 
 const UUID = "([0-9a-fA-F-]{36})";
 
 /** Rebuild the standard card keyboard for the freshest on-disk session state. */
-function cardKeyboard(deps: BotDeps, meta: SessionMeta): InlineKeyboard {
+function cardKeyboard(deps: BotDeps, meta: SessionMeta, chatId: number): InlineKeyboard {
   const contextPct = deps.acp.metadataFor(meta.sessionId)?.contextUsagePercentage;
-  return buildSessionCard(meta, { contextPct, selfPid: deps.acp.pid }).keyboard;
+  const keyboard = buildSessionCard(meta, { contextPct, selfPid: deps.acp.pid }).keyboard;
+  const cached = deps.menuCache.getSessions(chatId);
+  const index = cached?.metas.findIndex((item) => item.sessionId === meta.sessionId) ?? -1;
+  if (cached && index >= 0) {
+    keyboard.row()
+      .text("\u2B05 Back to Sessions", `sp:${cached.token}:${Math.floor(index / INLINE_PAGE_SIZE)}`)
+      .text("\u{1F3E0} Main Menu", "ui:home");
+  }
+  return keyboard;
 }
 
 /** Re-read the session and decide whether its PID may be killed right now. */
@@ -49,7 +58,7 @@ export function registerSessionKill(bot: Bot, deps: BotDeps): void {
     if (!check.ok) {
       await ctx.answerCallbackQuery({ text: check.reason });
       // The button is stale (session stopped); refresh it to the normal card.
-      if (check.meta) await ctx.editMessageReplyMarkup({ reply_markup: cardKeyboard(deps, check.meta) }).catch(() => {});
+      if (check.meta) await ctx.editMessageReplyMarkup({ reply_markup: cardKeyboard(deps, check.meta, ctx.chat!.id) }).catch(() => {});
       return;
     }
     await ctx.answerCallbackQuery();
@@ -82,7 +91,7 @@ export function registerSessionKill(bot: Bot, deps: BotDeps): void {
     const id = ctx.match![1]!;
     await ctx.answerCallbackQuery({ text: "Cancelled" });
     const meta = deps.store.get(id);
-    if (meta) await ctx.editMessageReplyMarkup({ reply_markup: cardKeyboard(deps, meta) }).catch(() => {});
+    if (meta) await ctx.editMessageReplyMarkup({ reply_markup: cardKeyboard(deps, meta, ctx.chat!.id) }).catch(() => {});
     else await ctx.editMessageReplyMarkup().catch(() => {});
   });
 }

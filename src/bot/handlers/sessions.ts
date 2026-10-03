@@ -17,7 +17,7 @@ import { compactLabel, INLINE_PAGE_SIZE, pageWindow } from "../menu/paging.js";
 import { openMainMenu } from "../menu/main.js";
 import { refreshMenu } from "../menu/refresh.js";
 import { showHistory } from "./history.js";
-import { relTime } from "./session-card.js";
+import { buildSessionCard, relTime } from "./session-card.js";
 
 /** Compact picker: one editable message, six sessions per page. */
 const PAGE_SIZE = INLINE_PAGE_SIZE;
@@ -80,6 +80,15 @@ export function sessionPage(
   return { text: lines.join("\n"), keyboard: kb };
 }
 
+/** Detail card shown after choosing a session; opening it remains an explicit action. */
+export function selectionCard(meta: SessionMeta, token: string, index: number, selfPid?: number) {
+  const card = buildSessionCard(meta, { openLabel: "\u{1F517} Open", selfPid });
+  card.keyboard.row()
+    .text("\u2B05 Back to Sessions", `sp:${token}:${Math.floor(index / PAGE_SIZE)}`)
+    .text("\u{1F3E0} Main Menu", "ui:home");
+  return card;
+}
+
 export function registerSessions(bot: Bot, deps: BotDeps): void {
   bot.command("sessions", (ctx) => showSessions(ctx, deps, ctx.match?.toString()));
 
@@ -103,22 +112,15 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
 
   bot.callbackQuery(/^s:([a-f0-9]{16}):(\d+)$/, async (ctx) => {
     const token = ctx.match![1]!;
-    const meta = deps.menuCache.getSession(ctx.chat!.id, token, Number(ctx.match![2]));
+    const index = Number(ctx.match![2]);
+    const meta = deps.menuCache.getSession(ctx.chat!.id, token, index);
     if (!meta || !deps.store.get(meta.sessionId)) {
       await ctx.answerCallbackQuery({ text: "This session is no longer available. Refresh Sessions.", show_alert: true });
       return;
     }
-    await ctx.answerCallbackQuery({ text: "Switching session\u2026" });
-    const fgCwd = deps.registry.get(ctx.chat!.id).cwd;
-    const cwd = meta.cwd || fgCwd;
-    const projectName = basename(meta.cwd || fgCwd) || "session";
-    const prior = readHistory(deps.store.jsonlPath(meta.sessionId), 24);
-    try {
-      await deps.registry.controller(ctx.chat!.id).addAttach(meta.sessionId, cwd, projectName, prior);
-      await openMainMenu(ctx, deps);
-    } catch (err) {
-      await deps.ephemeral.reply(ctx, `\u274C Could not connect: ${(err as Error).message}`, { reply_markup: homeKeyboard() });
-    }
+    await ctx.answerCallbackQuery({ text: "Session details" });
+    const card = selectionCard(meta, token, index, deps.acp.pid);
+    await deps.ephemeral.reply(ctx, card.text, { reply_markup: card.keyboard });
   });
 
   bot.callbackQuery("s:new", async (ctx) => {

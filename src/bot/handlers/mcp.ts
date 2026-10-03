@@ -25,9 +25,13 @@ function snapshot(chatId: number, deps: BotDeps): McpSnapshot {
   return current;
 }
 
+export function snapshotMatches(current: Pick<McpSnapshot, "token" | "cwd"> | undefined, token: string, cwd: string): boolean {
+  return current?.token === token && sameWorkspace(current.cwd, cwd);
+}
+
 function currentSnapshot(chatId: number, token: string, cwd: string): McpSnapshot | undefined {
   const current = snapshots.get(chatId);
-  return current?.token === token && sameWorkspace(current.cwd, cwd) ? current : undefined;
+  return snapshotMatches(current, token, cwd) ? current : undefined;
 }
 
 function sameWorkspace(a: string, b: string): boolean {
@@ -140,7 +144,12 @@ function authSummary(status: unknown): string {
   return "";
 }
 
-async function runHealthCheck(ctx: Context, deps: BotDeps, list: McpServer[]): Promise<void> {
+export function healthCheckKeyboard(token: string): InlineKeyboard {
+  return new InlineKeyboard().text("\u{1F501} Re-check", `mcp:recheck:${token}`).row()
+    .text("\u2B05 MCP", "mcp:refresh").text("\u{1F3E0} Menu", "ui:home");
+}
+
+async function runHealthCheck(ctx: Context, deps: BotDeps, list: McpServer[], token: string): Promise<void> {
   const enabled = list.filter((server) => !server.disabled);
   if (enabled.length === 0) {
     await ctx.editMessageText("No enabled MCP servers to check.", {
@@ -166,8 +175,7 @@ async function runHealthCheck(ctx: Context, deps: BotDeps, list: McpServer[]): P
   const rows = sorted.slice(0, 36).map(formatProbeResult);
   if (sorted.length > rows.length) rows.push(`… ${sorted.length - rows.length} more server(s)`);
   const text = `\u{1F9EA} MCP health-check \u00B7 ${ok}/${results.length} connected\n\n${rows.join("\n")}`;
-  const kb = new InlineKeyboard().text("\u{1F501} Re-check", "mcp:refresh").row().text("\u2B05 MCP", "mcp:refresh").text("\u{1F3E0} Menu", "ui:home");
-  await ctx.editMessageText(text, { reply_markup: kb }).catch(() => {});
+  await ctx.editMessageText(text, { reply_markup: healthCheckKeyboard(token) }).catch(() => {});
 }
 
 export function registerMcp(bot: Bot, deps: BotDeps): void {
@@ -215,7 +223,20 @@ export function registerMcp(bot: Bot, deps: BotDeps): void {
     const current = currentSnapshot(ctx.chat!.id, ctx.match![1]!, deps.registry.get(ctx.chat!.id).cwd);
     if (!current) return void ctx.answerCallbackQuery({ text: "This MCP list expired. Reopen MCP." });
     await ctx.answerCallbackQuery({ text: "Checking MCP servers\u2026" });
-    await runHealthCheck(ctx, deps, current.list);
+    await runHealthCheck(ctx, deps, current.list, current.token);
+  });
+
+  bot.callbackQuery(new RegExp(`^mcp:recheck:${TOKEN}$`), async (ctx) => {
+    const cwd = deps.registry.get(ctx.chat!.id).cwd;
+    if (!currentSnapshot(ctx.chat!.id, ctx.match![1]!, cwd)) {
+      return void ctx.answerCallbackQuery({ text: "This MCP list expired. Reopen MCP." });
+    }
+    const current = snapshot(ctx.chat!.id, deps);
+    if (!sameWorkspace(current.cwd, cwd)) {
+      return void ctx.answerCallbackQuery({ text: "Workspace changed. Reopen MCP." });
+    }
+    await ctx.answerCallbackQuery({ text: "Checking current MCP configuration\u2026" });
+    await runHealthCheck(ctx, deps, current.list, current.token);
   });
 
   bot.callbackQuery(new RegExp(`^mcp:restart:${TOKEN}$`), async (ctx) => {

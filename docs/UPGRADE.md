@@ -44,17 +44,17 @@ The latest published version is always on the
 
 ## A — Upgrade an npm install
 
-### Automatic (default)
+### Automatic (optional)
 
-Global npm installs **update themselves**. With `AUTO_UPDATE=true` (the default),
+Global npm installs can **update themselves**. Set `AUTO_UPDATE=true` (off by default),
 the bot checks npm hourly and, **when it's fully idle** (no turn or task running,
 no other active Codex session), it runs `npm install -g codex-telegram-bot@latest`,
 restarts, and posts the new version's changelog in your chat (tagged `#update`).
 
-You don't have to do anything. To control it, set in your `.env`:
+Automatic updates are off by default. To enable them, set in your `.env`:
 
 ```ini
-AUTO_UPDATE=true        # set false to disable self-updates
+AUTO_UPDATE=true        # enable automatic updates for a global npm install
 UPDATE_CHECK_MS=3600000 # how often to check npm (ms)
 ```
 
@@ -238,7 +238,7 @@ To stop the bot from moving off a pinned version, set `AUTO_UPDATE=false` in
 - **`codex-tg: command not found`** — ensure your global npm bin dir is on `PATH`
   (`npm bin -g`), or use `npx codex-telegram-bot <command>`.
 - **Auto-update never fires** — it only runs for **global npm** installs, and
-  only while the bot is **idle**; check `AUTO_UPDATE` is `true` and see the log
+  only while the bot is **idle**; set `AUTO_UPDATE=true` and see the log
   (`codex-tg logs 200`) for a `waiting for idle` line.
 - **Lost settings after a zip upgrade** — you upgraded into a new folder without
   copying `.env`/`data/`. Copy them from the old folder (Option B, step 3) and

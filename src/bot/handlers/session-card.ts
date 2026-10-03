@@ -12,6 +12,8 @@ import { progressBar } from "../../render/progress.js";
 import type { SessionMeta } from "../../sessions/types.js";
 
 export interface SessionCardExtras {
+  /** Optional label for the action that opens or resumes this session. */
+  openLabel?: string;
   /** Context-usage %, when the session is loaded in the current ACP process. */
   contextPct?: number;
   /**
@@ -43,7 +45,7 @@ export function buildSessionCard(m: SessionMeta, extra: SessionCardExtras = {}):
   if (typeof extra.progress === "number") lines.push(`\u{1F4C8} ${progressBar(extra.progress)}`);
   lines.push(`\u{1F194} ${m.sessionId.slice(0, 8)}`);
 
-  const connect = m.active ? "\u{1F374} Continue (fork)" : "\u{1F517} Resume";
+  const connect = extra.openLabel ?? (m.active ? "\u{1F374} Continue (fork)" : "\u{1F517} Resume");
   const keyboard = new InlineKeyboard()
     .text(connect, `sess:${m.sessionId}`)
     .text("\u{1F4DC} History", `hist:${m.sessionId}`)

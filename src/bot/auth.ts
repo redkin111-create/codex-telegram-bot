@@ -8,10 +8,7 @@ import { createLogger } from "../logger.js";
 const log = createLogger("auth");
 
 export function createAuthMiddleware(cfg: AppConfig) {
-  const allowAll = cfg.allowedUsers.size === 0;
-  if (allowAll) {
-    log.warn("ALLOWED_USERS is empty — the bot will respond to ANY Telegram user.");
-  }
+  if (cfg.allowedUsers.size === 0) log.error("ALLOWED_USERS is empty — denying access to all users.");
 
   return async (ctx: Context, next: NextFunction): Promise<void> => {
     const from = ctx.from;
@@ -26,7 +23,7 @@ export function createAuthMiddleware(cfg: AppConfig) {
     if (m && (m.pinned_message || m.new_chat_members || m.left_chat_member)) return;
 
     const userId = String(from.id);
-    if (allowAll || cfg.allowedUsers.has(userId)) {
+    if (cfg.allowedUsers.has(userId)) {
       await next();
       return;
     }

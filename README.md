@@ -194,7 +194,7 @@ separate real MCP `initialize` health check for enabled configured servers.
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `TELEGRAM_BOT_TOKEN` | **yes** | — | Bot token from @BotFather. Use a **distinct** token per bot. |
-| `ALLOWED_USERS` | recommended | *(all)* | Comma-separated Telegram user IDs. Empty = anyone (unsafe). |
+| `ALLOWED_USERS` | **yes** | — | Comma-separated Telegram user IDs. The bot refuses to start if empty. |
 | `CODEX_CLI_PATH` | no | auto | Path to the `codex` binary (auto-resolved via PATH otherwise). |
 | `CODEX_HOME` | no | `~/.codex` | Holds `sessions/`, `auth.json`, `config.toml`. |
 | `CODEX_WORKSPACE` | no | cwd | Default working directory. |
@@ -213,7 +213,7 @@ separate real MCP `initialize` health check for enabled configured servers.
 | `MCP_PROBE_TIMEOUT_MS` | no | `8000` | Per-server timeout for the `/mcp` health-check. |
 | `ACP_AUTO_RESTART` | no | `true` | Auto-restart the agent if it exits. |
 | `CODEX_TG_SINGLE_INSTANCE` | no | `true` | Enforce one running Codex bot per Telegram token. |
-| `AUTO_UPDATE` | no | `true` | Hourly npm check; auto-update + restart when idle (global installs). |
+| `AUTO_UPDATE` | no | `false` | Hourly npm check; auto-update + restart when idle (global npm installs only). |
 | `UPDATE_CHECK_MS` | no | `3600000` | Auto-update polling interval in milliseconds. The first check runs about 60 seconds after startup. |
 | `PROMPT_RETRY_ATTEMPTS` | no | `5` | Retries for a transient agent error (6s→60s backoff). |
 | `AUTO_FORK_ON_ERROR` | no | `true` | Fork a fresh continuation when retries are exhausted. |
@@ -243,7 +243,7 @@ Logs live at `logs/codex-telegram-bot.log`.
 
 ### Automatic npm updates
 
-For a global npm install, `AUTO_UPDATE=true` checks the npm `latest` dist-tag
+For a global npm install, set `AUTO_UPDATE=true` to check the npm `latest` dist-tag
 on the configured interval. An update is applied only when the bot is fully
 idle: no Telegram turn, scheduled task, or unrelated active Codex session is
 running. Busy checks are deferred to the next interval; the current turn is

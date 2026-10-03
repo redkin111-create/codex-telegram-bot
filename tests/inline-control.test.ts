@@ -1,17 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Context, InlineKeyboard } from "grammy";
+import { loadConfig, PROJECT_ROOT } from "../src/config.js";
 import { createAuthMiddleware } from "../src/bot/auth.js";
 import { MenuCache } from "../src/bot/deps.js";
-import { formatProbeResult, mainPanel } from "../src/bot/handlers/mcp.js";
+import { formatProbeResult, healthCheckKeyboard, mainPanel, snapshotMatches } from "../src/bot/handlers/mcp.js";
 import { modelPage, reasoningKeyboard, skillsPage } from "../src/bot/handlers/inline-catalog.js";
 import { projectPage } from "../src/bot/handlers/projects.js";
-import { sessionPage } from "../src/bot/handlers/sessions.js";
+import { selectionCard, sessionPage } from "../src/bot/handlers/sessions.js";
 import { mainMenuInline } from "../src/bot/menu/keyboard.js";
 import { mainMenuText } from "../src/bot/menu/main.js";
 import { callbackDataFits } from "../src/bot/menu/paging.js";
 import type { SessionMeta } from "../src/sessions/types.js";
 import type { McpServer } from "../src/mcp/types.js";
+import { isNpmInstall } from "../src/app/updater.js";
 
 function callbacks(keyboard: InlineKeyboard): string[] {
   return keyboard.inline_keyboard.flatMap((row) => row.flatMap((button) => {
@@ -61,6 +63,31 @@ test("session picker handles long names, empty lists, paging, and active selecti
   assert(callbacks(sessionPage(many, "Recent sessions", 0, "0123456789abcdef").keyboard).includes("sp:0123456789abcdef:1"));
   assert(callbacks(sessionPage(many, "Recent sessions", 1, "0123456789abcdef").keyboard).includes("sp:0123456789abcdef:0"));
   assertCallbacksFit(picker.keyboard, empty.keyboard);
+});
+
+test("session selection opens a detail card with existing actions and safe navigation", () => {
+  const meta: SessionMeta = {
+    sessionId: "00000000-0000-4000-8000-000000000001",
+    cwd: "C:\\work",
+    title: "Selected session",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-02T00:00:00.000Z",
+    active: true,
+    lockPid: 999,
+    historyBytes: 0,
+  };
+  const detail = selectionCard(meta, "0123456789abcdef", 7, 123);
+  const data = callbacks(detail.keyboard);
+  assert(data.includes(`sess:${meta.sessionId}`));
+  assert(data.includes(`hist:${meta.sessionId}`));
+  assert(data.includes(`watch:${meta.sessionId}`));
+  assert(data.includes(`killsess:${meta.sessionId}`));
+  assert(data.includes("sp:0123456789abcdef:1"));
+  assert(data.includes("ui:home"));
+  assert(detail.keyboard.inline_keyboard[0]![0]!.text.includes("Open"));
+  const selfSession = selectionCard({ ...meta, lockPid: 123 }, "0123456789abcdef", 0, 123);
+  assert(!callbacks(selfSession.keyboard).some((item) => item.startsWith("killsess:")));
+  assertCallbacksFit(detail.keyboard, selfSession.keyboard);
 });
 
 test("model, skill, reasoning, and home keyboards use short callback data", () => {
@@ -144,6 +171,43 @@ test("MCP display omits config secrets and probe details", () => {
   assertCallbacksFit(panel.kb, livePanel.kb, liveOnlyPanel.kb, disabledPanel.kb);
 });
 
+test("MCP re-check uses its own callback and rejects stale workspace snapshots", () => {
+  const token = "0123456789abcdef";
+  const keyboard = healthCheckKeyboard(token);
+  const data = callbacks(keyboard);
+  assert(data.includes(`mcp:recheck:${token}`));
+  assert(data.includes("mcp:refresh"));
+  assert(snapshotMatches({ token, cwd: "C:\\Work\\Project" }, token, "c:/work/project/"));
+  assert(!snapshotMatches({ token, cwd: "C:\\Work\\Project" }, "fedcba9876543210", "C:\\Work\\Project"));
+  assert(!snapshotMatches({ token, cwd: "C:\\Work\\Project" }, token, "C:\\Work\\Other"));
+  assertCallbacksFit(keyboard);
+});
+
+test("bot config requires an allowlist and disables auto-update by default", () => {
+  const keys = ["TELEGRAM_BOT_TOKEN", "ALLOWED_USERS", "AUTO_UPDATE"] as const;
+  const saved = keys.map((key) => process.env[key]);
+  try {
+    process.env.TELEGRAM_BOT_TOKEN = "test-token";
+    process.env.ALLOWED_USERS = "";
+    delete process.env.AUTO_UPDATE;
+    assert.throws(() => loadConfig(), /ALLOWED_USERS is empty/);
+    process.env.ALLOWED_USERS = "7, 8";
+    assert.equal(loadConfig().autoUpdate, false);
+    process.env.AUTO_UPDATE = "true";
+    assert.equal(loadConfig().autoUpdate, true);
+  } finally {
+    keys.forEach((key, index) => {
+      if (saved[index] === undefined) delete process.env[key];
+      else process.env[key] = saved[index]!;
+    });
+  }
+});
+
+test("npm updater recognizes packages and leaves source checkouts alone", () => {
+  assert.equal(isNpmInstall(PROJECT_ROOT), false);
+  assert.equal(isNpmInstall("C:\\Users\\me\\node_modules\\codex-telegram-bot"), true);
+});
+
 test("unauthorized callback taps are rejected without entering handlers", async () => {
   let entered = false;
   let replied = false;
@@ -172,4 +236,18 @@ test("authorized callback taps continue to their selected handler", async () => 
   } as unknown as Context;
   await middleware(ctx, async () => { entered = true; });
   assert.equal(entered, true);
+});
+
+test("empty authorization list denies all users", async () => {
+  let entered = false;
+  let answer: Record<string, unknown> | undefined;
+  const middleware = createAuthMiddleware({ allowedUsers: new Set() } as never);
+  const ctx = {
+    from: { id: 7, is_bot: false },
+    callbackQuery: { id: "callback" },
+    answerCallbackQuery: async (options: Record<string, unknown>) => { answer = options; },
+  } as unknown as Context;
+  await middleware(ctx, async () => { entered = true; });
+  assert.equal(entered, false);
+  assert.equal(answer?.show_alert, true);
 });

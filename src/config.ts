@@ -158,6 +158,10 @@ export function loadConfig(): AppConfig {
       "TELEGRAM_BOT_TOKEN is missing. Copy .env.example to .env and set it (run `npm run setup`).",
     );
   }
+  const allowedUsers = list(process.env.ALLOWED_USERS);
+  if (allowedUsers.length === 0) {
+    throw new Error("ALLOWED_USERS is empty. Add your Telegram user ID(s) to .env before starting the bot.");
+  }
 
   const workspaceRaw = process.env.CODEX_WORKSPACE?.trim() || process.cwd();
   const workspace = resolve(expandHome(workspaceRaw));
@@ -181,7 +185,7 @@ export function loadConfig(): AppConfig {
 
   const cfg: AppConfig = {
     token,
-    allowedUsers: new Set(list(process.env.ALLOWED_USERS)),
+    allowedUsers: new Set(allowedUsers),
     codexCliPath: resolveCodexPath(process.env.CODEX_CLI_PATH?.trim()),
     codexHome,
     workspace,
@@ -221,7 +225,7 @@ export function loadConfig(): AppConfig {
     showProgress: bool(process.env.SHOW_PROGRESS, true),
     progressFallback: bool(process.env.PROGRESS_FALLBACK, true),
     notifyOtherSessions: bool(process.env.NOTIFY_OTHER_SESSIONS, true),
-    autoUpdate: bool(process.env.AUTO_UPDATE, true),
+    autoUpdate: bool(process.env.AUTO_UPDATE, false),
     updateCheckMs: num(process.env.UPDATE_CHECK_MS, 3_600_000),
     singleInstance: bool(process.env.CODEX_TG_SINGLE_INSTANCE, true),
   };
