@@ -171,8 +171,10 @@ function entryOf(spec: LaunchSpec): string {
 
 function vbsLauncher(spec: LaunchSpec): string {
   const cmd = `""${spec.nodePath}"" ${spec.args.map((a) => `""${a}""`).join(" ")}`;
+  const codexPath = spec.codexCliPath.replace(/"/g, '""');
   return [
     'Set sh = CreateObject("WScript.Shell")',
+    `sh.Environment("PROCESS")("CODEX_CLI_PATH") = "${codexPath}"`,
     `sh.CurrentDirectory = "${spec.cwd}"`,
     `sh.Run "${cmd}", 0, False`,
   ].join("\r\n");

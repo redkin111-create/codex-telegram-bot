@@ -9,6 +9,8 @@ export interface LaunchSpec {
   displayName: string;
   /** Absolute path to the node binary that should run the bot. */
   nodePath: string;
+  /** Resolved Codex executable, passed explicitly to Windows logon launchers. */
+  codexCliPath: string;
   /** Arguments after the node binary (tsx loader + entry file). */
   args: string[];
   /** Working directory (the installed bot folder). */

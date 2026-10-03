@@ -240,7 +240,7 @@ export function loadConfig(): AppConfig {
  * npm install exposes a `codex.cmd` shim (the native `codex.exe` is buried in a
  * vendor dir), so a bare `spawn("codex")` fails with ENOENT — resolving the
  * real path here (and launching via a shell, see {@link codexLaunch}) fixes it. */
-function resolveCodexPath(explicit?: string): string {
+export function resolveCodexPath(explicit?: string): string {
   if (explicit) return expandHome(explicit);
 
   const onPath = whichCodex();

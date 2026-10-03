@@ -4,7 +4,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { PROJECT_ROOT, INSTANCE_DIR } from "../config.js";
+import { PROJECT_ROOT, INSTANCE_DIR, resolveCodexPath } from "../config.js";
 
 export type Platform = "windows" | "linux" | "macos" | "unknown";
 
@@ -35,12 +35,13 @@ export function buildLaunchSpec(): LaunchSpec {
     id: "codex-telegram-bot",
     displayName: "Codex Telegram Bot",
     nodePath: process.execPath,
+    codexCliPath: resolveCodexPath(process.env.CODEX_CLI_PATH?.trim()),
     args,
     cwd: PROJECT_ROOT,
     // Tells the running bot it's under a supervisor (systemd/launchd) that
     // relaunches on exit — so its auto-updater exits cleanly instead of
-    // re-exec'ing (which would double-run). Windows applies no env, so its
-    // Scheduled Task (no auto-restart) takes the re-exec path instead.
+    // re-exec'ing (which would double-run). Windows' Scheduled Task does not
+    // restart on exit, so it keeps the re-exec path.
     env: { CODEX_TG_SUPERVISED: "1" },
     logsDir,
     logFile: join(logsDir, "codex-telegram-bot.log"),
