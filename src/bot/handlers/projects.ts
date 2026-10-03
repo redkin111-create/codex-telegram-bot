@@ -3,6 +3,7 @@ import { type Context, InlineKeyboard } from "grammy";
 import type { Bot } from "grammy";
 import { basename } from "node:path";
 import { recentProjects, sameProjectPath, type ProjectEntry } from "../../projects/manager.js";
+import { loadCodexProjects } from "../catalog.js";
 import type { BotDeps } from "../deps.js";
 import { compactLabel, pageWindow } from "../menu/paging.js";
 import { showSessions } from "./sessions.js";
@@ -26,8 +27,7 @@ export function projectPage(
     kb.row();
   }
   if (kind === "p") {
-    kb.text("🕘 Недавние", "p:recent").text("📁 Все проекты", "p:all").row()
-      .text("🔎 Поиск", "p:search").text("⬅ Проекты", "p:menu").row()
+    kb.text("🔎 Поиск", "p:search").text("➕ Другая папка", "p:all").row()
       .text("🏠 Меню", "ui:home");
   } else {
     kb.text("✖ Отмена", "wiz:cancel");
@@ -59,17 +59,6 @@ export async function sendProjectMenu(
 
 export async function showProjects(ctx: Context, deps: BotDeps, query?: string, reuseLatest = false): Promise<void> {
   const arg = (query ?? "").trim();
-  if (!arg) {
-    await deps.ephemeral.open(ctx);
-    const kb = new InlineKeyboard()
-      .text("🕘 Недавние проекты Codex", "p:recent").row()
-      .text("📁 Все разрешённые проекты", "p:all").row()
-      .text("🔎 Поиск", "p:search").row()
-      .text("🏠 Главное меню", "ui:home");
-    await deps.ephemeral.reply(ctx, "📁 Проекты\nВыберите источник проектов:", { reply_markup: kb });
-    return;
-  }
-
   const create = /^new\s+(.+)$/i.exec(arg);
   if (create) {
     try {
@@ -93,11 +82,10 @@ export async function showProjects(ctx: Context, deps: BotDeps, query?: string, 
     await selectProject(ctx, deps, { path: allowed, name: basename(allowed) || allowed, lastUsed: Date.now() });
     return;
   }
-
+  const entries = await loadCodexProjects(deps.acp);
   const q = arg.toLocaleLowerCase();
-  const found = dedupeProjects(discoverProjects(deps))
-    .filter((entry) => entry.name.toLocaleLowerCase().includes(q) || entry.path.toLocaleLowerCase().includes(q));
-  await sendProjectMenu(ctx, deps, "proj:", `Проекты по запросу «${compactLabel(arg, 70)}»:`, found, reuseLatest);
+  const found = arg ? entries.filter((entry) => entry.name.toLocaleLowerCase().includes(q)) : entries;
+  await sendProjectMenu(ctx, deps, "proj:", arg ? `🔎 Проекты · «${compactLabel(arg, 52)}»` : "📁 Проекты Codex", found, reuseLatest);
 }
 
 export function registerProjects(bot: Bot, deps: BotDeps): void {
@@ -118,7 +106,7 @@ export function registerProjects(bot: Bot, deps: BotDeps): void {
   });
   bot.callbackQuery("p:recent", async (ctx) => {
     await ctx.answerCallbackQuery();
-    await sendProjectMenu(ctx, deps, "proj:", "🕘 Недавние проекты Codex", recentProjects(deps.store.list(FETCH), FETCH));
+    await showProjects(ctx, deps);
   });
   bot.callbackQuery("p:all", async (ctx) => {
     await ctx.answerCallbackQuery();
@@ -129,7 +117,7 @@ export function registerProjects(bot: Bot, deps: BotDeps): void {
       });
       return;
     }
-    await sendProjectMenu(ctx, deps, "proj:", "📁 Все проекты из PROJECT_ROOTS", deps.projects.list(FETCH));
+    await sendProjectMenu(ctx, deps, "proj:", "➕ Папки из разрешённых каталогов", deps.projects.list(FETCH));
   });
 
   bot.callbackQuery(/^pp:(p|w):([a-f0-9]{16}):(\d+)$/, async (ctx) => {
@@ -152,7 +140,7 @@ export function registerProjects(bot: Bot, deps: BotDeps): void {
   bot.callbackQuery("p:search", async (ctx) => {
     deps.menuCache.beginProjectSearch(ctx.chat!.id);
     await ctx.answerCallbackQuery();
-    await ctx.editMessageText("🔎 Отправьте название проекта для поиска. Поиск охватывает историю Codex и PROJECT_ROOTS; запрос действует 2 минуты.", {
+    await ctx.editMessageText("🔎 Отправьте название проекта Codex для поиска. Запрос действует 2 минуты.", {
       reply_markup: new InlineKeyboard().text("Отмена", "p:search:cancel").text("🏠 Меню", "ui:home"),
     }).catch(() => {});
   });
@@ -167,6 +155,7 @@ export async function selectProject(ctx: Context, deps: BotDeps, project: Projec
   deps.menuCache.setSelectedProject(ctx.chat!.id, project);
   await showSessions(ctx, deps, undefined, project);
 }
+
 
 function discoverProjects(deps: BotDeps): ProjectEntry[] {
   return [

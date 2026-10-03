@@ -26,6 +26,13 @@ export class TelegramSessionRegistry {
       && typeof entry.projectName === "string" ? entry as TelegramSessionRecord : undefined;
   }
 
+  listForChat(chatId: number): Array<{ sessionId: string; record: TelegramSessionRecord }> {
+    return Object.entries(this.records()).flatMap(([sessionId, raw]) => {
+      const record = this.get(sessionId);
+      return record && record.chatId === chatId ? [{ sessionId, record }] : [];
+    });
+  }
+
   record(sessionId: string, chatId: number, projectPath: string, projectName: string): void {
     if (!/^[a-z0-9_-]{1,128}$/i.test(sessionId)) return;
     const entry: TelegramSessionRecord = {

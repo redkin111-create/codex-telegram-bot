@@ -3,6 +3,7 @@ import { type Bot, type Context, InlineKeyboard } from "grammy";
 import { basename } from "node:path";
 import type { ProjectEntry } from "../../projects/manager.js";
 import { sameProjectPath } from "../../projects/manager.js";
+import { catalogThreadSessions, codexProjectAt, includeRegisteredTelegramSessions, loadCodexProjects, safeSessionTitle, sessionBelongsToProject, threadSourceKind } from "../catalog.js";
 import { readHistory } from "../../sessions/history.js";
 import type { SessionMeta } from "../../sessions/types.js";
 import type { BotDeps } from "../deps.js";
@@ -14,20 +15,78 @@ import { briefErrorMessage } from "../prompt-retry.js";
 
 const PAGE_SIZE = INLINE_PAGE_SIZE;
 const UUID = "([0-9a-fA-F-]{36})";
+const SESSION_LIMIT = 25;
+const THREAD_LIMIT = 100;
 
-export async function showSessions(ctx: Context, deps: BotDeps, query?: string, project?: ProjectEntry): Promise<void> {
+export async function showSessions(ctx: Context, deps: BotDeps, query?: string, project?: ProjectEntry, reuseLatest = false): Promise<void> {
   const chatId = ctx.chat!.id;
   deps.menuCache.setSelectedProject(chatId, project);
-  const q = (query ?? "").trim().toLowerCase();
-  let metas = deps.store.list(500);
-  // list() refreshes the session index, so registry cleanup checks Codex's
-  // current files without touching any Codex-owned data.
-  deps.telegramSessions.prune((id) => Boolean(deps.store.get(id)));
-  if (project) metas = metas.filter((meta) => meta.cwd && sameProjectPath(meta.cwd, project.path));
-  if (q) metas = metas.filter((m) => `${m.title} ${m.cwd} ${m.sessionId}`.toLowerCase().includes(q));
-  const heading = project ? `Сеансы · ${project.name}` : q ? `Сеансы по запросу «${q}»` : "Все сеансы Codex";
+  const q = (query ?? "").trim();
+  const allowedTelegram = new Map(deps.telegramSessions.listForChat(chatId).map(({ sessionId, record }) => [sessionId, record]));
+  let metas: SessionMeta[];
+  try {
+    const options = { limit: THREAD_LIMIT, sortKey: "recency_at" as const, sortDirection: "desc" as const, ...(q ? { searchTerm: q } : {}) };
+    const interactive = await deps.acp.listThreads({ ...options, sourceKinds: ["cli", "vscode"] });
+    const appServer = await deps.acp.listThreads({ ...options, sourceKinds: ["appServer"] }).catch(async () => {
+      const allThreads = await deps.acp.listThreads(options).catch(() => []);
+      return allThreads.filter((thread) => threadSourceKind(thread) === "appServer");
+    });
+    const projects = project ? [project] : await loadCodexProjects(deps.acp);
+    metas = catalogThreadSessions(interactive, appServer, allowedTelegram, projects);
+    metas = includeRegisteredTelegramSessions(
+      metas,
+      [...allowedTelegram].map(([sessionId, record]) => ({ sessionId, record })),
+      (sessionId) => deps.store.get(sessionId),
+    );
+  } catch {
+    // Compatibility path for app-server versions without thread/list.
+    metas = deps.store.list(THREAD_LIMIT).flatMap((meta) => {
+      const telegram = deps.telegramSessions.get(meta.sessionId);
+      if (telegram && telegram.chatId !== chatId) return [];
+      const title = safeSessionTitle(meta.title);
+      return title ? [{ ...meta, title, telegramCreated: Boolean(telegram) }] : [];
+    });
+    metas = includeRegisteredTelegramSessions(
+      metas,
+      [...allowedTelegram].map(([sessionId, record]) => ({ sessionId, record })),
+      (sessionId) => deps.store.get(sessionId),
+    );
+  }
+  if (project) {
+    metas = metas.filter((meta) => matchesProject(meta, project))
+      .map((meta) => ({ ...meta, projectName: meta.projectName || project.name }));
+  }
+  if (q) {
+    const needle = q.toLocaleLowerCase();
+    metas = metas.filter((meta) => `${meta.title} ${meta.cwd}`.toLocaleLowerCase().includes(needle));
+  }
+  metas = metas.slice(0, SESSION_LIMIT);
+  const heading = project ? `Сеансы · ${project.name}` : q ? `Сеансы · «${q}»` : "Все сеансы";
   deps.menuCache.setSessions(chatId, metas, heading, project);
-  await renderSessionPage(ctx, deps, 0);
+  await renderSessionPage(ctx, deps, 0, reuseLatest);
+}
+
+/** Main-menu Sessions follows the foreground project's Codex catalogue entry. */
+export async function showCurrentProjectSessions(ctx: Context, deps: BotDeps): Promise<void> {
+  const chatId = ctx.chat!.id;
+  const runtime = deps.registry.get(chatId);
+  const currentPath = runtime.cwd;
+  let project = currentPath ? deps.menuCache.getSelectedProject(chatId) : undefined;
+  if (currentPath && (!project || !(project.roots ?? [project.path]).some((root) => sameProjectPath(root, currentPath)))) {
+    try {
+      const entries = await loadCodexProjects(deps.acp);
+      project = entries.find((entry) => (entry.roots ?? [entry.path]).some((root) => sameProjectPath(root, currentPath)));
+    } catch {
+      project = undefined;
+    }
+    project ??= { name: runtime.projectName || basename(currentPath), path: currentPath, roots: [currentPath], lastUsed: Date.now() };
+  }
+  project ??= deps.menuCache.getSelectedProject(chatId);
+  await showSessions(ctx, deps, undefined, project);
+}
+
+function matchesProject(meta: SessionMeta, project: ProjectEntry): boolean {
+  return sessionBelongsToProject(meta, project);
 }
 
 /** Confirmation is required before any interactive `thread/start` call. */
@@ -55,8 +114,21 @@ export async function createConfirmedSession(deps: BotDeps, chatId: number, toke
   return { runtime, target };
 }
 
-async function renderSessionPage(ctx: Context, deps: BotDeps, page: number): Promise<void> {
-  await deps.ephemeral.open(ctx);
+export function newSessionConfirmation(name: string): string {
+  return `✅ Новый сеанс создан\n📁 ${name}\n📱 Создан через Telegram\n\nОтправьте задачу.`;
+}
+
+export async function continueSession(deps: BotDeps, chatId: number, meta: SessionMeta): Promise<string> {
+  const foreground = deps.registry.get(chatId);
+  const cwd = meta.cwd || foreground.cwd;
+  const projectName = meta.projectName || basename(meta.cwd || foreground.cwd) || "проект";
+  const prior = readHistory(deps.store.jsonlPath(meta.sessionId), 24);
+  const { result } = await deps.registry.controller(chatId).addAttach(meta.sessionId, cwd, projectName, prior);
+  return connectMessage(result, meta);
+}
+
+async function renderSessionPage(ctx: Context, deps: BotDeps, page: number, reuseLatest = false): Promise<void> {
+  if (!reuseLatest) await deps.ephemeral.open(ctx);
   const cached = deps.menuCache.getSessions(ctx.chat!.id);
   if (!cached) return;
   const currentId = deps.registry.get(ctx.chat!.id).sessionId;
@@ -64,7 +136,8 @@ async function renderSessionPage(ctx: Context, deps: BotDeps, page: number): Pro
     cached.metas, cached.heading, page, cached.token, currentId,
     (id) => Boolean(deps.telegramSessions.get(id)), Boolean(cached.project),
   );
-  await deps.ephemeral.reply(ctx, text, { reply_markup: keyboard });
+  if (reuseLatest) await deps.ephemeral.editLatest(ctx.chat!.id, text, { reply_markup: keyboard });
+  else await deps.ephemeral.reply(ctx, text, { reply_markup: keyboard });
 }
 
 export function sessionPage(
@@ -72,14 +145,14 @@ export function sessionPage(
   currentId?: string, isTelegramCreated: (id: string) => boolean = () => false,
   projectScoped = false,
 ): { text: string; keyboard: InlineKeyboard } {
-  const { page: p, pages, start, end } = pageWindow(metas.length, requestedPage, PAGE_SIZE);
+  const visible = metas.slice(0, SESSION_LIMIT);
+  const { page: p, pages, start, end } = pageWindow(visible.length, requestedPage, PAGE_SIZE);
   const kb = new InlineKeyboard();
   for (let i = start; i < end; i++) {
-    const meta = metas[i]!;
+    const meta = visible[i]!;
     const current = meta.sessionId === currentId ? "✅ " : "";
-    const origin = isTelegramCreated(meta.sessionId) ? "📱" : "🖥";
-    const project = meta.cwd ? basename(meta.cwd) : "проект не указан";
-    kb.text(`${current}${origin} ${compactLabel(meta.title, 30)} · ${compactLabel(project, 16)}`, `s:${token}:${i}`).row();
+    const origin = meta.telegramCreated || isTelegramCreated(meta.sessionId) ? "📱" : "🖥";
+    kb.text(`${current}${origin} ${compactLabel(meta.title, 40)} · ${relTime(meta.updatedAt)}`, `s:${token}:${i}`).row();
   }
   if (pages > 1) {
     if (p > 0) kb.text("◀", `sp:${token}:${p - 1}`);
@@ -87,20 +160,15 @@ export function sessionPage(
     if (p < pages - 1) kb.text("▶", `sp:${token}:${p + 1}`);
     kb.row();
   }
-  kb.text("🆕 Новая сессия Telegram", "s:new").row();
+  kb.text("🔎 Поиск", "s:search").text("🆕 Новый сеанс", "s:new").row();
   if (projectScoped) {
     kb.text("🌐 Все сеансы", "s:all").text("⬅ Проекты", "p:menu").row();
   }
   kb.text("🏠 Главное меню", "ui:home");
 
-  const lines = [`💬 ${compactLabel(heading, 56)} · ${metas.length}`, ""];
-  if (metas.length === 0) lines.push(projectScoped ? "В этом проекте пока нет сеансов Codex." : "Сохранённых сеансов Codex не найдено.");
-  for (const meta of metas.slice(start, end)) {
-    const current = meta.sessionId === currentId ? "✅ " : "";
-    const origin = isTelegramCreated(meta.sessionId) ? "📱" : "🖥";
-    const project = meta.cwd ? basename(meta.cwd) : "проект не указан";
-    lines.push(`${current}${origin} ${compactLabel(meta.title, 34)} · ${compactLabel(project, 18)} · ${relTime(meta.updatedAt)}`);
-  }
+  const lines = [`💬 ${compactLabel(heading, 56)}`, `Последние ${visible.length}`];
+  if (visible.length === 0) lines.push(projectScoped ? "В этом проекте пока нет сеансов." : "Сеансов не найдено.");
+  if (pages > 1) lines[1] = `Последние ${visible.length} · ${p + 1}/${pages}`;
   return { text: lines.join("\n"), keyboard: kb };
 }
 
@@ -114,16 +182,15 @@ export function selectionCard(meta: SessionMeta, token: string, index: number, s
 }
 
 export function registerSessions(bot: Bot, deps: BotDeps): void {
-  bot.command("sessions", (ctx) => showSessions(ctx, deps, ctx.match?.toString()));
-  bot.command("active", async (ctx) => {
-    const metas = deps.store.listActive();
-    if (metas.length === 0) {
-      await deps.ephemeral.open(ctx);
-      await deps.ephemeral.reply(ctx, "Сейчас на этом компьютере нет запущенных сеансов.");
-      return;
-    }
-    deps.menuCache.setSessions(ctx.chat!.id, metas, "Сеансы, запущенные сейчас");
-    await renderSessionPage(ctx, deps, 0);
+  bot.command("sessions", async (ctx) => showSessions(ctx, deps, ctx.match?.toString(), await currentProjectHint(ctx, deps)));
+
+  bot.on("message:text", async (ctx, next) => {
+    const chatId = ctx.chat.id;
+    const searching = deps.menuCache.consumeSessionSearch(chatId);
+    if (!searching || ctx.message.text.startsWith("/") || ["☰ Меню", "🧭 Активные", "⏹ Стоп"].includes(ctx.message.text)) return next();
+    const cached = deps.menuCache.getSessions(chatId);
+    await ctx.deleteMessage().catch(() => {});
+    await showSessions(ctx, deps, ctx.message.text, cached?.project, true);
   });
 
   bot.callbackQuery(/^sp:([a-f0-9]{16}):(\d+)$/, async (ctx) => {
@@ -137,7 +204,7 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
     const token = ctx.match![1]!;
     const index = Number(ctx.match![2]);
     const meta = deps.menuCache.getSession(ctx.chat!.id, token, index);
-    if (!meta || !deps.store.get(meta.sessionId)) {
+    if (!meta) {
       await ctx.answerCallbackQuery({ text: "Сеанс больше недоступен. Обновите список сеансов.", show_alert: true });
       return;
     }
@@ -146,6 +213,19 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
     await deps.ephemeral.reply(ctx, card.text, { reply_markup: card.keyboard });
   });
 
+  bot.callbackQuery("s:search", async (ctx) => {
+    deps.menuCache.beginSessionSearch(ctx.chat!.id);
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText("🔎 Отправьте название сеанса для поиска. Поиск действует 2 минуты.", {
+      reply_markup: new InlineKeyboard().text("Отмена", "s:search:cancel").text("🏠 Меню", "ui:home"),
+    }).catch(() => {});
+  });
+  bot.callbackQuery("s:search:cancel", async (ctx) => {
+    deps.menuCache.clearSessionSearch(ctx.chat!.id);
+    await ctx.answerCallbackQuery();
+    const cached = deps.menuCache.getSessions(ctx.chat!.id);
+    await showSessions(ctx, deps, undefined, cached?.project);
+  });
   bot.callbackQuery("s:new", async (ctx) => {
     await ctx.answerCallbackQuery();
     await showNewSessionConfirmation(ctx, deps, deps.menuCache.getSessions(ctx.chat!.id)?.project);
@@ -159,8 +239,8 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
       const created = await createConfirmedSession(deps, chatId, ctx.match![1]!);
       if (!created) return;
       const { runtime: rt, target } = created;
-      await ctx.reply(`✅ Новая сессия Codex создана через Telegram.\n📁 ${target.name}\n🆔 ${rt.sessionId?.slice(0, 8) ?? "готово"}`);
-      await refreshMenu(ctx, deps, `📱 Новая сессия · ${target.name}`);
+      await deps.ephemeral.reply(ctx, newSessionConfirmation(target.name));
+      await refreshMenu(ctx, deps, `📱 Новый сеанс · ${target.name}`);
     } catch (err) {
       await ctx.reply(`❌ Не удалось создать сессию: ${briefErrorMessage(err as Error)}`);
     }
@@ -186,19 +266,14 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
 
   bot.callbackQuery(new RegExp(`^sess:${UUID}$`), async (ctx) => {
     const id = ctx.match![1]!;
-    const meta = deps.store.get(id);
-    if (!meta) return void ctx.answerCallbackQuery({ text: "Сеанс не найден." });
+    const selected = deps.menuCache.getSessionMeta(ctx.chat!.id, id) ?? deps.store.get(id);
+    if (!selected) return void ctx.answerCallbackQuery({ text: "Сеанс не найден." });
+    const meta = selected;
     await ctx.answerCallbackQuery();
     await deps.ephemeral.clear(ctx.chat!.id);
-    const fgCwd = deps.registry.get(ctx.chat!.id).cwd;
-    const cwd = meta.cwd || fgCwd;
-    const projectName = basename(meta.cwd || fgCwd) || "session";
-    const prior = readHistory(deps.store.jsonlPath(id), 24);
     try {
-      const { result, alreadyControlled } = await deps.registry.controller(ctx.chat!.id).addAttach(id, cwd, projectName, prior);
-      await ctx.reply(alreadyControlled ? `🔀 Переключено на «${meta.title}»` : connectMessage(result, meta));
+      await ctx.reply(await continueSession(deps, ctx.chat!.id, meta));
       await refreshMenu(ctx, deps, `📂 ${meta.title}`);
-      await showHistory(deps, ctx.chat!.id, id, meta);
     } catch (err) {
       await ctx.reply(`❌ Не удалось продолжить этот сеанс: ${briefErrorMessage(err as Error)}`);
     }
@@ -207,19 +282,35 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
   bot.callbackQuery(new RegExp(`^hist:${UUID}$`), async (ctx) => {
     const id = ctx.match![1]!;
     await ctx.answerCallbackQuery();
-    await showHistory(deps, ctx.chat!.id, id, deps.store.get(id));
+    await showHistory(deps, ctx.chat!.id, id, deps.menuCache.getSessionMeta(ctx.chat!.id, id) ?? deps.store.get(id));
   });
 
   bot.callbackQuery(new RegExp(`^watch:${UUID}$`), async (ctx) => {
     const id = ctx.match![1]!;
     await ctx.answerCallbackQuery();
-    const meta = deps.store.get(id);
+    const meta = deps.menuCache.getSessionMeta(ctx.chat!.id, id) ?? deps.store.get(id);
     deps.registry.get(ctx.chat!.id).startWatch(deps.store.jsonlPath(id));
-    await ctx.reply(`📡 Слежу за сеансом: ${meta?.title ?? id.slice(0, 8)}\nНовые события будут появляться здесь. Чтобы остановить, отправьте /unwatch.`);
+    await ctx.reply(`📡 Слежу за сеансом: ${meta?.title ?? "Сеанс Codex"}\nНовые события будут появляться здесь. Чтобы остановить, отправьте /unwatch.`);
   });
 }
 
 function connectMessage(result: "resumed" | "forked", meta: SessionMeta): string {
-  if (result === "resumed") return `✅ Тот же сеанс «${meta.title}» продолжен.\n${meta.cwd}\n\nОтправьте сообщение, чтобы продолжить работу.`;
-  return `⚠️ Codex сообщил, что этот сеанс уже выполняется или заблокирован. Создан связанный сеанс с недавним контекстом.\n${meta.cwd}\n\nМожно продолжить здесь или следить за исходным сеансом.`;
+  const projectName = meta.projectName || basename(meta.cwd) || "проект";
+  if (result === "resumed") return `✅ Сеанс выбран: ${meta.title}\n📁 ${projectName}\n\nОтправьте сообщение.`;
+  return `⚠️ Исходный сеанс занят. Codex создал связанный сеанс с недавним контекстом.\n📁 ${projectName}\n\nОтправьте сообщение.`;
+}
+
+async function currentProjectHint(ctx: Context, deps: BotDeps): Promise<ProjectEntry | undefined> {
+  const chatId = ctx.chat!.id;
+  const rt = deps.registry.get(chatId);
+  const selected = deps.menuCache.getSelectedProject(chatId);
+  if (rt.cwd && selected && (selected.roots ?? [selected.path]).some((root) => sameProjectPath(root, rt.cwd))) return selected;
+  if (rt.cwd) {
+    try {
+      const project = await codexProjectAt(deps.acp, rt.cwd);
+      if (project) return project;
+    } catch { /* fall back to the runtime's project path */ }
+    return { name: rt.projectName || basename(rt.cwd), path: rt.cwd, roots: [rt.cwd], lastUsed: Date.now() };
+  }
+  return selected;
 }

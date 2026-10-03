@@ -59,6 +59,61 @@ export interface CodexThreadResumeParams {
   threadId: string;
 }
 
+/** Minimal app-server catalogue shapes used by the Telegram pickers. */
+export interface CodexProjectSummary {
+  id: string;
+  name?: string;
+  roots?: Array<string | { path?: string; root?: string }>;
+  position?: number;
+  createdAt?: string;
+  updatedAt?: string;
+  recencyAt?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CodexProjectListResponse {
+  projects?: CodexProjectSummary[];
+  data?: CodexProjectSummary[];
+}
+
+export type CodexThreadSourceKind =
+  | "cli" | "vscode" | "exec" | "appServer" | "subAgent" | "subAgentReview"
+  | "subAgentCompact" | "subAgentThreadSpawn" | "subAgentOther" | "unknown";
+
+export interface CodexThreadSummary {
+  id: string;
+  sessionId?: string;
+  name?: string;
+  preview?: string;
+  cwd?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  recencyAt?: string;
+  status?: string | { type?: string };
+  source?: CodexThreadSourceKind | { kind?: CodexThreadSourceKind };
+  projectId?: string;
+  parentThreadId?: string;
+  ephemeral?: boolean;
+}
+
+export interface CodexThreadListParams {
+  cursor?: string;
+  limit?: number;
+  sortKey?: "created_at" | "updated_at" | "recency_at" | "section_position";
+  sortDirection?: "asc" | "desc";
+  sourceKinds?: CodexThreadSourceKind[];
+  archived?: boolean;
+  cwd?: string;
+  useStateDbOnly?: boolean;
+  searchTerm?: string;
+}
+
+export interface CodexThreadListResponse {
+  threads?: CodexThreadSummary[];
+  data?: CodexThreadSummary[];
+  nextCursor?: string;
+}
+
 // ── turns ────────────────────────────────────────────────────────────────────
 
 export type CodexUserInput =

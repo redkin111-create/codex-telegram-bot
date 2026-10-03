@@ -57,6 +57,11 @@ export function thoughtChunk(text: string): SessionUpdate {
   return { sessionUpdate: "agent_thought_chunk", content: { type: "text", text } };
 }
 
+/** User-facing reasoning summary; clean mode is allowed to render this. */
+export function reasoningSummaryChunk(text: string): SessionUpdate {
+  return { sessionUpdate: "agent_reasoning_summary_chunk", content: { type: "text", text } };
+}
+
 /**
  * Convert a completed Codex item into zero or more internal tool-call updates.
  * `agentMessage`/`reasoning` items return [] (their text was already streamed

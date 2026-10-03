@@ -3,6 +3,7 @@
  */
 import type { Bot, Context } from "grammy";
 import type { BotDeps } from "../deps.js";
+import { safeSessionTitle } from "../catalog.js";
 
 export async function showUsage(ctx: Context, deps: BotDeps): Promise<void> {
   await ctx.replyWithChatAction("typing").catch(() => {});
@@ -18,8 +19,8 @@ export async function showUsage(ctx: Context, deps: BotDeps): Promise<void> {
     acct?.email ? `\u{1F464} ${acct.email}` : "",
     acct?.accountType ? `\u{1F511} ${acct.accountType}${acct.region ? ` \u00B7 ${acct.region}` : ""}` : "",
     "",
-    `\u{1F9F5} Сеанс: ${rt.sessionId ? rt.sessionId.slice(0, 8) : "нет"}`,
-    `\u{1F9E9} Модель: ${rt.model || "по умолчанию"}`,
+    `\u{1F9F5} Сеанс: ${rt.sessionId ? safeSessionTitle(deps.store.get(rt.sessionId)?.title) || "Текущий сеанс" : "нет"}`,
+    `\u{1F9E9} Модель: ${rt.model ? deps.acp.availableModels.find((m) => m.modelId === rt.model)?.name || "Codex" : deps.acp.availableModels.find((m) => m.modelId === deps.acp.currentModelId)?.name || "по умолчанию"}`,
     `\u{1F4CA} Использовано контекста: ${ctx100 !== undefined ? `${ctx100.toFixed(0)}%` : "\u2014"}`,
     `\u{1F501} Запросов в этом сеансе: ${rt.turns}`,
     meta?.credits !== undefined ? `\u{1FA99} Использовано кредитов: ${meta.credits.toLocaleString("ru-RU")}` : "",

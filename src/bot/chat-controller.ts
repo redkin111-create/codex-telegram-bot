@@ -17,6 +17,9 @@ import { SessionRuntime } from "./session-runtime.js";
 
 export interface RunningSession {
   sessionId?: string;
+  /** Title reported by Codex's thread catalogue, when available. */
+  sessionTitle?: string;
+  cwd: string;
   projectName: string;
   busy: boolean;
   foreground: boolean;
@@ -72,6 +75,7 @@ export class ChatController {
     this.pruneDuplicates();
     return this.runtimes.map((rt) => ({
       sessionId: rt.sessionId,
+      cwd: rt.cwd,
       projectName: rt.projectName ?? basename(rt.cwd),
       busy: rt.isBusy,
       foreground: rt.isForeground,

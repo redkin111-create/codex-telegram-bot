@@ -934,6 +934,11 @@ export class SessionRuntime {
       if (typeof text === "string") this.streamer.appendThought(text);
       return;
     }
+    if (kind === "agent_reasoning_summary_chunk") {
+      const text = update.content?.text;
+      if (typeof text === "string") this.streamer.appendReasoningSummary(text);
+      return;
+    }
     if (kind === "tool_call" || kind === "tool_call_update") {
       if (!this.cfg.showToolCalls) return;
       const id = update.toolCallId || `${kind}:${update.title ?? ""}`;

@@ -63,7 +63,7 @@ export function registerSessionKill(bot: Bot, deps: BotDeps): void {
     }
     await ctx.answerCallbackQuery();
     const kb = new InlineKeyboard()
-      .text(`\u{1F6D1} Остановить процесс ${check.pid}`, `killsess:do:${id}`)
+      .text("\u{1F6D1} Остановить сеанс", `killsess:do:${id}`)
       .text("\u21A9 Отмена", `killsess:cancel:${id}`);
     await ctx.editMessageReplyMarkup({ reply_markup: kb }).catch(() => {});
   });
@@ -81,8 +81,8 @@ export function registerSessionKill(bot: Bot, deps: BotDeps): void {
     const ok = killPid(check.pid);
     await ctx.answerCallbackQuery({ text: ok ? "Сеанс остановлен" : "Не удалось остановить сеанс" });
     const note = ok
-      ? `\u{1F6D1} Сеанс «${title}» остановлен (процесс ${check.pid}).`
-      : `\u26A0\uFE0F Не удалось остановить процесс ${check.pid}: возможно, он уже завершился или нет прав.`;
+      ? `\u{1F6D1} Сеанс «${title}» остановлен.`
+      : "\u26A0\uFE0F Не удалось остановить сеанс: возможно, он уже завершился или нет прав.";
     await appendStatus(ctx, note);
   });
 

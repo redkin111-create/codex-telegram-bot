@@ -41,6 +41,7 @@ import { registerReauth } from "./handlers/auth.js";
 import { registerSystem } from "./handlers/system.js";
 import { registerTasks, registerWizardInput } from "./handlers/tasks.js";
 import { registerUsage } from "./handlers/usage.js";
+import { registerDiagnostics } from "./handlers/diagnostics.js";
 import { registerVoice } from "./handlers/voice.js";
 import { StatusPanel } from "./menu/status-panel.js";
 import { sendMarkdownDoc } from "./telegram-io.js";
@@ -177,6 +178,7 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
   registerReauth(bot, deps);
   registerAccounts(bot, deps);
   registerUsage(bot, deps);
+  registerDiagnostics(bot, deps);
   registerCapabilities(bot, deps);
   registerKill(bot, deps);
   registerMcp(bot, deps);

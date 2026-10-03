@@ -14,13 +14,14 @@ import { codexLaunchInfo, codexSpawn } from "../app/codex-cli.js";
 import { createLogger } from "../logger.js";
 import { killPid } from "../sessions/process.js";
 import { AcpError, isAccountExhaustedError, isContextExhaustedError, isTransientAcpError, toAcpError } from "./errors.js";
-import { decideApproval } from "./approvals.js";
+import { decideApproval, decidePermissionsApproval } from "./approvals.js";
 import { handleServerRequest, type ServerHandlerOptions } from "./server-handlers.js";
 import { JsonRpcTransport } from "./transport.js";
 import {
   itemToUpdates,
   textChunk,
   thoughtChunk,
+  reasoningSummaryChunk,
   turnErrorInfo,
   toCodexInput,
   turnErrorMessage,
@@ -41,6 +42,11 @@ import type {
   CodexTurnResponse,
   CodexTurnStartParams,
   CodexSkillInfo,
+  CodexProjectListResponse,
+  CodexProjectSummary,
+  CodexThreadListParams,
+  CodexThreadListResponse,
+  CodexThreadSummary,
 } from "./codex-protocol.js";
 import type {
   ContentBlock,
@@ -174,6 +180,7 @@ export class AcpClient extends EventEmitter {
     this.connected = false;
     this.subagents.clear();
     const args = ["app-server"];
+    if (!this.opts.trustAllTools) args.push("--enable", "request_permissions_tool");
     const env = { ...process.env } as NodeJS.ProcessEnv;
     if (this.opts.codexHome) env.CODEX_HOME = this.opts.codexHome;
     log.info(`spawning: ${codexLaunchInfo(this.opts.codexCliPath)} app-server`);
@@ -391,6 +398,21 @@ export class AcpClient extends EventEmitter {
       }
     }
     this.threadCwd.set(sessionId, cwd);
+  }
+
+  /** Return Codex's own project catalogue. This experimental method may not
+   *  exist in older app-server builds; callers can fall back to thread/list. */
+  async listProjects(): Promise<CodexProjectSummary[]> {
+    const response = await this.request("project/list", {}) as CodexProjectListResponse;
+    const projects = response?.projects ?? response?.data ?? [];
+    return Array.isArray(projects) ? projects.filter((p) => typeof p?.id === "string") : [];
+  }
+
+  /** List persisted Codex threads with the app-server's native filters. */
+  async listThreads(params: CodexThreadListParams = {}): Promise<CodexThreadSummary[]> {
+    const response = await this.request("thread/list", params) as CodexThreadListResponse;
+    const threads = response?.threads ?? response?.data ?? [];
+    return Array.isArray(threads) ? threads.filter((t) => typeof t?.id === "string") : [];
   }
 
   hasMode(id: string): boolean {
@@ -634,6 +656,11 @@ export class AcpClient extends EventEmitter {
     params: Record<string, unknown>,
   ): Promise<void> {
     try {
+      if (method === "item/permissions/requestApproval") {
+        const result = await decidePermissionsApproval(params, this.opts.trustAllTools, this.permissionHandler);
+        this.send({ id, result });
+        return;
+      }
       if (method.endsWith("requestApproval") || method.includes("Approval")) {
         const decision = await decideApproval(method, params, this.opts.trustAllTools, this.permissionHandler);
         this.send({ id, result: { decision } });
@@ -663,10 +690,15 @@ export class AcpClient extends EventEmitter {
         if (tid && typeof p.delta === "string") this.emit("session-update", tid, textChunk(p.delta));
         break;
       }
-      case "item/reasoning/summaryTextDelta":
+      case "item/reasoning/summaryTextDelta": {
+        const tid = this.resolveThread(p, String(p.itemId ?? ""));
+        const text = p.summaryTextDelta as string | undefined;
+        if (tid && typeof text === "string") this.emit("session-update", tid, reasoningSummaryChunk(text));
+        break;
+      }
       case "item/reasoning/textDelta": {
         const tid = this.resolveThread(p, String(p.itemId ?? ""));
-        const text = (p.summaryTextDelta ?? p.textDelta) as string | undefined;
+        const text = p.textDelta as string | undefined;
         if (tid && typeof text === "string") this.emit("session-update", tid, thoughtChunk(text));
         break;
       }

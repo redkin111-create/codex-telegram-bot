@@ -88,6 +88,11 @@ export class RuntimeRegistry {
     return this.controller(chatId).foreground();
   }
 
+  modelLabel(id?: string): string {
+    if (!id || id === "auto") return "по умолчанию";
+    return this.acp.availableModels.find((model) => model.modelId === id)?.name ?? "выбранная модель";
+  }
+
   disposeAll(): void {
     for (const c of this.controllers.values()) c.dispose();
     this.controllers.clear();
@@ -129,7 +134,7 @@ export class RuntimeRegistry {
         chatId: parent,
         controlled: false,
         subagent: true,
-        subagentName: info?.sessionName || info?.agentName || sessionId.slice(0, 8),
+        subagentName: info?.sessionName || info?.agentName || "дополнительный агент",
       };
     }
     return { controlled: false, subagent: false };

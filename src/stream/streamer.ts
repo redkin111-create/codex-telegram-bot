@@ -20,7 +20,7 @@ import { safeEdit, safeSend } from "../bot/telegram-io.js";
 const SOFT_LIMIT = 3500;
 const THINK_TAIL = 500;
 
-type SegKind = "out" | "think" | "tool";
+type SegKind = "out" | "think" | "summary" | "tool";
 interface Seg {
   kind: SegKind;
   text: string;
@@ -119,6 +119,13 @@ export class ResponseStreamer {
     if (!text) return;
     this.thoughtChars += text.length;
     this.merge("think", text);
+    this.schedule();
+  }
+
+  appendReasoningSummary(text: string): void {
+    if (!text) return;
+    this.thoughtChars += text.length;
+    this.merge("summary", text);
     this.schedule();
   }
 
@@ -232,6 +239,7 @@ function renderSegs(segs: Seg[]): string {
     .map((s) => {
       if (s.kind === "out") return s.text.trim();
       if (s.kind === "think") return quoteThought(s.text);
+      if (s.kind === "summary") return `💭 ${s.text.trim()}`;
       return s.text.trim();
     })
     .filter((x) => x.length > 0)

@@ -2,7 +2,6 @@
  * Control commands: /start /help /status /new /cancel /btw /flush.
  */
 import type { Bot } from "grammy";
-import { basename } from "node:path";
 import { textPrompt } from "../../app/types.js";
 import type { BotDeps } from "../deps.js";
 import { HELP_TEXT } from "../commands.js";
@@ -11,6 +10,7 @@ import { openMainMenu } from "../menu/main.js";
 import { refreshMenu } from "../menu/refresh.js";
 import { extractReplyContext } from "../reply-context.js";
 import { showNewSessionConfirmation } from "./sessions.js";
+import { showStatus } from "./inline-catalog.js";
 
 export function registerControl(bot: Bot, deps: BotDeps): void {
   bot.command("start", async (ctx) => {
@@ -36,20 +36,7 @@ export function registerControl(bot: Bot, deps: BotDeps): void {
     await ctx.reply(HELP_TEXT);
   });
 
-  bot.command("status", async (ctx) => {
-    const rt = deps.registry.get(ctx.chat.id);
-    const lines = [
-      "\u{1F4CA} Статус",
-      `Проект: ${rt.projectName ?? (basename(rt.cwd) || rt.cwd)}`,
-      `Папка: ${rt.cwd}`,
-      `Сеанс: ${rt.sessionId ?? "ещё не создан"}`,
-      `Состояние: ${rt.isBusy ? "\u23F3 выполняется" : "\u2705 ожидание"}`,
-      `Сообщений в очереди: ${rt.queueLength}`,
-    ];
-    const subagents = deps.registry.subagentSummaryForChat(ctx.chat.id);
-    if (subagents) lines.push(`Дополнительные агенты: ${subagents}`);
-    await ctx.reply(lines.join("\n"));
-  });
+  bot.command("status", (ctx) => showStatus(ctx, deps));
 
   bot.command("new", async (ctx) => {
     await showNewSessionConfirmation(ctx, deps);

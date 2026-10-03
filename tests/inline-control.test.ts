@@ -14,7 +14,7 @@ import { modelPage, reasoningKeyboard, skillsPage } from "../src/bot/handlers/in
 import { COMMANDS, HELP_TEXT } from "../src/bot/commands.js";
 import { projectPage } from "../src/bot/handlers/projects.js";
 import { selectProject } from "../src/bot/handlers/projects.js";
-import { createConfirmedSession, selectionCard, sessionPage, showNewSessionConfirmation } from "../src/bot/handlers/sessions.js";
+import { continueSession, createConfirmedSession, newSessionConfirmation, selectionCard, sessionPage, showNewSessionConfirmation } from "../src/bot/handlers/sessions.js";
 import { mainMenuInline, MENU_BTN, RUNNING_BTN, STOP_BTN } from "../src/bot/menu/keyboard.js";
 import { mainMenuText } from "../src/bot/menu/main.js";
 import { buildContentBlocks } from "../src/bot/prompt-content.js";
@@ -26,6 +26,7 @@ import { canonicalExistingDirectory, isPathWithinRoot, ProjectManager, recentPro
 import { TelegramSessionRegistry } from "../src/sessions/telegram-registry.js";
 import { defaultSettings } from "../src/app/types.js";
 import type { AcpClient } from "../src/acp/client.js";
+import { RUNNING_COMMANDS } from "../src/bot/handlers/running.js";
 
 function callbacks(keyboard: InlineKeyboard): string[] {
   return keyboard.inline_keyboard.flatMap((row) => row.flatMap((button) => {
@@ -67,7 +68,8 @@ test("session picker handles long names, empty lists, paging, and active selecti
   };
   const picker = sessionPage([meta], "Recent sessions", 0, "0123456789abcdef", meta.sessionId);
   const empty = sessionPage([], "Recent sessions", 0, "0123456789abcdef");
-  assert(picker.text.includes("✅"));
+  assert(picker.keyboard.inline_keyboard[0]![0]!.text.startsWith("✅"));
+  assert(!picker.text.includes(meta.title));
   assert(callbacks(picker.keyboard).includes("s:0123456789abcdef:0"));
   assert(callbacks(empty.keyboard).includes("s:new"));
   assert(callbacks(empty.keyboard).includes("ui:home"));
@@ -97,6 +99,9 @@ test("session selection opens a detail card with existing actions and safe navig
   assert(data.includes("sp:0123456789abcdef:1"));
   assert(data.includes("ui:home"));
   assert(detail.keyboard.inline_keyboard[0]![0]!.text.includes("Продолжить"));
+  assert(!detail.text.includes(meta.sessionId));
+  assert(!detail.text.includes(meta.cwd));
+  assert(!detail.text.includes("999"));
   const selfSession = selectionCard({ ...meta, lockPid: 123 }, "0123456789abcdef", 0, 123);
   assert(!callbacks(selfSession.keyboard).some((item) => item.startsWith("killsess:")));
   assertCallbacksFit(detail.keyboard, selfSession.keyboard);
@@ -109,7 +114,7 @@ test("model, skill, reasoning, and home keyboards use short callback data", () =
   const emptySkill = skillsPage([], 0, "0123456789abcdef");
   const reasoning = reasoningKeyboard("high");
   const home = mainMenuInline({ busy: true });
-  assert(model.text.includes("✅"));
+  assert(model.kb.inline_keyboard[0]![0]!.text.startsWith("✅"));
   assert(emptyModel.text.includes("Codex не сообщил о доступных моделях"));
   assert(emptySkill.text.includes("Codex не сообщил о включённых навыках"));
   assert(callbacks(reasoning).some((data) => data === "reason:high"));
@@ -129,8 +134,9 @@ test("main menu has home navigation and avoids exposing a full project path", ()
     unsafe: false,
     busy: false,
   });
-  assert(callbacks(keyboard).includes("m:settings"));
   assert(callbacks(keyboard).includes("m:project"));
+  assert(callbacks(keyboard).includes("m:more"));
+  assert(callbacks(keyboard).includes("m:reasoning"));
   assert(!callbacks(keyboard).includes("C:\\private\\workspace"));
   const labels = keyboard.inline_keyboard.flat().map((button) => button.text);
   assert(labels.includes("\u{1F4C1} Проекты"));
@@ -139,8 +145,8 @@ test("main menu has home navigation and avoids exposing a full project path", ()
   assert(COMMANDS.every(({ description }) => /[А-Яа-яЁё]/.test(description)));
   assert(HELP_TEXT.includes("КАК ЭТО РАБОТАЕТ"));
   assert(text.includes("Example project"));
-  assert(text.includes("Проект: Example project"));
-  assert(text.includes("Уровень рассуждений"));
+  assert(text.includes("📁 Example project"));
+  assert(text.includes("Высокий"));
   assert(!text.includes("workspace-write"));
   assertCallbacksFit(keyboard);
 });
@@ -257,7 +263,7 @@ test("choosing a project opens its filtered sessions without creating a thread",
   const deps = {
     menuCache: cache,
     store: { list: () => [], get: () => undefined },
-    telegramSessions: { prune: () => 0, get: () => undefined },
+    telegramSessions: { prune: () => 0, get: () => undefined, listForChat: () => [] },
     registry: {
       get: () => ({ sessionId: undefined }),
       controller: () => ({ addNew: async () => { starts++; } }),
@@ -299,9 +305,41 @@ test("new session waits for the matching confirmation token", async () => {
   const created = await createConfirmedSession(deps, 45, token);
   assert.equal(starts, 1);
   assert.equal(created?.target.path, "C:\\work\\toy");
+  const confirmation = newSessionConfirmation("toy");
+  assert(confirmation.includes("Создан через Telegram"));
+  assert(!confirmation.includes(created!.runtime.sessionId!));
   assert.equal(await createConfirmedSession(deps, 45, token), undefined);
   assert.equal(starts, 1);
   assertCallbacksFit(keyboard!);
+});
+
+test("Continue resumes the selected thread and returns a short confirmation without history", async () => {
+  const meta: SessionMeta = {
+    sessionId: "00000000-0000-4000-8000-000000000099",
+    cwd: "C:\\work\\toy",
+    title: "Проверка инвентаря",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-02T00:00:00.000Z",
+    active: false,
+    historyBytes: 10,
+  };
+  let resumed = "";
+  const deps = {
+    registry: {
+      get: () => ({ cwd: "C:\\work\\other" }),
+      controller: () => ({ addAttach: async (id: string) => { resumed = id; return { result: "resumed", alreadyControlled: false }; } }),
+    },
+    store: { jsonlPath: () => join(tmpdir(), "missing-continuation-history.jsonl") },
+  } as unknown as BotDeps;
+  const message = await continueSession(deps, 51, meta);
+  assert.equal(resumed, meta.sessionId);
+  assert(message.includes("Сеанс выбран: Проверка инвентаря"));
+  assert(message.includes("Отправьте сообщение."));
+  assert(!message.includes("История"));
+});
+
+test("/active remains an alias of the controlled sessions view", () => {
+  assert.deepEqual(RUNNING_COMMANDS, ["running", "active"]);
 });
 
 test("existing session attachment resumes the same session id without thread/start", async () => {
@@ -392,10 +430,11 @@ test("session origin labels and Telegram registry contain only origin metadata",
       updatedAt: "2026-01-02T00:00:00.000Z", active: false, historyBytes: 0,
     };
     const page = sessionPage([meta, { ...meta, sessionId: "00000000-0000-4000-8000-000000000002" }], "Сеансы", 0, "0123456789abcdef", undefined, (id) => id === sessionId);
-    assert(page.text.includes("📱"));
-    assert(page.text.includes("🖥"));
-    assert(selectionCard(meta, "0123456789abcdef", 0, undefined, true).text.includes("Создан через Telegram"));
-    assert(selectionCard(meta, "0123456789abcdef", 0).text.includes("Существующий сеанс Codex"));
+    assert(page.keyboard.inline_keyboard[0]![0]!.text.includes("📱"));
+    assert(page.keyboard.inline_keyboard[1]![0]!.text.includes("🖥"));
+    assert(!page.text.includes("📱") && !page.text.includes("🖥"));
+    assert(selectionCard(meta, "0123456789abcdef", 0, undefined, true).text.includes("Сеанс Telegram"));
+    assert(selectionCard(meta, "0123456789abcdef", 0).text.includes("Сеанс Codex"));
     assertCallbacksFit(page.keyboard);
   } finally {
     rmSync(base, { recursive: true, force: true });

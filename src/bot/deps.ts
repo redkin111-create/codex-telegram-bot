@@ -48,9 +48,11 @@ export interface BotDeps {
 export class MenuCache {
   private readonly projectLists = new Map<number, { token: string; entries: ProjectEntry[] }>();
   private readonly sessionLists = new Map<number, { token: string; metas: SessionMeta[]; heading: string; project?: ProjectEntry }>();
+  private readonly sessionMetaById = new Map<number, Map<string, SessionMeta>>();
   private readonly modelLists = new Map<number, { token: string; entries: Array<{ modelId: string; name: string; description?: string }> }>();
   private readonly skillLists = new Map<number, { token: string; entries: CodexSkillInfo[] }>();
   private readonly projectSearchUntil = new Map<number, number>();
+  private readonly sessionSearchUntil = new Map<number, number>();
   private readonly selectedProjects = new Map<number, ProjectEntry>();
   private readonly pendingSessionStarts = new Map<number, { token: string; project?: ProjectEntry }>();
 
@@ -125,11 +127,32 @@ export class MenuCache {
     this.projectSearchUntil.delete(chatId);
   }
 
+  beginSessionSearch(chatId: number): void {
+    this.sessionSearchUntil.set(chatId, Date.now() + 2 * 60_000);
+  }
+
+  consumeSessionSearch(chatId: number): boolean {
+    const until = this.sessionSearchUntil.get(chatId);
+    this.sessionSearchUntil.delete(chatId);
+    return until !== undefined && until >= Date.now();
+  }
+
+  clearSessionSearch(chatId: number): void {
+    this.sessionSearchUntil.delete(chatId);
+  }
+
   /** Remember the session set + heading currently being paged for a chat. */
   setSessions(chatId: number, metas: SessionMeta[], heading: string, project?: ProjectEntry): string {
     const token = this.createToken();
     this.sessionLists.set(chatId, { token, metas, heading, project });
+    const byId = this.sessionMetaById.get(chatId) ?? new Map<string, SessionMeta>();
+    for (const meta of metas) byId.set(meta.sessionId, meta);
+    this.sessionMetaById.set(chatId, byId);
     return token;
+  }
+
+  getSessionMeta(chatId: number, sessionId: string): SessionMeta | undefined {
+    return this.sessionMetaById.get(chatId)?.get(sessionId);
   }
 
   getSessions(chatId: number, token?: string): { token: string; metas: SessionMeta[]; heading: string; project?: ProjectEntry } | undefined {

@@ -31,7 +31,7 @@ export function registerCapabilities(bot: Bot, deps: BotDeps): void {
     await ctx.replyWithChatAction("typing").catch(() => {});
     await deps.acp.refreshInventories();
     const current = deps.acp.currentModelId;
-    const lines = deps.acp.availableModels.map((m) => `${m.modelId === current ? "✓" : "•"} ${m.name} (${m.modelId})`);
+    const lines = deps.acp.availableModels.map((m) => `${m.modelId === current ? "✓" : "•"} ${m.name}`);
     await ctx.reply(boundedList(`🧩 Модели Codex (${lines.length})`, lines, "Codex не сообщил о доступных моделях."));
   });
 
@@ -39,7 +39,7 @@ export function registerCapabilities(bot: Bot, deps: BotDeps): void {
     await ctx.replyWithChatAction("typing").catch(() => {});
     await deps.acp.refreshInventories();
     const modes = deps.acp.availableModes.map((m) => `• ${m.name}${m.description ? ` — ${m.description}` : ""}`);
-    const running = deps.acp.currentSubagents().map((a) => `• ${a.sessionName || a.sessionId.slice(0, 8)} — ${statusLabel(a.status?.type)}`);
+    const running = deps.acp.currentSubagents().map((a) => `• ${a.sessionName || "Дополнительный агент"} — ${statusLabel(a.status?.type)}`);
     const sections = [
       modes.length ? `Доступные режимы:\n${modes.join("\n")}` : "Нет доступных режимов совместной работы.",
       running.length ? `Активные и недавние агенты:\n${running.join("\n")}` : "В этом процессе нет дополнительных агентов.",

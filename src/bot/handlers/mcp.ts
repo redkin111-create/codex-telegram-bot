@@ -91,7 +91,7 @@ export function mainPanel(
   kb.text("\u{1F9EA} Проверить связь", `mcp:health:${token}`).text("\u{1F527} Управление", `mcp:tog:${token}:0`).row();
   kb.text("\u{1F501} Обновить", "mcp:refresh");
   if (list.length > 0) kb.text("\u{1F504} Перезапустить Codex", `mcp:restart:${token}`);
-  kb.row().text("\u{1F3E0} Главное меню", "ui:home");
+  kb.row().text("⬅ Ещё", "ui:back");
   return { text: lines.join("\n"), kb };
 }
 
@@ -109,7 +109,7 @@ function togglePanel(list: McpServer[], token: string, page: number): { text: st
     if (p < pages - 1) kb.text("\u25B6", `mcp:tog:${token}:${p + 1}`);
     kb.row();
   }
-  kb.text("\u2B05 К серверам MCP", "mcp:refresh").text("\u{1F3E0} Меню", "ui:home");
+  kb.text("\u2B05 К серверам MCP", "mcp:refresh").text("⬅ Ещё", "ui:back");
   const text = list.length
     ? `\u{1F527} Управление серверами MCP \u00B7 ${list.length}\nНажмите, чтобы включить или выключить сервер. Чтобы изменения вступили в силу, перезапустите Codex.`
     : "Нет настроенных серверов MCP для управления.";
@@ -146,14 +146,14 @@ function authSummary(status: unknown): string {
 
 export function healthCheckKeyboard(token: string): InlineKeyboard {
   return new InlineKeyboard().text("\u{1F501} Проверить ещё раз", `mcp:recheck:${token}`).row()
-    .text("\u2B05 К серверам MCP", "mcp:refresh").text("\u{1F3E0} Меню", "ui:home");
+    .text("\u2B05 К серверам MCP", "mcp:refresh").text("⬅ Ещё", "ui:back");
 }
 
 async function runHealthCheck(ctx: Context, deps: BotDeps, list: McpServer[], token: string): Promise<void> {
   const enabled = list.filter((server) => !server.disabled);
   if (enabled.length === 0) {
     await ctx.editMessageText("Нет включённых серверов MCP для проверки.", {
-      reply_markup: new InlineKeyboard().text("\u2B05 К серверам MCP", "mcp:refresh").text("\u{1F3E0} Меню", "ui:home"),
+      reply_markup: new InlineKeyboard().text("\u2B05 К серверам MCP", "mcp:refresh").text("⬅ Ещё", "ui:back"),
     }).catch(() => {});
     return;
   }
@@ -256,7 +256,7 @@ export function registerMcp(bot: Bot, deps: BotDeps): void {
       await ctx.editMessageText(`\u2705 Codex перезапущен.\n\n${text}`, { reply_markup: kb }).catch(() => {});
     } catch {
       await ctx.editMessageText("\u274C Не удалось перезапустить Codex. Подробности есть в локальном журнале.", {
-        reply_markup: new InlineKeyboard().text("\u2B05 К серверам MCP", "mcp:refresh").text("\u{1F3E0} Меню", "ui:home"),
+        reply_markup: new InlineKeyboard().text("\u2B05 К серверам MCP", "mcp:refresh").text("⬅ Ещё", "ui:back"),
       }).catch(() => {});
     }
   });

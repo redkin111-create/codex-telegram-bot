@@ -101,6 +101,10 @@ export interface RequestPermissionParams {
   sessionId: string;
   toolCall?: { toolCallId?: string; title?: string; kind?: string; rawInput?: Record<string, unknown> };
   options: Array<{ optionId: string; name: string; kind?: string }>;
+  /** Exact Codex permission profile for item/permissions/requestApproval. */
+  permissions?: Record<string, unknown>;
+  reason?: string;
+  cwd?: string;
 }
 
 export type PermissionOutcome =

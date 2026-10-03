@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { Api } from "grammy";
 import type { AcpClient } from "../src/acp/client.js";
 import type { SessionUpdate, RequestPermissionParams } from "../src/acp/types.js";
+import { decidePermissionsApproval, describeRequestedPermissions } from "../src/acp/approvals.js";
 import { loadConfig, type AppConfig } from "../src/config.js";
 import { showHistory } from "../src/bot/handlers/history.js";
 import { PermissionService } from "../src/bot/permission-service.js";
@@ -57,12 +58,13 @@ test("clean mode hides command and diff updates but preserves assistant text", (
     {} as SettingsStore,
     { cwd: tmpdir(), sessionId: "session-id" },
   );
-  const shown = { output: [] as string[], thoughts: [] as string[], tools: [] as string[] };
+  const shown = { output: [] as string[], thoughts: [] as string[], summaries: [] as string[], tools: [] as string[] };
   const internal = runtime as unknown as {
     busy: boolean;
     streamer: {
       appendOutput: (text: string) => void;
       appendThought: (text: string) => void;
+      appendReasoningSummary: (text: string) => void;
       addTool: (text: string) => void;
     };
     toolActivity: boolean;
@@ -72,6 +74,7 @@ test("clean mode hides command and diff updates but preserves assistant text", (
   internal.streamer = {
     appendOutput: (text) => shown.output.push(text),
     appendThought: (text) => shown.thoughts.push(text),
+    appendReasoningSummary: (text) => shown.summaries.push(text),
     addTool: (text) => shown.tools.push(text),
   };
   internal.onUpdate("session-id", {
@@ -88,6 +91,10 @@ test("clean mode hides command and diff updates but preserves assistant text", (
     content: { type: "text", text: "INTERNAL_THOUGHT" },
   });
   internal.onUpdate("session-id", {
+    sessionUpdate: "agent_reasoning_summary_chunk",
+    content: { type: "text", text: "Проверяю настройки проекта…" },
+  });
+  internal.onUpdate("session-id", {
     sessionUpdate: "agent_message_chunk",
     content: { type: "text", text: "Готово: файл обновлён." },
   });
@@ -95,6 +102,7 @@ test("clean mode hides command and diff updates but preserves assistant text", (
   assert.equal(internal.toolActivity, true);
   assert.deepEqual(shown.tools, []);
   assert.deepEqual(shown.thoughts, []);
+  assert.deepEqual(shown.summaries, ["Проверяю настройки проекта…"]);
   assert.deepEqual(shown.output, ["Готово: файл обновлён."]);
   const completion = (runtime as unknown as {
     completionMessage: (reason: string, startedAt: number, streamedOutput: boolean) => string;
@@ -208,6 +216,66 @@ test("approval prompts still show the command and resolve the selected option", 
   assert(keyboard);
   assert.equal(permissions.resolveChoice("1", 0), "Разрешить");
   assert.deepEqual(await pending, { outcome: { outcome: "selected", optionId: "allow-once" } });
+});
+
+test("Codex permission approval grants only the requested profile for the current turn", async () => {
+  const requested = { fileSystem: { write: ["C:\\test\\allowed"], entries: [{ path: { type: "path", path: "C:\\test\\allowed" }, access: "write" }] } };
+  assert.deepEqual(describeRequestedPermissions(requested), ["Изменение: C:\\test\\allowed"]);
+  let prompt: RequestPermissionParams | undefined;
+  const response = await decidePermissionsApproval(
+    { threadId: "thread-1", itemId: "item-1", reason: "Создать отчёт", permissions: requested },
+    false,
+    async (params) => {
+      prompt = params;
+      return { outcome: { outcome: "selected", optionId: "grant" } };
+    },
+  );
+  assert.equal(prompt?.reason, "Создать отчёт");
+  assert.equal(prompt?.options[0]?.name, "Разрешить один раз");
+  assert.deepEqual(response, { permissions: requested, scope: "turn", strictAutoReview: false });
+});
+
+test("Codex permission approval denies on reject, missing handler, and unknown scope", async () => {
+  const requested = { network: { enabled: true } };
+  const denied = await decidePermissionsApproval({ permissions: requested }, false, async () => ({
+    outcome: { outcome: "selected", optionId: "deny" },
+  }));
+  const unattended = await decidePermissionsApproval({ permissions: requested }, false, undefined);
+  const unknown = await decidePermissionsApproval({ permissions: { futurePermission: true } }, false, async () => {
+    throw new Error("must not ask to approve an unknown scope");
+  });
+  assert.deepEqual(denied, { permissions: {}, scope: "turn", strictAutoReview: false });
+  assert.deepEqual(unattended, denied);
+  assert.deepEqual(unknown, denied);
+});
+
+test("Telegram permission prompts show the exact requested path and one-time choices", async () => {
+  let prompt = "";
+  let keyboard: { inline_keyboard?: Array<Array<{ text?: string }>> } | undefined;
+  const api = {
+    sendMessage: async (_chatId: number, text: string, extra: { reply_markup?: unknown }) => {
+      prompt = text;
+      keyboard = extra.reply_markup as typeof keyboard;
+      return { message_id: 11 };
+    },
+  } as unknown as Api;
+  const registry = {
+    describeSession: () => ({ chatId: 55, controlled: true, subagent: false, projectName: "Проект" }),
+    get: () => ({ sessionId: "session-1" }),
+  };
+  const permissions = new PermissionService(api, registry as never);
+  const pending = permissions.handle({
+    sessionId: "session-1",
+    options: [],
+    permissions: { fileSystem: { write: ["C:\\test\\outside"] } },
+    reason: "Записать безопасный тестовый файл",
+  });
+  await Promise.resolve();
+  assert(prompt.includes("Изменение: C:\\test\\outside"));
+  assert(prompt.includes("только для этого запроса"));
+  assert.deepEqual(keyboard?.inline_keyboard?.[0]?.map((button) => button.text), ["✅ Разрешить один раз", "⛔ Отклонить"]);
+  assert.equal(permissions.resolveChoice("1", 1), "Отклонить");
+  assert.deepEqual(await pending, { outcome: { outcome: "selected", optionId: "deny" } });
 });
 
 test("retry and failure notices stay concise and omit multiline command output", () => {

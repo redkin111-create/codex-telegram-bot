@@ -66,7 +66,7 @@ export class StatusPanel {
     lines.push(loc.join(SEP));
 
     // 4) How: agent | reasoning | model.
-    lines.push([`\u{1F916} Режим: ${s.agent || "по умолчанию"}`, `\u{1F9E0} Рассуждения: ${reasoningLabel(s.reasoning)}`, `\u{1F9E9} Модель: ${s.model || "по умолчанию"}`].join(SEP));
+    lines.push([`\u{1F916} Режим: ${s.agent || "по умолчанию"}`, `\u{1F9E0} Рассуждения: ${reasoningLabel(s.reasoning)}`, `\u{1F9E9} Модель: ${this.registry.modelLabel(s.model)}`].join(SEP));
 
     return lines.join("\n");
   }

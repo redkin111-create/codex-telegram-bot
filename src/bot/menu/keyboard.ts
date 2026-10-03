@@ -23,16 +23,13 @@ export function mainMenuInline(state: { busy: boolean }): InlineKeyboard {
     .text("\u{1F4C1} Проекты", "m:project")
     .text("\u{1F4AC} Сеансы", "m:sessions")
     .row()
-    .text("\u{1F9E9} MCP", "m:mcp")
-    .text("\u{1F6E0} Навыки", "m:skills")
+    .text("\u{1F195} Новый", "m:new")
+    .text("\u{1F9ED} Активные", "m:running")
     .row()
     .text("\u{1F916} Модель", "m:model")
-    .text("\u2699\uFE0F Настройки", "m:settings")
+    .text("\u{1F9E0} Рассуждения", "m:reasoning")
     .row()
-    .text("\u{1F4CA} Статус", "m:status")
-    .text("\u{1F195} Новый сеанс", "m:new")
-    .row()
-    .text("\u{1F9ED} Ещё", "m:more");
+    .text("\u2699\uFE0F Ещё", "m:more");
   if (state.busy) return kb.row().text("\u{1F6D1} Остановить задачу", "m:stop");
   return kb;
 }

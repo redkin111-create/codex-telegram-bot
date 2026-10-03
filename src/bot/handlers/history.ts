@@ -7,6 +7,7 @@ import type { BotDeps } from "../deps.js";
 import { readConversationHistory } from "../../sessions/history.js";
 import type { SessionMeta } from "../../sessions/types.js";
 import { sendMarkdownDoc } from "../telegram-io.js";
+import { safeSessionTitle } from "../catalog.js";
 
 const ENTRY_MAX = 700;
 const ROLE_ICON: Record<string, string> = {
@@ -39,8 +40,8 @@ export async function showHistory(
     await deps.api.sendMessage(chatId, "История этого сеанса пока пуста.");
     return;
   }
-  const title = meta?.title || sessionId.slice(0, 8);
-  const proj = meta?.cwd ? basename(meta.cwd) : "";
+  const title = safeSessionTitle(meta?.title) || "Сеанс Codex";
+  const proj = meta?.projectName || (meta?.cwd ? basename(meta.cwd) : "");
   const header = `\u{1F4DC} **История** \u2014 ${title}${proj ? ` (${proj})` : ""}`;
 
   const body = entries

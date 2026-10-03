@@ -9,6 +9,8 @@ import type { BotDeps } from "../deps.js";
 import type { HistoryEntry } from "../../sessions/types.js";
 import { conversationEntries, jsonlMtimeMs, readFirstPrompt } from "../../sessions/history.js";
 import { progressBar } from "../../render/progress.js";
+import { sameProjectPath } from "../../projects/manager.js";
+import { loadCodexProjects, safeSessionTitle } from "../catalog.js";
 import { refreshMenu } from "../menu/refresh.js";
 import { sendMarkdownDoc } from "../telegram-io.js";
 
@@ -20,6 +22,7 @@ const ROLE_ICON: Record<string, string> = {
 const ENTRY_MAX = 700;
 /** Max session cards to send for one /running (avoids flooding the chat). */
 const CARD_LIMIT = 12;
+export const RUNNING_COMMANDS = ["running", "active"] as const;
 
 function trunc(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "\u2026" : s;
@@ -38,12 +41,18 @@ function timeAgo(ms: number): string {
 
 /** Reduce a stored first prompt to a clean one-liner: drop the leading reasoning
  *  directive and any fork-priming preamble, then collapse whitespace. */
-function cleanPrompt(raw: string): string {
+export function cleanPrompt(raw: string): string {
   let t = raw.trim().replace(/^\([^)]*\)\s*/, "");
   const marker = "User's new message:";
   const i = t.lastIndexOf(marker);
   if (i !== -1) t = t.slice(i + marker.length);
-  return t.replace(/\s+/g, " ").trim();
+  return safeSessionTitle(t.replace(/\s+/g, " ").trim()) ?? "";
+}
+
+/** A useful session label even before Codex has saved a title or first prompt. */
+export function runningSessionTitle(projectName: string, prompt: string, storedTitle = "", codexTitle = ""): string {
+  const title = safeSessionTitle(codexTitle) || cleanPrompt(prompt) || cleanPrompt(storedTitle);
+  return title ? `“${trunc(title, 120)}”` : `Сеанс · ${projectName}`;
 }
 
 /** Build a rich card (plain text, no MarkdownV2) + buttons for one controlled
@@ -54,11 +63,13 @@ function buildRunningCard(s: RunningSession, deps: BotDeps, now: number): { text
 
   let when = "новый";
   let prompt = "";
+  let storedTitle = "";
   if (s.sessionId) {
     const path = deps.store.jsonlPath(s.sessionId);
     const mtime = jsonlMtimeMs(path);
     if (mtime) when = timeAgo(now - mtime);
     prompt = cleanPrompt(readFirstPrompt(path));
+    storedTitle = deps.store.get(s.sessionId)?.title ?? "";
   }
 
   const meta = [when, state];
@@ -67,7 +78,7 @@ function buildRunningCard(s: RunningSession, deps: BotDeps, now: number): { text
 
   const lines = [
     `${dot} ${s.projectName}`,
-    prompt ? `\u{1F4AC} \u201C${trunc(prompt, 120)}\u201D` : "\u{1F4AC} сообщений пока нет",
+    `\u{1F4AC} ${runningSessionTitle(s.projectName, prompt, storedTitle, s.sessionTitle)}`,
     `\u{1F552} ${meta.join(" \u00B7 ")}`,
   ];
   if (s.progress !== undefined) lines.push(`\u{1F4C8} ${progressBar(s.progress)}`);
@@ -84,7 +95,27 @@ function buildRunningCard(s: RunningSession, deps: BotDeps, now: number): { text
 
 export async function showRunning(ctx: Context, deps: BotDeps): Promise<void> {
   await deps.ephemeral.open(ctx);
-  const list = dedupeBySession(deps.registry.controller(ctx.chat!.id).list());
+  const [projects, threads] = await Promise.all([
+    loadCodexProjects(deps.acp),
+    deps.acp.listThreads({
+      limit: 500,
+      sortKey: "recency_at",
+      sortDirection: "desc",
+      sourceKinds: ["cli", "vscode", "appServer"],
+    }).catch(() => []),
+  ]);
+  const titles = new Map(threads.flatMap((thread) => {
+    const title = safeSessionTitle(thread.name, thread.preview);
+    return title ? [[thread.id, title] as const] : [];
+  }));
+  const list = dedupeBySession(deps.registry.controller(ctx.chat!.id).list()).map((session) => {
+    const project = projects.find((item) => (item.roots ?? [item.path]).some((root) => sameProjectPath(root, session.cwd)));
+    return {
+      ...session,
+      ...(project ? { projectName: project.name } : {}),
+      sessionTitle: session.sessionId ? titles.get(session.sessionId) : undefined,
+    };
+  });
   if (list.length === 0) {
     await deps.ephemeral.reply(ctx, "Пока нет сеансов для управления. Выберите проект или отправьте /new, чтобы начать.");
     return;
@@ -124,7 +155,7 @@ export async function switchAndShow(ctx: Context, deps: BotDeps, sessionId: stri
 }
 
 export function registerRunning(bot: Bot, deps: BotDeps): void {
-  bot.command("running", (ctx) => showRunning(ctx, deps));
+  bot.command([...RUNNING_COMMANDS], (ctx) => showRunning(ctx, deps));
 
   bot.callbackQuery("run:noop", (ctx) => ctx.answerCallbackQuery({ text: "Это уже текущий сеанс" }));
 

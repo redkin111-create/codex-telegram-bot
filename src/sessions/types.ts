@@ -4,6 +4,11 @@ export interface SessionMeta {
   sessionId: string;
   cwd: string;
   title: string;
+  projectId?: string;
+  /** Display name from the Codex project catalogue, when available. */
+  projectName?: string;
+  source?: string;
+  telegramCreated?: boolean;
   createdAt: string;
   updatedAt: string;
   reason?: string;

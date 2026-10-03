@@ -28,7 +28,7 @@ export function statusKey(s: SubagentInfo): string {
 
 /** A one-line label for a subagent (no leading icon). */
 export function subagentLabel(s: SubagentInfo): string {
-  const name = s.sessionName || s.agentName || s.sessionId.slice(0, 8);
+  const name = s.sessionName || s.agentName || "дополнительный агент";
   const role = s.role || s.agentName;
   return role && role !== name ? `${name} (${role})` : name;
 }

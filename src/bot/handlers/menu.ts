@@ -11,7 +11,8 @@ import { showMcp } from "./mcp.js";
 import { showProjects } from "./projects.js";
 import { showRunning } from "./running.js";
 import { showAccounts } from "./accounts.js";
-import { showNewSessionConfirmation, showSessions } from "./sessions.js";
+import { showNewSessionConfirmation, showCurrentProjectSessions } from "./sessions.js";
+import { showDiagnostics } from "./diagnostics.js";
 import { showTasks } from "./tasks.js";
 import { showUsage } from "./usage.js";
 
@@ -37,7 +38,7 @@ export function registerMenu(bot: Bot, deps: BotDeps): void {
   });
   bot.callbackQuery("ui:back", async (ctx) => {
     await ctx.answerCallbackQuery();
-    await openMainMenu(ctx, deps);
+    await showMore(ctx, deps);
   });
 
   bot.callbackQuery(/^agent:set:(\d+)$/, async (ctx) => {
@@ -77,7 +78,7 @@ async function dispatchMenu(ctx: Context, deps: BotDeps, action: string): Promis
       return showProjects(ctx, deps);
     case "sessions":
       await ctx.answerCallbackQuery();
-      return showSessions(ctx, deps);
+      return showCurrentProjectSessions(ctx, deps);
     case "running":
       await ctx.answerCallbackQuery();
       return showRunning(ctx, deps);
@@ -96,6 +97,12 @@ async function dispatchMenu(ctx: Context, deps: BotDeps, action: string): Promis
     case "settings":
       await ctx.answerCallbackQuery();
       return showSettings(ctx, deps);
+    case "security":
+      await ctx.answerCallbackQuery();
+      return showSecurity(ctx, deps);
+    case "diagnostics":
+      await ctx.answerCallbackQuery();
+      return showDiagnostics(ctx, deps);
     case "skills":
       await ctx.answerCallbackQuery();
       return showSkills(ctx, deps);
@@ -130,20 +137,32 @@ async function dispatchMenu(ctx: Context, deps: BotDeps, action: string): Promis
 async function showMore(ctx: Context, deps: BotDeps): Promise<void> {
   await deps.ephemeral.open(ctx);
   const kb = new InlineKeyboard()
-    .text("\u{1F9ED} Активные сеансы", "m:running")
-    .text("\u{1F4C5} Задачи", "m:tasks")
+    .text("\u{1F9E9} MCP", "m:mcp").text("\u{1F6E0} Навыки", "m:skills")
     .row()
-    .text("\u{1F4B3} Использование", "m:usage")
-    .text("\u{1F465} Аккаунты", "m:accounts")
+    .text("\u{1F4C5} Задачи", "m:tasks").text("\u{1F465} Аккаунты", "m:accounts")
     .row()
-    .text("\u{1F916} Режим работы", "m:agent")
-    .text("\u{1F6D1} Остановить другие сеансы", "m:killall")
+    .text("\u{1F4B3} Лимиты", "m:usage").text("\u{1F512} Безопасность", "m:security")
     .row()
-    .text("\u2328\uFE0F Показать панель", "m:showbar")
-    .text("\u{1F648} Скрыть панель", "m:hidebar")
+    .text("\u2699\uFE0F Настройки", "m:settings").text("\u{1F4CA} Статус", "m:status")
+    .row()
+    .text("\u{1F6D1} Другие сеансы", "m:killall").text("\u{1F648} Панель", "m:hidebar")
+    .row()
+    .text("\u{1F3E5} Диагностика", "m:diagnostics")
     .row()
     .text("\u{1F3E0} Главное меню", "ui:home");
-  await deps.ephemeral.reply(ctx, "Дополнительные действия", { reply_markup: kb });
+  await deps.ephemeral.reply(ctx, "Ещё", { reply_markup: kb });
+}
+
+async function showSecurity(ctx: Context, deps: BotDeps): Promise<void> {
+  await deps.ephemeral.open(ctx);
+  const text = [
+    "🔐 Безопасность",
+    `Sandbox: ${deps.cfg.trustAllTools ? "полный доступ" : "только рабочие папки"}`,
+    `Подтверждения: ${deps.cfg.trustAllTools ? "выключены" : "по запросу"}`,
+    `Доверять всем инструментам: ${deps.cfg.trustAllTools ? "ВКЛ" : "ВЫКЛ"}`,
+    `Разрешённые пользователи: ${deps.cfg.allowedUsers.size > 0 ? "настроены" : "не настроены"}`,
+  ].join("\n");
+  await deps.ephemeral.reply(ctx, text, { reply_markup: new InlineKeyboard().text("⬅ Ещё", "ui:back").text("🏠 Меню", "ui:home") });
 }
 
 async function confirm(ctx: Context, deps: BotDeps, text: string): Promise<void> {

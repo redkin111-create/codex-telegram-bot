@@ -12,8 +12,13 @@ const IGNORE = new Set([
 ]);
 
 export interface ProjectEntry {
+  /** Codex's stable project identifier, when returned by project/list. */
+  id?: string;
   name: string;
   path: string;
+  /** All roots for multi-root Codex projects. */
+  roots?: string[];
+  position?: number;
   lastUsed: number;
 }
 

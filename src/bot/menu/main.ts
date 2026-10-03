@@ -1,9 +1,11 @@
 import type { Context } from "grammy";
 import { basename } from "node:path";
 import { reasoningLabel } from "../../app/reasoning.js";
+import { sameProjectPath } from "../../projects/manager.js";
 import type { BotDeps } from "../deps.js";
 import { mainMenuInline } from "./keyboard.js";
 import { compactLabel } from "./paging.js";
+import { codexProjectAt, safeSessionTitle } from "../catalog.js";
 
 export interface MainMenuState {
   project: string;
@@ -18,15 +20,12 @@ export interface MainMenuState {
 
 export function mainMenuText(state: MainMenuState): string {
   const lines = [
-    "\u{1F916} Удалённый Codex",
-    `\u{1F4C1} Проект: ${compactLabel(state.project, 48)}`,
-    `\u{1F4AC} Сеанс: ${compactLabel(state.session, 48)}`,
-    `\u{1F9E0} Модель: ${compactLabel(state.model, 48)}`,
-    `\u2699\uFE0F Уровень рассуждений: ${state.reasoning}`,
-    `\u{1F512} Доступ: ${state.sandbox}`,
-    `Подтверждение действий: ${state.approval}`,
+    "\u{1F916} Codex",
+    `\u{1F4C1} ${compactLabel(state.project, 48)}`,
+    `\u{1F4AC} ${compactLabel(state.session, 48)}`,
+    `\u{1F9E0} ${compactLabel(state.model, 40)} · ${state.reasoning}`,
+    state.busy ? "\u23F3 Выполняет задачу" : "\u2705 Готов",
   ];
-  if (state.unsafe) lines.push("\u26A0\uFE0F В настройках включён полный доступ.");
   return lines.join("\n");
 }
 
@@ -37,9 +36,9 @@ export async function openMainMenu(ctx: Context, deps: BotDeps): Promise<void> {
   const rt = deps.registry.get(chatId);
   const meta = rt.sessionId ? deps.store.get(rt.sessionId) : undefined;
   const state: MainMenuState = {
-    project: rt.projectName || (rt.cwd ? basename(rt.cwd) : "Не выбран"),
-    session: meta?.title || (rt.sessionId ? rt.sessionId.slice(0, 8) : "Не запущен"),
-    model: rt.model || deps.acp.currentModelId || "По умолчанию",
+    project: await currentProjectName(chatId, rt.cwd, rt.projectName, deps),
+    session: safeSessionTitle(meta?.title) || (rt.sessionId ? "Текущий сеанс" : "Готов к работе"),
+    model: friendlyModel(rt.model || deps.acp.currentModelId, deps.acp.availableModels),
     reasoning: reasoningLabel(rt.reasoning),
     sandbox: deps.cfg.trustAllTools ? "полный" : "только к рабочим папкам",
     approval: deps.cfg.trustAllTools ? "выключено" : "по запросу",
@@ -47,4 +46,21 @@ export async function openMainMenu(ctx: Context, deps: BotDeps): Promise<void> {
     busy: rt.isBusy,
   };
   await deps.ephemeral.reply(ctx, mainMenuText(state), { reply_markup: mainMenuInline({ busy: state.busy }) });
+}
+
+async function currentProjectName(chatId: number, cwd: string, fallback: string | undefined, deps: BotDeps): Promise<string> {
+  const selected = deps.menuCache.getSelectedProject(chatId);
+  if (selected && (selected.roots ?? [selected.path]).some((root) => sameProjectPath(root, cwd))) return selected.name;
+  if (cwd) {
+    try {
+      const project = await codexProjectAt(deps.acp, cwd);
+      if (project) return project.name;
+    } catch { /* fall back to the runtime's project label */ }
+  }
+  return fallback || (cwd ? basename(cwd) : "Не выбран");
+}
+
+function friendlyModel(id: string | undefined, models: Array<{ modelId: string; name: string }>): string {
+  if (!id || id === "auto") return "По умолчанию";
+  return models.find((model) => model.modelId === id)?.name || id.replace(/^gpt-/, "GPT-");
 }

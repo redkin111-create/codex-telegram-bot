@@ -8,6 +8,7 @@
 import type { Api } from "grammy";
 import { InlineKeyboard } from "grammy";
 import type { PermissionOutcome, RequestPermissionParams } from "../acp/types.js";
+import { describeRequestedPermissions } from "../acp/approvals.js";
 import { createLogger } from "../logger.js";
 import type { RuntimeRegistry } from "./registry.js";
 
@@ -47,6 +48,8 @@ export class PermissionService {
 
   /** Handle a permission request: ask the owning chat, or auto-allow if none. */
   async handle(params: RequestPermissionParams): Promise<PermissionOutcome> {
+    const permissionDetails = params.permissions ? describeRequestedPermissions(params.permissions) : undefined;
+    if (params.permissions && !permissionDetails) return deny();
     const desc = this.registry.describeSession(params.sessionId);
     const chatId = desc.chatId;
     if (chatId === undefined) return deny(); // unattended work must never approve itself
@@ -59,10 +62,16 @@ export class PermissionService {
     const canSwitch = desc.controlled && !isForeground;
     const label = desc.subagent
       ? desc.subagentName || "subagent"
-      : desc.projectName || params.sessionId.slice(0, 8);
+      : desc.projectName || "Сеанс Codex";
 
     const kb = new InlineKeyboard();
-    params.options.forEach((o, i) => kb.text(buttonLabel(o), `perm:${reqId}:${i}`));
+    const options = params.permissions
+      ? [
+          { optionId: "grant", name: "Разрешить один раз", kind: "allow_once" },
+          { optionId: "deny", name: "Отклонить", kind: "reject_once" },
+        ]
+      : params.options;
+    options.forEach((o, i) => kb.text(buttonLabel(o), `perm:${reqId}:${i}`));
     kb.row();
     if (canSwitch) kb.text(`\u{1F500} Перейти к ${label}`, `permsw:${reqId}`);
 
@@ -70,7 +79,7 @@ export class PermissionService {
     try {
       const msg = await this.api.sendMessage(
         chatId,
-        describe(params, { label: isForeground ? undefined : label, subagent: desc.subagent, canSwitch }),
+        describe(params, { label: isForeground ? undefined : label, subagent: desc.subagent, canSwitch, permissionDetails }),
         {
           reply_markup: kb,
           disable_notification: false, // requires interaction → always with sound
@@ -88,7 +97,7 @@ export class PermissionService {
         void this.api.editMessageText(chatId, messageId!, "\u231B Время ожидания истекло. Действие отклонено.").catch(() => {});
         resolve({ outcome: { outcome: "cancelled" } });
       }, TIMEOUT_MS);
-      this.pending.set(reqId, { resolve, options: params.options, chatId, sessionId: params.sessionId, messageId, timer });
+      this.pending.set(reqId, { resolve, options, chatId, sessionId: params.sessionId, messageId, timer });
     });
   }
 
@@ -115,7 +124,7 @@ export class PermissionService {
 
 function describe(
   params: RequestPermissionParams,
-  ctx: { label?: string; subagent: boolean; canSwitch: boolean },
+  ctx: { label?: string; subagent: boolean; canSwitch: boolean; permissionDetails?: string[] },
 ): string {
   const tc = params.toolCall;
   const kind = (tc?.kind || "other").toLowerCase();
@@ -124,7 +133,9 @@ function describe(
   const raw = (tc?.rawInput || {}) as Record<string, unknown>;
   const cmd = typeof raw.command === "string" ? raw.command : undefined;
   const path = typeof raw.path === "string" ? raw.path : undefined;
-  const detail = cmd ? `\n\n$ ${cmd}` : path ? `\n\n${path}` : "";
+  const detail = params.permissions
+    ? `\n\n${ctx.permissionDetails?.map((line) => `• ${line}`).join("\n") ?? ""}${params.reason ? `\n\nПричина: ${params.reason}` : ""}\n\nДоступ будет действовать только для этого запроса.`
+    : cmd ? `\n\n$ ${cmd}` : path ? `\n\n${path}` : "";
   const who = ctx.subagent
     ? `\u{1F916}\u{1F510} Дополнительному агенту «${ctx.label}» нужно разрешение на действие:`
     : ctx.label
