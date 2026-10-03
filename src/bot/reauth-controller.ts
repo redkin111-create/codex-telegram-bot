@@ -18,6 +18,7 @@ import type { AcpClient } from "../acp/client.js";
 import { AuthService } from "../app/auth-service.js";
 import type { AccountInfo } from "../app/usage.js";
 import { createLogger } from "../logger.js";
+import { briefErrorMessage } from "./prompt-retry.js";
 import { parseDeviceFlow } from "../render/device-flow.js";
 
 const log = createLogger("reauth");
@@ -213,7 +214,7 @@ export class ReauthController {
       s.phase = "done";
     } catch (e) {
       s.phase = "failed_restart";
-      s.errorMsg = (e as Error).message;
+      s.errorMsg = briefErrorMessage(e as Error);
     }
     this.stopAnim(s);
     await this.render(s);
@@ -291,7 +292,7 @@ export class ReauthController {
     } catch (e) {
       log.warn("reauth flow failed:", (e as Error).message);
       s.phase = "failed_login";
-      s.errorMsg = (e as Error).message;
+      s.errorMsg = briefErrorMessage(e as Error);
     } finally {
       s.abort = undefined;
       s.apiKey = undefined; // never retain the secret longer than needed
@@ -321,7 +322,7 @@ export class ReauthController {
       return true;
     } catch (e) {
       s.phase = "failed_restart";
-      s.errorMsg = (e as Error).message;
+      s.errorMsg = briefErrorMessage(e as Error);
       return false;
     }
   }
@@ -372,7 +373,7 @@ export class ReauthController {
           "\u{1F511} Вход с ключом API OpenAI\n\n" +
           "Отправьте ключ сообщением (он начинается с `sk-`). Он будет использован только для команды " +
           "`codex login --api-key` на этом компьютере и не сохраняется ботом." +
-          (s.errorMsg ? `\n\n\u26A0\uFE0F ${s.errorMsg}` : "")
+          (s.errorMsg ? `\n\n\u26A0\uFE0F ${briefErrorMessage(new Error(s.errorMsg))}` : "")
         );
       case "logout":
         return `\u{1F510} Вход в Codex…\n\u{1F6AA} Выполняю выход…  ${loader}`;
@@ -399,11 +400,11 @@ export class ReauthController {
         return "\u{1F6D1} Вход отменён, аккаунт отключён. Нажмите «Повторить» или выберите другой способ.";
       case "failed_login":
         return (
-          `\u274C ${s.errorMsg ?? "Не удалось выполнить вход."}\n` +
+          `\u274C ${briefErrorMessage(new Error(s.errorMsg ?? "Не удалось выполнить вход."))}\n` +
           "Нажмите «Повторить» или выберите другой способ входа."
         );
       case "failed_restart":
-        return `\u26A0\uFE0F Вход выполнен, но не удалось перезапустить Codex: ${s.errorMsg ?? "неизвестная ошибка"}.`;
+        return `\u26A0\uFE0F Вход выполнен, но не удалось перезапустить Codex: ${briefErrorMessage(new Error(s.errorMsg ?? "неизвестная ошибка"))}.`;
       default:
         return "";
     }

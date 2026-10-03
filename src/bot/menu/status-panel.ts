@@ -39,7 +39,6 @@ export class StatusPanel {
     // session — so it always matches the session id shown below, even right
     // after switching between controlled sessions in different projects.
     const project = rt.projectName || (rt.cwd ? basename(rt.cwd) : "(не выбран)");
-    const session = rt.sessionId ? rt.sessionId.slice(0, 8) : "нет";
     const meta = rt.contextInfo();
     const ctxPct = meta?.contextUsagePercentage;
     const running = this.registry.controller(chatId).count();
@@ -62,7 +61,7 @@ export class StatusPanel {
     lines.push(activity.join(SEP));
 
     // 3) Where: project | session | context usage.
-    const loc = [`\u{1F4C1} ${project}`, `\u{1F9F5} ${session}`];
+    const loc = [`\u{1F4C1} ${project}`];
     if (ctxPct !== undefined) loc.push(`\u{1F4CA} контекст: ${ctxPct.toFixed(0)}%`);
     lines.push(loc.join(SEP));
 

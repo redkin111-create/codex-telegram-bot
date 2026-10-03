@@ -140,14 +140,14 @@ function describe(
 
 function buttonLabel(o: { name: string; kind?: string }): string {
   const k = `${o.kind ?? ""} ${o.name}`.toLowerCase();
-  const icon = /reject|deny|no|cancel/.test(k) ? "\u26D4" : /always|all/.test(k) ? "\u2705\u267E\uFE0F" : "\u2705";
+  const icon = /reject|deny|no|cancel/.test(k) ? "\u26D4" : /\b(always|all)\b/.test(k) ? "\u2705\u267E\uFE0F" : "\u2705";
   return `${icon} ${optionLabel(o.name)}`;
 }
 
 function optionLabel(name: string): string {
   const k = name.toLowerCase();
   if (/reject|deny|no|cancel/.test(k)) return "Отклонить";
-  if (/always|all/.test(k)) return "Всегда разрешать";
+  if (/\b(always|all)\b/.test(k)) return "Всегда разрешать";
   if (/allow|approve|yes|once|session/.test(k)) return "Разрешить";
   return name;
 }

@@ -16,6 +16,7 @@ import type { Bot } from "grammy";
 import { textPrompt } from "../../app/types.js";
 import { createLogger } from "../../logger.js";
 import type { BotDeps } from "../deps.js";
+import { briefErrorMessage } from "../prompt-retry.js";
 import { extractReplyContext } from "../reply-context.js";
 
 const log = createLogger("message");
@@ -79,7 +80,7 @@ async function flush(deps: BotDeps, batches: Map<number, TextBatch>, chatId: num
   const note = batch.parts.length > 1 ? ` (объединено сообщений: ${batch.parts.length})` : "";
   try {
     // Thread the reply to the prompt message (the user's message is left intact;
-    // the agent's response + Done reply to it, and carry searchable hashtags).
+    // the agent's response + completion reply to it).
     const outcome = await rt.submit(textPrompt(combined, batch.ids[0], batch.quoted));
     if (outcome === "queued") {
       await send(
@@ -90,7 +91,7 @@ async function flush(deps: BotDeps, batches: Map<number, TextBatch>, chatId: num
     }
   } catch (err) {
     log.warn(`submit failed for chat ${chatId}: ${(err as Error).message}`);
-    await send(deps, chatId, `\u274C Не удалось отправить сообщение в Codex: ${(err as Error).message}`);
+    await send(deps, chatId, `\u274C Не удалось отправить сообщение в Codex: ${briefErrorMessage(err as Error)}`);
   }
 }
 

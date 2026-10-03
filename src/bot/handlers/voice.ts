@@ -6,6 +6,7 @@ import type { Bot, Context } from "grammy";
 import { textPrompt } from "../../app/types.js";
 import { createLogger } from "../../logger.js";
 import type { BotDeps } from "../deps.js";
+import { briefErrorMessage } from "../prompt-retry.js";
 import { extractReplyContext } from "../reply-context.js";
 
 const log = createLogger("voice");
@@ -37,7 +38,7 @@ export function registerVoice(bot: Bot, deps: BotDeps): void {
       if (outcome === "queued") await ctx.reply("\u{1F4E5} Сообщение добавлено в очередь и будет обработано после текущей задачи.");
     } catch (e) {
       log.warn("voice failed:", (e as Error).message);
-      await ctx.reply(`\u274C Не удалось распознать голосовое сообщение: ${(e as Error).message}`);
+      await ctx.reply(`\u274C Не удалось распознать голосовое сообщение: ${briefErrorMessage(e as Error)}`);
     }
   };
 

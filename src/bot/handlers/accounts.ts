@@ -17,6 +17,7 @@ import type { StoredAccount } from "../../app/accounts.js";
 import { UNSUPPORTED_LOGIN_HELP } from "../../app/codex-credentials.js";
 import { createLogger } from "../../logger.js";
 import type { BotDeps } from "../deps.js";
+import { briefErrorMessage } from "../prompt-retry.js";
 
 const log = createLogger("accounts");
 
@@ -136,7 +137,7 @@ export function registerAccounts(bot: Bot, deps: BotDeps): void {
         note = `\u{1F4BE} Сохранено: ${saved.label}`;
       }
     } catch (e) {
-      note = `\u274C ${(e as Error).message}`;
+      note = `\u274C ${briefErrorMessage(e as Error)}`;
     }
     await deps.ephemeral.open(ctx);
     const { text: t, keyboard } = await view(deps, note);
@@ -179,7 +180,7 @@ export function registerAccounts(bot: Bot, deps: BotDeps): void {
       await ctx.answerCallbackQuery({ text: `Сохранено: ${saved.label}` });
       await rerender(ctx, deps, `\u{1F4BE} Сохранено: ${saved.label}`);
     } catch (e) {
-      await ctx.answerCallbackQuery({ text: (e as Error).message.slice(0, 190), show_alert: true });
+      await ctx.answerCallbackQuery({ text: briefErrorMessage(e as Error).slice(0, 190), show_alert: true });
     }
   });
 
@@ -194,11 +195,11 @@ export function registerAccounts(bot: Bot, deps: BotDeps): void {
     await ctx.answerCallbackQuery({ text: "Импортирую…" });
     await ctx.editMessageText("\u{1F4E5} Импортирую текущий аккаунт Codex…").catch(() => {});
     const res = await auth.importExisting();
-    if (!res.ok) return void rerender(ctx, deps, `\u274C ${res.error ?? "Не удалось импортировать аккаунт."}`);
+    if (!res.ok) return void rerender(ctx, deps, `\u274C ${briefErrorMessage(new Error(res.error ?? "Не удалось импортировать аккаунт."))}`);
     try {
       await deps.acp.restart();
     } catch (e) {
-      return void rerender(ctx, deps, `\u26A0\uFE0F Аккаунт импортирован, но Codex не удалось перезапустить: ${(e as Error).message}`);
+      return void rerender(ctx, deps, `\u26A0\uFE0F Аккаунт импортирован, но Codex не удалось перезапустить: ${briefErrorMessage(e as Error)}`);
     }
     // Confirm codex actually accepts the imported login before saving it.
     if (!(await deps.usage.isLoggedIn())) {
@@ -233,7 +234,7 @@ export function registerAccounts(bot: Bot, deps: BotDeps): void {
       await rerender(ctx, deps, note);
     } catch (e) {
       log.warn("account switch failed:", (e as Error).message);
-      await rerender(ctx, deps, `\u274C ${(e as Error).message}`);
+      await rerender(ctx, deps, `\u274C ${briefErrorMessage(e as Error)}`);
     }
   });
 

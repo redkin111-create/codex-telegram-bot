@@ -4,8 +4,7 @@
 import type { Bot } from "grammy";
 import { basename } from "node:path";
 import type { BotDeps } from "../deps.js";
-import { readHistory } from "../../sessions/history.js";
-import { sessionHashtags } from "../../render/hashtags.js";
+import { readConversationHistory } from "../../sessions/history.js";
 import type { SessionMeta } from "../../sessions/types.js";
 import { sendMarkdownDoc } from "../telegram-io.js";
 
@@ -13,8 +12,6 @@ const ENTRY_MAX = 700;
 const ROLE_ICON: Record<string, string> = {
   user: "\u{1F464}",
   assistant: "\u{1F916}",
-  tool: "\u{1F527}",
-  system: "\u2139\uFE0F",
 };
 
 export function registerHistory(bot: Bot, deps: BotDeps): void {
@@ -25,7 +22,7 @@ export function registerHistory(bot: Bot, deps: BotDeps): void {
       return;
     }
     const meta = deps.store.get(rt.sessionId);
-    await showHistory(deps, ctx.chat.id, rt.sessionId, meta, 16, rt.tags);
+    await showHistory(deps, ctx.chat.id, rt.sessionId, meta);
   });
 }
 
@@ -36,9 +33,8 @@ export async function showHistory(
   sessionId: string,
   meta?: SessionMeta,
   count = 16,
-  tags?: string,
 ): Promise<void> {
-  const entries = readHistory(deps.store.jsonlPath(sessionId), count);
+  const entries = readConversationHistory(deps.store.jsonlPath(sessionId), count);
   if (entries.length === 0) {
     await deps.api.sendMessage(chatId, "История этого сеанса пока пуста.");
     return;
@@ -51,13 +47,9 @@ export async function showHistory(
     .map((e) => {
       const icon = ROLE_ICON[e.role] ?? "\u2022";
       let text = e.text.length > ENTRY_MAX ? e.text.slice(0, ENTRY_MAX) + " …" : e.text;
-      if (e.role === "tool" && e.tool) text = `\`${e.tool}\` ${text}`;
       return `${icon} ${text}`;
     })
     .join("\n\n");
 
-  // Every AI-output surface carries the session's searchable hashtags. A static
-  // view (no live runtime) tags at least project + session id.
-  const footer = tags ?? sessionHashtags({ cwd: meta?.cwd, sessionId });
-  await sendMarkdownDoc(deps.api, chatId, `${header}\n\n${body}\n\n${footer}`);
+  await sendMarkdownDoc(deps.api, chatId, `${header}\n\n${body}`);
 }

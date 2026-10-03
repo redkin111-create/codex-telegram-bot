@@ -5,7 +5,7 @@
  * The turn is modelled as ordered segments so the transcript reads clearly:
  *   • plain prose      = the agent talking to you
  *   • > 💭 quoted block = the agent's thinking
- *   • 🔧 + code block   = tool calls / terminal commands / diffs
+ *   • 🔧 + code block   = tool calls / terminal commands / diffs (verbose mode)
  *
  * A single "live" message is edited as content grows; only when it would exceed
  * Telegram's size limit is it sealed and a new live message started.
@@ -50,24 +50,12 @@ export class ResponseStreamer {
     private readonly chatId: number,
     private readonly throttleMs: number,
     private replyTo?: number,
-    private footer?: string,
     private readonly onProgress?: (pct: number) => void,
     /** Show a bot-computed bar when the agent emits no marker. */
     private readonly fallbackEnabled = false,
     /** Turn start time, used by the fallback's elapsed-time signal. */
     private readonly turnStartedAt = Date.now(),
   ) {}
-
-  /** Replace the hashtag footer (used after a logical fork swaps the session id
-   *  mid-turn, so the streamed response carries the NEW session's tags). */
-  setFooter(footer: string): void {
-    this.footer = footer;
-  }
-
-  /** "\n\n<footer>" appended to every finished message bubble (e.g. hashtags). */
-  private footerSuffix(): string {
-    return this.footer ? `\n\n${this.footer}` : "";
-  }
 
   /** Strip `{progress: N%}` markers from rendered text, remembering the latest
    *  value (sticky across flushes) and notifying the owner when it changes. */
@@ -185,11 +173,10 @@ export class ResponseStreamer {
       // Never send an empty / progress-only bubble. The bar is appended only to
       // real streamed content; the live status panel shows the standalone bar.
       if (!base.trim()) return;
-      // The live (still-streaming) bubble carries the hashtag footer AND a fresh
-      // progress bar at the bottom (sealed bubbles below get neither bar).
+      // The live bubble carries a fresh progress bar; sealed bubbles below get neither.
       const parts: string[] = [base];
       if (this.progress !== undefined) parts.push(progressBar(this.progress));
-      const src = `${parts.join("\n\n")}${this.footerSuffix()}`;
+      const src = parts.join("\n\n");
       const rendered = toTelegramMarkdown(src);
       const chunks = chunkMarkdown(rendered);
       const plain = chunkMarkdown(src);
@@ -228,8 +215,7 @@ export class ResponseStreamer {
   private async seal(from: number, to: number): Promise<void> {
     const base = this.captureProgress(renderSegs(this.segs.slice(from, to)));
     if (!base.trim()) return;
-    // A sealed bubble is finished, so it carries the footer (hashtags).
-    const src = `${base}${this.footerSuffix()}`;
+    const src = base;
     const chunks = chunkMarkdown(toTelegramMarkdown(src));
     const plain = chunkMarkdown(src);
     for (let i = 0; i < chunks.length; i++) {

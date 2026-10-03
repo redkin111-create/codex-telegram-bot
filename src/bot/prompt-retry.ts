@@ -4,8 +4,8 @@
  * Policy: when a prompt fails with a *transient* agent error (e.g. "high volume
  * of traffic" / -32603 "Internal error") **before any output streamed**, wait
  * and retry with an exponential backoff that starts at 6s and doubles up to a
- * 60s (1 minute) cap, then gives up with a summary. The user always sees the
- * real error text on every attempt — we only add the retry/▶ summary line.
+ * 60s (1 minute) cap, then gives up with a short summary. Detailed diagnostics
+ * remain in local logs; Telegram receives only a concise retry/failure notice.
  */
 
 /** First backoff delay (ms). */
@@ -41,30 +41,34 @@ export function fmtSeconds(ms: number): string {
 }
 
 /**
- * Message shown when an attempt fails but another retry is scheduled. Shows the
- * real error verbatim so the user can act on it (e.g. switch model), plus when
- * the next attempt runs.
+ * Message shown when an attempt fails but another retry is scheduled.
  */
 export function formatRetryNotice(
-  error: Error,
+  _error: Error,
   nextAttempt: number,
   totalAttempts: number,
   waitMs: number,
 ): string {
   return [
-    `\u26A0\uFE0F ${error.message}`,
+    "\u23F3 Codex временно не смог продолжить работу.",
     "",
     `\u{1F501} Повтор через ${fmtSeconds(waitMs)} \u2014 попытка ${nextAttempt} из ${totalAttempts}…`,
   ].join("\n");
 }
 
+/** Keep blocking errors useful without forwarding stack traces or multiline tool output. */
+export function briefErrorMessage(error: Error): string {
+  const line = error.message.split(/\r?\n/, 1)[0]?.replace(/\s+/g, " ").trim();
+  if (!line) return "причина не указана";
+  return line.length > 280 ? `${line.slice(0, 277)}…` : line;
+}
+
 /** Final summary shown after all retries are exhausted (or retry was unsafe). */
 export function formatErrorSummary(error: Error, elapsed: string, attempts: number, transient: boolean): string {
+  const retryCount = attempts > 1 ? ` после ${attempts} попыток` : "";
+  const reason = briefErrorMessage(error);
   const tip = transient
     ? "\n\n\u{1F4A1} Попробуйте другую модель в меню или укажите её командой /model <название>. Либо повторите запрос позже."
     : "";
-  if (attempts <= 1) {
-    return `\u274C Ошибка через ${elapsed}: ${error.message}${tip}`;
-  }
-  return `\u274C Не удалось выполнить задачу за ${attempts} попыток (${elapsed}).\nПоследняя ошибка: ${error.message}${tip}`;
+  return `\u274C Не удалось завершить задачу${retryCount} (${elapsed}).\nПричина: ${reason}${tip}`;
 }

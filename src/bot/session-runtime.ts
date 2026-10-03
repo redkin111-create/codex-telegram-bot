@@ -14,8 +14,7 @@ import { reasoningDirective } from "../app/reasoning.js";
 import type { SettingsStore } from "../app/settings-store.js";
 import { type PromptInput, type ReasoningEffort, textPrompt } from "../app/types.js";
 import { createLogger } from "../logger.js";
-import { buildTranscript } from "../sessions/history.js";
-import { sessionHashtags } from "../render/hashtags.js";
+import { buildTranscript, conversationEntries } from "../sessions/history.js";
 import { PROGRESS_DIRECTIVE } from "../render/progress.js";
 import { buildPriming, recentTranscript } from "./session-fork.js";
 import { TailWatcher } from "../sessions/tail.js";
@@ -27,7 +26,7 @@ import type { PendingStage, SubagentInfo } from "../acp/types.js";
 import { ResponseStreamer } from "../stream/streamer.js";
 import { extractImagePaths, sendImages } from "./image-return.js";
 import { buildContentBlocks, mergeInputs } from "./prompt-content.js";
-import { backoffSchedule, fmtSeconds, formatErrorSummary, formatRetryNotice, RETRY_BASE_MS } from "./prompt-retry.js";
+import { backoffSchedule, briefErrorMessage, formatErrorSummary, formatRetryNotice, RETRY_BASE_MS } from "./prompt-retry.js";
 import { sendMarkdownDoc } from "./telegram-io.js";
 import { TypingIndicator } from "./typing.js";
 
@@ -70,6 +69,8 @@ export class SessionRuntime {
   private streamer: ResponseStreamer | undefined;
   private readonly typing: TypingIndicator;
   private shownToolIds = new Set<string>();
+  /** Tool work still counts for retry safety when clean mode hides its display. */
+  private toolActivity = false;
   /** Files touched this turn (path -> operation), tracked even in background so
    *  the completion message can summarise what changed. */
   private fileOps = new Map<string, FileOp>();
@@ -176,12 +177,6 @@ export class SessionRuntime {
     this.changed();
   }
 
-  /** Searchable hashtag footer for this session (project · session · model ·
-   *  reasoning) — appended to every AI-output surface for this session. */
-  get tags(): string {
-    return this.hashtags();
-  }
-
   /** Switch live-streaming on/off. Going background seals any in-flight turn;
    *  returning to the foreground while a turn is still running resumes RICH
    *  live streaming (thinking / tools / prose) rather than a degraded tail. */
@@ -196,7 +191,7 @@ export class SessionRuntime {
       if (this.busy && !this.streamer) {
         // Any transient follow-watch of this session is now superseded.
         if (this.watchIsFollow) this.stopWatch();
-        this.streamer = new ResponseStreamer(this.api, this.chatId, this.cfg.streamThrottleMs, this.turnReplyTo, this.hashtags(), (pct) => this.setProgress(pct), this.cfg.progressFallback, this.turnStartedAt);
+        this.streamer = new ResponseStreamer(this.api, this.chatId, this.cfg.streamThrottleMs, this.turnReplyTo, (pct) => this.setProgress(pct), this.cfg.progressFallback, this.turnStartedAt);
         this.typing.start();
       }
     } else {
@@ -482,6 +477,7 @@ export class SessionRuntime {
     this.cancelled = false;
     this.turnReplyTo = input.replyTo;
     this.shownToolIds = new Set();
+    this.toolActivity = false;
     this.fileOps = new Map();
     this.subagentShown = new Map();
     this.progress = undefined; // a new turn = a new task; clear the old bar
@@ -492,7 +488,7 @@ export class SessionRuntime {
     const startedAt = Date.now();
     this.turnStartedAt = startedAt;
     this.streamer = live
-      ? new ResponseStreamer(this.api, this.chatId, this.cfg.streamThrottleMs, this.turnReplyTo, this.hashtags(), (pct) => this.setProgress(pct), this.cfg.progressFallback, startedAt)
+      ? new ResponseStreamer(this.api, this.chatId, this.cfg.streamThrottleMs, this.turnReplyTo, (pct) => this.setProgress(pct), this.cfg.progressFallback, startedAt)
       : undefined;
     if (live) this.typing.start();
     this.activity(true);
@@ -547,10 +543,10 @@ export class SessionRuntime {
     } catch (err) {
       // Unexpected failure outside the prompt path (e.g. while finalizing).
       await this.streamer?.finalize().catch(() => {});
-      const msg = `\u274C Ошибка после ${fmtDuration(Date.now() - startedAt)}: ${(err as Error).message}`;
+      const msg = `\u274C Задачу не удалось завершить.\nПричина: ${briefErrorMessage(err as Error)}`;
       this.lastCompletion = msg;
       if (this.foreground || this.cfg.notifyOtherSessions) {
-        const from = this.foreground ? "" : `\u{1F4E8} Из другого сеанса ${this.sessionTag()}\n`;
+        const from = this.foreground ? "" : `\u{1F4E8} Другой сеанс · ${this.sessionLabel()}\n`;
         await this.notify(`${from}${msg}`, { loud: true, replyTo: this.turnReplyTo, replyMarkup: this.switchKeyboard() });
       }
     } finally {
@@ -584,7 +580,7 @@ export class SessionRuntime {
    * waits on them. No-op unless this runtime is the live foreground turn.
    */
   renderSubagents(subagents: SubagentInfo[], _pending: PendingStage[]): void {
-    if (!this.cfg.showSubagents) return;
+    if (!this.cfg.showSubagents || !this.cfg.showToolCalls) return;
     if (!this.foreground || !this.busy || !this.streamer) return;
     for (const s of subagents) {
       const key = statusKey(s);
@@ -628,7 +624,7 @@ export class SessionRuntime {
     outcome: { result?: PromptResult; error?: Error; attempts: number },
   ): Promise<{ result?: PromptResult; error?: Error; attempts: number } | undefined> {
     if (!this.cfg.autoForkOnError || !outcome.error || !this.sessionId) return undefined;
-    if (this.cancelled || (this.streamer?.hasOutput ?? false)) return undefined;
+    if (this.cancelled || (this.streamer?.hasOutput ?? false) || this.toolActivity) return undefined;
     const contextRelated = this.isContextRelatedFailure(outcome.error);
     if (!isTransientAcpError(outcome.error) && !contextRelated) return undefined;
 
@@ -638,10 +634,7 @@ export class SessionRuntime {
       const reason = contextRelated
         ? "Похоже, контекст сеанса заполнен. Создаю продолжение и повторяю задачу"
         : "Похоже, сеанс завис или исчерпал ресурсы. Создаю продолжение и повторяю задачу";
-      await this.notify(
-          `\u26A0\uFE0F ${outcome.error.message}\n\n\u{1F517} ${reason}${transcript ? " (добавлена недавняя история)" : ""}…`,
-        { replyTo: this.turnReplyTo },
-      );
+      await this.notify(`\u{1F517} ${reason}${transcript ? " (добавлена недавняя история)" : ""}…`, { replyTo: this.turnReplyTo });
     }
     try {
       await this.bindNewSession(this.cwd, this.projectName); // new live id; old session dropped
@@ -655,7 +648,7 @@ export class SessionRuntime {
     // Reset per-turn render state so the retry streams cleanly on the new session.
     this.shownToolIds = new Set();
     this.subagentShown = new Map();
-    this.streamer?.setFooter(this.hashtags()); // streamed reply tags the NEW session
+    this.toolActivity = false;
     const forkContent = buildContentBlocks(input, {
       reasoning: reasoningDirective(this.reasoning),
       priming: transcript ? buildPriming(transcript) : undefined,
@@ -679,7 +672,7 @@ export class SessionRuntime {
   ): Promise<{ result?: PromptResult; error?: Error; attempts: number } | undefined> {
     const rotator = this.accountRotator;
     if (!rotator?.enabled() || !final.error || !isAccountExhaustedError(final.error) || this.cancelled) return undefined;
-    if (this.streamer?.hasOutput ?? false) return undefined;
+    if ((this.streamer?.hasOutput ?? false) || this.toolActivity) return undefined;
     const targets = await rotator.targets().catch(() => [] as { id: string; label: string }[]);
     if (targets.length === 0) return undefined;
 
@@ -697,7 +690,7 @@ export class SessionRuntime {
           await this.bindNewSession(this.cwd, this.projectName);
           this.shownToolIds = new Set();
           this.subagentShown = new Map();
-          this.streamer?.setFooter(this.hashtags());
+          this.toolActivity = false;
           const content = buildContentBlocks(input, {
             reasoning: reasoningDirective(this.reasoning),
             priming: transcript ? buildPriming(transcript) : undefined,
@@ -714,7 +707,7 @@ export class SessionRuntime {
         if (this.foreground) await this.notify(`\u2705 Задача выполнена с аккаунтом ${t.label}.`, { replyTo: this.turnReplyTo });
         return last;
       }
-      if (this.cancelled || (this.streamer?.hasOutput ?? false)) return last;
+      if (this.cancelled || (this.streamer?.hasOutput ?? false) || this.toolActivity) return last;
       errors.push(`\u2022 ${t.label}: ${last.error?.message ?? "ошибка"}`);
     }
 
@@ -745,7 +738,7 @@ export class SessionRuntime {
         return { result, attempts: attempt };
       } catch (err) {
         const error = err as Error;
-        const canRecover = !this.cancelled && !(this.streamer?.hasOutput ?? false);
+        const canRecover = !this.cancelled && !(this.streamer?.hasOutput ?? false) && !this.toolActivity;
         // A context-exhausted session won't recover by retrying the same
         // oversized prompt — skip the backoff and let auto-fork compact it now.
         const forkInstead = canRecover && this.cfg.autoForkOnError && this.isContextRelatedFailure(error);
@@ -797,7 +790,7 @@ export class SessionRuntime {
   ): Promise<{ result?: PromptResult; error?: Error; attempts: number } | undefined> {
     if (!this.cfg.resumeOnStreamError || !final.error || this.cancelled || !this.sessionId) return undefined;
     // Only for the post-stream case; the pre-stream paths own the rest.
-    if (!(this.streamer?.hasOutput ?? false)) return undefined;
+    if (!(this.streamer?.hasOutput ?? false) && !this.toolActivity) return undefined;
     if (!isTransientAcpError(final.error)) return undefined;
     // A context-full session won't recover by continuing (it'll just throttle
     // again each attempt) — don't burn the backoff; surface the error so the
@@ -818,10 +811,7 @@ export class SessionRuntime {
       if (this.cancelled) return last;
       const waitMs = delays[i]!;
       if (this.foreground) {
-        await this.notify(
-          `\u26A0\uFE0F ${last.error!.message}\n\n\u{1F501} Ответ оборвался. Продолжу через ${fmtSeconds(waitMs)} (попытка ${i + 1} из ${delays.length})…`,
-          { replyTo: this.turnReplyTo },
-        );
+        await this.notify(formatRetryNotice(last.error!, i + 1, delays.length, waitMs), { replyTo: this.turnReplyTo });
       }
       if (await this.interruptibleSleep(waitMs)) return last;
       attempts++; // this resume prompt is one more attempt for the turn
@@ -859,15 +849,10 @@ export class SessionRuntime {
    *  a background turn gets a labelled "other session" ping with short counts. */
   private completionMessage(stopReason: string | undefined, startedAt: number, streamedOutput: boolean): string {
     const head = this.doneHead(stopReason, startedAt, streamedOutput);
-    const tags = this.hashtags();
     const base = `${head}\n${summarizeFileOps(this.fileOps, this.cwd)}`;
-    this.lastCompletion = `${base}\n\n${tags}`; // switch-replay stays searchable
-    if (this.foreground) {
-      // The streamed response already carries the tag footer; only add tags to
-      // the Done line when there was no response to tag (tool-only / no output).
-      return streamedOutput ? base : `${base}\n\n${tags}`;
-    }
-    return `\u{1F4E8} Из другого сеанса ${this.sessionTag()}\n${head}\n${summarizeFileOpsShort(this.fileOps)}\n\n${tags}`;
+    this.lastCompletion = base;
+    if (this.foreground) return base;
+    return `\u{1F4E8} Другой сеанс · ${this.sessionLabel()}\n${head}\n${summarizeFileOpsShort(this.fileOps)}`;
   }
 
   /** The compact one-line status of a finished turn (no "end_turn" noise). */
@@ -891,18 +876,15 @@ export class SessionRuntime {
   private errorMessage(error: Error, startedAt: number, attempts: number, transient: boolean): string {
     const summary = formatErrorSummary(error, fmtDuration(Date.now() - startedAt), attempts, transient);
     const files = this.fileOps.size > 0 ? `\n${summarizeFileOps(this.fileOps, this.cwd)}` : "";
-    const tags = this.hashtags();
-    this.lastCompletion = `${summary}${files}\n\n${tags}`;
+    this.lastCompletion = `${summary}${files}`;
     if (this.foreground) return this.lastCompletion;
     const shortFiles = this.fileOps.size > 0 ? `\n${summarizeFileOpsShort(this.fileOps)}` : "";
-    return `\u{1F4E8} Из другого сеанса ${this.sessionTag()}\n${summary}${shortFiles}\n\n${tags}`;
+    return `\u{1F4E8} Другой сеанс · ${this.sessionLabel()}\n${summary}${shortFiles}`;
   }
 
-  /** "[project · 1a2b3c4d]" — identifies which background session a ping is from. */
-  private sessionTag(): string {
-    const name = this.projectName || basename(this.cwd) || "сеанс";
-    const id = this.sessionId ? ` \u00B7 ${this.sessionId.slice(0, 8)}` : "";
-    return `[${name}${id}]`;
+  /** Project label for a background completion, without exposing an internal session id. */
+  private sessionLabel(): string {
+    return this.projectName || basename(this.cwd) || "сеанс";
   }
 
   /** Inline keyboard offering to switch to this session, attached to background
@@ -911,16 +893,6 @@ export class SessionRuntime {
   private switchKeyboard(): InlineKeyboard | undefined {
     if (this.foreground || !this.sessionId) return undefined;
     return new InlineKeyboard().text("\u{1F500} Перейти к этому сеансу", `run:switch:${this.sessionId}`);
-  }
-
-  /** Searchable Telegram hashtags so you can pull up every message of a session
-   *  or project by tapping the tag. */
-  private hashtags(): string {
-    return sessionHashtags({
-      projectName: this.projectName,
-      cwd: this.cwd,
-      sessionId: this.sessionId,
-    });
   }
 
   private async flushQueue(): Promise<void> {
@@ -938,6 +910,7 @@ export class SessionRuntime {
     // session is in the background (its output isn't streamed here, but the
     // completion message still reports what changed / which images were made).
     if (kind === "tool_call" || kind === "tool_call_update") {
+      this.toolActivity = true;
       if (update.rawInput) this.imageScanText += " " + JSON.stringify(update.rawInput);
       if (update.title) this.imageScanText += " " + update.title;
       const fo = fileOpFromUpdate(update);
@@ -956,6 +929,7 @@ export class SessionRuntime {
       return;
     }
     if (kind === "agent_thought_chunk") {
+      if (!this.cfg.showToolCalls) return;
       const text = update.content?.text;
       if (typeof text === "string") this.streamer.appendThought(text);
       return;
@@ -1015,7 +989,7 @@ export class SessionRuntime {
   }
 
   private async onWatchEntries(entries: HistoryEntry[]): Promise<void> {
-    const body = entries
+    const body = conversationEntries(entries)
       .map((e) => {
         const icon = WATCH_ICON[e.role] ?? "\u2022";
         if (e.role === "tool") return `${icon} ${e.tool ? `\`${e.tool}\`` : "tool"}`;
@@ -1024,7 +998,7 @@ export class SessionRuntime {
       })
       .filter(Boolean)
       .join("\n\n");
-    if (body.trim()) await sendMarkdownDoc(this.api, this.chatId, `${body}\n\n${this.tags}`);
+    if (body.trim()) await sendMarkdownDoc(this.api, this.chatId, body);
   }
 }
 

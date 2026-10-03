@@ -9,7 +9,7 @@ import type { Api } from "grammy";
 import type { AcpClient } from "../acp/client.js";
 import type { SettingsStore } from "../app/settings-store.js";
 import type { AppConfig } from "../config.js";
-import { jsonlSize, readEntriesFrom, readHistory } from "../sessions/history.js";
+import { conversationEntries, jsonlSize, readConversationHistory, readEntriesFrom } from "../sessions/history.js";
 import type { SessionStore } from "../sessions/store.js";
 import type { HistoryEntry } from "../sessions/types.js";
 import type { AccountRotator } from "./account-rotator.js";
@@ -135,7 +135,7 @@ export class ChatController {
     await this.background(prevFg);
     await rt.prepare().catch(() => {});
     const path = this.store.jsonlPath(sessionId);
-    const unread = readHistory(path, 12);
+    const unread = readConversationHistory(path, 12);
     this.lastRead.set(sessionId, jsonlSize(path));
     this.persist();
     return { rt, sessionId, projectName, busy: rt.isBusy, unread, firstView: true, alreadyForeground: false };
@@ -161,7 +161,7 @@ export class ChatController {
     if (seen !== undefined) {
       unread = readEntriesFrom(path, seen).entries;
     } else {
-      unread = readHistory(path, 12);
+      unread = readConversationHistory(path, 12);
       firstView = true;
     }
     this.lastRead.set(sessionId, jsonlSize(path));
@@ -295,7 +295,7 @@ export class ChatController {
     if (!rt.sessionId || rt.isForeground) return 0;
     const seen = this.lastRead.get(rt.sessionId);
     if (seen === undefined) return 0;
-    return readEntriesFrom(this.store.jsonlPath(rt.sessionId), seen).entries.length;
+    return conversationEntries(readEntriesFrom(this.store.jsonlPath(rt.sessionId), seen).entries).length;
   }
 
   private persist(): void {

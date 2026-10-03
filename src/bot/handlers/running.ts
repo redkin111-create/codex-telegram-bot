@@ -7,7 +7,7 @@ import { type Bot, type Context, InlineKeyboard } from "grammy";
 import type { RunningSession, SwitchResult } from "../chat-controller.js";
 import type { BotDeps } from "../deps.js";
 import type { HistoryEntry } from "../../sessions/types.js";
-import { jsonlMtimeMs, readFirstPrompt } from "../../sessions/history.js";
+import { conversationEntries, jsonlMtimeMs, readFirstPrompt } from "../../sessions/history.js";
 import { progressBar } from "../../render/progress.js";
 import { refreshMenu } from "../menu/refresh.js";
 import { sendMarkdownDoc } from "../telegram-io.js";
@@ -16,8 +16,6 @@ const UUID = "([0-9a-fA-F-]{36})";
 const ROLE_ICON: Record<string, string> = {
   user: "\u{1F464}",
   assistant: "\u{1F916}",
-  tool: "\u{1F527}",
-  system: "\u2139\uFE0F",
 };
 const ENTRY_MAX = 700;
 /** Max session cards to send for one /running (avoids flooding the chat). */
@@ -73,8 +71,6 @@ function buildRunningCard(s: RunningSession, deps: BotDeps, now: number): { text
     `\u{1F552} ${meta.join(" \u00B7 ")}`,
   ];
   if (s.progress !== undefined) lines.push(`\u{1F4C8} ${progressBar(s.progress)}`);
-  if (s.sessionId) lines.push(`\u{1F194} ${s.sessionId.slice(0, 8)}`);
-
   const kb = new InlineKeyboard();
   if (!s.sessionId) {
     kb.text("\u23F3 Запускается…", "run:noop");
@@ -148,23 +144,23 @@ export function registerRunning(bot: Bot, deps: BotDeps): void {
 
 async function deliverSwitch(ctx: Context, deps: BotDeps, res: SwitchResult): Promise<void> {
   const proj = res.projectName ?? "сеанс";
-  const sid = res.sessionId ? res.sessionId.slice(0, 8) : "?";
   if (res.alreadyForeground) {
-    await ctx.reply(`Уже открыт проект «${proj}» (сеанс ${sid}).`);
+    await ctx.reply(`Уже открыт проект «${proj}».`);
     return;
   }
   const working = res.busy ? " \u00B7 \u23F3 задача ещё выполняется, обновления будут приходить сюда" : "";
-  await refreshMenu(ctx, deps, `\u{1F500} Переключено на «${proj}» (сеанс ${sid})${working}`);
+  await refreshMenu(ctx, deps, `\u{1F500} Переключено на «${proj}»${working}`);
 
-  if (res.unread.length === 0) {
+  const entries = conversationEntries(res.unread);
+  if (entries.length === 0) {
     if (!res.busy) await ctx.reply(res.firstView ? "Предыдущих сообщений здесь нет." : "\u2705 Пока вас не было, новых сообщений не появилось.");
     return;
   }
   const header = res.firstView
     ? `\u{1F4DC} **Недавняя история** \u2014 ${proj}`
-    : `\u{1F4EC} **Сообщения, появившиеся в ваше отсутствие: ${res.unread.length}** \u2014 ${proj}`;
-  const body = res.unread.map(fmtEntry).join("\n\n");
-  await sendMarkdownDoc(deps.api, ctx.chat!.id, `${header}\n\n${body}\n\n${res.rt.tags}`);
+    : `\u{1F4EC} **Сообщения, появившиеся в ваше отсутствие: ${entries.length}** \u2014 ${proj}`;
+  const body = entries.map(fmtEntry).join("\n\n");
+  await sendMarkdownDoc(deps.api, ctx.chat!.id, `${header}\n\n${body}`);
 
   // Replay how the session's last turn ended (Done + file summary) — this isn't
   // in the .jsonl, so it's the footer you'd have seen had you been watching.
@@ -175,7 +171,6 @@ async function deliverSwitch(ctx: Context, deps: BotDeps, res: SwitchResult): Pr
 
 function fmtEntry(e: HistoryEntry): string {
   const icon = ROLE_ICON[e.role] ?? "\u2022";
-  if (e.role === "tool") return `${icon} ${e.tool ? `\`${e.tool}\`` : "инструмент"}`;
   const text = e.text.length > ENTRY_MAX ? e.text.slice(0, ENTRY_MAX) + " \u2026" : e.text;
   return `${icon} ${text}`;
 }

@@ -8,6 +8,7 @@ import { basename } from "node:path";
 import type { AcpClient } from "../acp/client.js";
 import type { SessionUpdate } from "../acp/types.js";
 import { createLogger } from "../logger.js";
+import { briefErrorMessage } from "../bot/prompt-retry.js";
 import { sendMarkdownDoc } from "../bot/telegram-io.js";
 import { RESPONSE_LANGUAGE_DIRECTIVE } from "../bot/prompt-content.js";
 import type { Task } from "./types.js";
@@ -26,20 +27,9 @@ export class TaskRunner {
     log.info(`running task "${task.name}" in ${task.projectPath}`);
     let sessionId = "";
     let text = "";
-    let tools = 0;
-    const seen = new Set<string>();
 
     const listener = (sid: string, u: SessionUpdate): void => {
-      if (sid !== sessionId) return;
-      if (u.sessionUpdate === "agent_message_chunk" && typeof u.content?.text === "string") {
-        text += u.content.text;
-      } else if (u.sessionUpdate === "tool_call") {
-        const id = u.toolCallId || u.title || String(tools);
-        if (!seen.has(id)) {
-          seen.add(id);
-          tools++;
-        }
-      }
+      if (sid === sessionId && u.sessionUpdate === "agent_message_chunk" && typeof u.content?.text === "string") text += u.content.text;
     };
 
     try {
@@ -55,22 +45,21 @@ export class TaskRunner {
       this.acp.on("session-update", listener);
       await this.acp.prompt(sessionId, [{ type: "text", text: `${RESPONSE_LANGUAGE_DIRECTIVE}\n\n${task.prompt}` }]);
       this.acp.off("session-update", listener);
-      await this.deliver(task, text, tools);
+      await this.deliver(task, text);
       return true;
     } catch (err) {
       this.acp.off("session-update", listener);
-      await this.deliverError(task, (err as Error).message);
+      await this.deliverError(task, briefErrorMessage(err as Error));
       log.error(`task "${task.name}" failed:`, (err as Error).message);
       return false;
     }
   }
 
-  private async deliver(task: Task, text: string, tools: number): Promise<void> {
+  private async deliver(task: Task, text: string): Promise<void> {
     const project = task.projectName || basename(task.projectPath);
     const body = text.trim() || "_(ответ не содержит текста)_";
-    const footer = tools > 0 ? `\n\n\u{1F527} Вызовов инструментов: ${tools}` : "";
     const header = `\u23F0 **Задача: ${task.name}** \u00B7 ${project}`;
-    await sendMarkdownDoc(this.api, task.chatId, `${header}\n\n${body}${footer}`, { loud: true });
+    await sendMarkdownDoc(this.api, task.chatId, `${header}\n\n${body}`, { loud: true });
   }
 
   private async deliverError(task: Task, message: string): Promise<void> {

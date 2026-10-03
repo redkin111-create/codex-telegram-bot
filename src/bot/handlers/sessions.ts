@@ -10,6 +10,7 @@ import { INLINE_PAGE_SIZE, pageWindow, compactLabel } from "../menu/paging.js";
 import { refreshMenu } from "../menu/refresh.js";
 import { showHistory } from "./history.js";
 import { buildSessionCard, relTime } from "./session-card.js";
+import { briefErrorMessage } from "../prompt-retry.js";
 
 const PAGE_SIZE = INLINE_PAGE_SIZE;
 const UUID = "([0-9a-fA-F-]{36})";
@@ -161,7 +162,7 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
       await ctx.reply(`✅ Новая сессия Codex создана через Telegram.\n📁 ${target.name}\n🆔 ${rt.sessionId?.slice(0, 8) ?? "готово"}`);
       await refreshMenu(ctx, deps, `📱 Новая сессия · ${target.name}`);
     } catch (err) {
-      await ctx.reply(`❌ Не удалось создать сессию: ${(err as Error).message}`);
+      await ctx.reply(`❌ Не удалось создать сессию: ${briefErrorMessage(err as Error)}`);
     }
   });
   bot.callbackQuery(/^s:cancel:([a-f0-9]{16})$/, async (ctx) => {
@@ -199,7 +200,7 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
       await refreshMenu(ctx, deps, `📂 ${meta.title}`);
       await showHistory(deps, ctx.chat!.id, id, meta);
     } catch (err) {
-      await ctx.reply(`❌ Не удалось продолжить этот сеанс: ${(err as Error).message}`);
+      await ctx.reply(`❌ Не удалось продолжить этот сеанс: ${briefErrorMessage(err as Error)}`);
     }
   });
 

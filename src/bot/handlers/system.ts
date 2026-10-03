@@ -3,6 +3,7 @@
  */
 import type { Bot } from "grammy";
 import type { BotDeps } from "../deps.js";
+import { briefErrorMessage } from "../prompt-retry.js";
 
 export function registerSystem(bot: Bot, deps: BotDeps): void {
   bot.command("queue", async (ctx) => {
@@ -35,7 +36,7 @@ export function registerSystem(bot: Bot, deps: BotDeps): void {
       await deps.acp.setModel(rt.sessionId, modelId);
       await ctx.reply(`\u2705 Для этого сеанса выбрана модель \`${modelId}\`.`, { parse_mode: "Markdown" });
     } catch (err) {
-      await ctx.reply(`\u274C Не удалось сменить модель: ${(err as Error).message}`);
+      await ctx.reply(`\u274C Не удалось сменить модель: ${briefErrorMessage(err as Error)}`);
     }
   });
 
@@ -45,7 +46,7 @@ export function registerSystem(bot: Bot, deps: BotDeps): void {
       await deps.acp.restart();
       await ctx.reply("\u2705 Codex перезапущен. Сеанс подключится снова при следующем сообщении.");
     } catch (err) {
-      await ctx.reply(`\u274C Не удалось перезапустить Codex: ${(err as Error).message}`);
+      await ctx.reply(`\u274C Не удалось перезапустить Codex: ${briefErrorMessage(err as Error)}`);
     }
   });
 }

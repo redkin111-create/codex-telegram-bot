@@ -203,8 +203,8 @@ separate real MCP `initialize` health check for enabled configured servers.
 | `PROJECT_ROOTS` | no | none | Explicit allowlist for browsing immediate child project folders. Recent Codex projects are discovered from session history. If unset, no home-directory scan occurs; an explicitly set `CODEX_WORKSPACE` may be browsed. |
 | `STREAM_THROTTLE_MS` | no | `1500` | Live-edit interval while streaming. |
 | `MESSAGE_BATCH_MS` | no | `800` | Window to coalesce rapid text messages into one prompt. |
-| `SHOW_TOOL_CALLS` | no | `true` | Show tool-call status messages. |
-| `SHOW_EDIT_DIFFS` | no | `true` | Show unified diffs for edits. |
+| `SHOW_TOOL_CALLS` | no | `false` | Show terminal/tool traces in Telegram; enable for verbose debugging. |
+| `SHOW_EDIT_DIFFS` | no | `false` | Show file diffs in Telegram; requires `SHOW_TOOL_CALLS=true`. |
 | `DIFF_MAX_LINES` | no | `120` | Max diff lines shown inline. |
 | `DOC_MAX_CHARS` | no | `100000` | Max chars of a text attachment inlined (0 = unlimited). |
 | `SHOW_PROGRESS` | no | `true` | Ask for a `{progress: N%}` marker and render a bar. |

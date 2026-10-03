@@ -108,6 +108,16 @@ export function readEntriesFrom(jsonlPath: string, fromByte: number): { entries:
   }
 }
 
+/** Entries suitable for a normal chat transcript; tool and system records stay internal. */
+export function conversationEntries(entries: HistoryEntry[]): HistoryEntry[] {
+  return entries.filter((entry) => entry.role === "user" || entry.role === "assistant");
+}
+
+/** Read a full tail window before filtering so many tool events don't crowd out chat messages. */
+export function readConversationHistory(jsonlPath: string, maxEntries = 20): HistoryEntry[] {
+  return conversationEntries(parseTail(jsonlPath, TAIL_WINDOWS.at(-1)!, Number.MAX_SAFE_INTEGER)).slice(-maxEntries);
+}
+
 function parseTail(jsonlPath: string, window: number, maxEntries: number): HistoryEntry[] {
   const text = readTail(jsonlPath, window);
   if (!text) return [];

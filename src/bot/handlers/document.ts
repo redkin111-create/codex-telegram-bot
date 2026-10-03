@@ -16,6 +16,7 @@ import { basename, join } from "node:path";
 import type { Bot, Context } from "grammy";
 import { textPrompt } from "../../app/types.js";
 import { createLogger } from "../../logger.js";
+import { briefErrorMessage } from "../prompt-retry.js";
 import type { BotDeps } from "../deps.js";
 import {
   decodeText,
@@ -49,7 +50,7 @@ export function registerDocuments(bot: Bot, deps: BotDeps): void {
     } catch (e) {
       log.warn(`download failed for "${name}":`, (e as Error).message);
       await ctx.reply(
-        `\u274C Не удалось скачать файл «${name}»: ${(e as Error).message}. ` +
+        `\u274C Не удалось скачать файл «${name}»: ${briefErrorMessage(e as Error)}. ` +
           `(Боты Telegram могут скачивать файлы размером до 20 МБ.)`,
       );
       return;
@@ -82,7 +83,7 @@ export function registerDocuments(bot: Bot, deps: BotDeps): void {
       }
     } catch (e) {
       log.warn(`submit failed for "${name}":`, (e as Error).message);
-      await ctx.reply(`\u274C Не удалось обработать файл «${name}»: ${(e as Error).message}`);
+      await ctx.reply(`\u274C Не удалось обработать файл «${name}»: ${briefErrorMessage(e as Error)}`);
     }
   });
 }
