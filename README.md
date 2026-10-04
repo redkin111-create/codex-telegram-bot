@@ -213,8 +213,7 @@ separate real MCP `initialize` health check for enabled configured servers.
 | `SEND_AGENT_IMAGES` | no | `true` | Send fresh image files (including screenshots) to Telegram when their paths appear in agent output or tool data. |
 | `AGENT_IMAGES_MAX` | no | `8` | Maximum number of images sent after one agent turn. |
 | `DOC_MAX_CHARS` | no | `100000` | Max chars of a text attachment inlined (0 = unlimited). |
-| `SHOW_PROGRESS` | no | `true` | Ask for a `{progress: N%}` marker and render a bar. |
-| `PROGRESS_FALLBACK` | no | `true` | Bot-computed progress bar when the agent emits no marker. |
+| `PROGRESS_FALLBACK` | no | `true` | Show a progress bar estimated by the bot from actual activity. |
 | `NOTIFY_OTHER_SESSIONS` | no | `true` | Deliver background sessions' "Done" summaries. |
 | `MCP_PROBE_TIMEOUT_MS` | no | `8000` | Per-server timeout for the `/mcp` health-check. |
 | `ACP_AUTO_RESTART` | no | `true` | Auto-restart the agent if it exits. |

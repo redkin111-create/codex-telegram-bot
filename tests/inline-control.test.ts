@@ -151,11 +151,10 @@ test("main menu has home navigation and avoids exposing a full project path", ()
   assertCallbacksFit(keyboard);
 });
 
-test("Codex prompts use Russian by default and allow an explicitly requested language", () => {
+test("Codex prompts pass Telegram text without adding rules", () => {
   const prompt = buildContentBlocks({ text: "Ответь по-русски.", images: [] })[0];
   if (!prompt || prompt.type !== "text" || typeof prompt.text !== "string") assert.fail("expected a text prompt");
-  assert(prompt.text.includes("Пиши пояснения и сообщения пользователю по-русски"));
-  assert(prompt.text.includes("Если пользователь явно просит другой язык, выполни просьбу."));
+  assert.equal(prompt.text, "Ответь по-русски.");
 
   const imagePrompt = buildContentBlocks({ text: "", images: [{ data: "", mimeType: "image/jpeg" }] });
   assert.equal(imagePrompt[0]?.type, "image");

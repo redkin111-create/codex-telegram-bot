@@ -15,7 +15,6 @@ import type { SettingsStore } from "../app/settings-store.js";
 import { type PromptInput, type ReasoningEffort, textPrompt } from "../app/types.js";
 import { createLogger } from "../logger.js";
 import { buildTranscript, conversationEntries } from "../sessions/history.js";
-import { PROGRESS_DIRECTIVE } from "../render/progress.js";
 import { buildPriming, recentTranscript } from "./session-fork.js";
 import { TailWatcher } from "../sessions/tail.js";
 import type { HistoryEntry } from "../sessions/types.js";
@@ -506,7 +505,6 @@ export class SessionRuntime {
     const content = buildContentBlocks(input, {
       reasoning: reasoningDirective(this.reasoning),
       priming: this.primingContext,
-      progress: this.cfg.showProgress ? PROGRESS_DIRECTIVE : undefined,
     });
     this.primingContext = undefined;
 
@@ -659,7 +657,6 @@ export class SessionRuntime {
     const forkContent = buildContentBlocks(input, {
       reasoning: reasoningDirective(this.reasoning),
       priming: transcript ? buildPriming(transcript) : undefined,
-      progress: this.cfg.showProgress ? PROGRESS_DIRECTIVE : undefined,
     });
     return this.runPromptWithRetries(forkContent);
   }
@@ -701,7 +698,6 @@ export class SessionRuntime {
           const content = buildContentBlocks(input, {
             reasoning: reasoningDirective(this.reasoning),
             priming: transcript ? buildPriming(transcript) : undefined,
-            progress: this.cfg.showProgress ? PROGRESS_DIRECTIVE : undefined,
           });
           log.info(`chat ${this.chatId} auto-rotating to account ${t.label}`);
           return this.runPromptWithRetries(content);
@@ -809,7 +805,6 @@ export class SessionRuntime {
     const delays = this.cfg.promptRetryAttempts > 0 ? backoffSchedule(this.cfg.promptRetryAttempts) : [RETRY_BASE_MS];
     const resumeContent = buildContentBlocks(textPrompt(RESUME_INSTRUCTION), {
       reasoning: reasoningDirective(this.reasoning),
-      progress: this.cfg.showProgress ? PROGRESS_DIRECTIVE : undefined,
     });
 
     let last = final;

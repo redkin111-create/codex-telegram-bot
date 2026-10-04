@@ -133,10 +133,7 @@ export interface AppConfig {
   mcpProbeConcurrency: number;
   /** Show subagent (crew) activity while the main agent waits on them. */
   showSubagents: boolean;
-  /** Ask the agent to emit a `{progress: N%}` marker and render it as a bar. */
-  showProgress: boolean;
-  /** When the agent emits no `{progress}` marker, show a bot-computed fallback
-   *  bar derived from real activity (tool calls, streamed output, elapsed). */
+  /** Show a bot-computed progress bar based on real activity. */
   progressFallback: boolean;
   /** Deliver a turn's "Done" summary to the chat even when that session is in
    *  the background (you've switched to another session). */
@@ -224,7 +221,6 @@ export function loadConfig(): AppConfig {
     mcpProbeTimeoutMs: num(process.env.MCP_PROBE_TIMEOUT_MS, 8000),
     mcpProbeConcurrency: num(process.env.MCP_PROBE_CONCURRENCY, 6),
     showSubagents: bool(process.env.SHOW_SUBAGENTS, true),
-    showProgress: bool(process.env.SHOW_PROGRESS, true),
     progressFallback: bool(process.env.PROGRESS_FALLBACK, true),
     notifyOtherSessions: bool(process.env.NOTIFY_OTHER_SESSIONS, true),
     autoUpdate: bool(process.env.AUTO_UPDATE, false),

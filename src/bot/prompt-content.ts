@@ -1,19 +1,13 @@
 /**
  * Build ACP prompt content blocks from a PromptInput (text + images), applying
- * the reasoning directive and any fork-priming context. Also merges multiple
- * queued inputs into one.
+ * any reasoning preference and fork-priming context. Also merges queued inputs.
  */
 import type { ContentBlock } from "../acp/types.js";
 import type { PromptInput } from "../app/types.js";
 
-export const RESPONSE_LANGUAGE_DIRECTIVE =
-  "Пиши пояснения и сообщения пользователю по-русски. Сохраняй исходный язык кода, цитат и контента. Если пользователь явно просит другой язык, выполни просьбу. В Telegram по умолчанию кратко опиши результат человеческим языком: не копируй уже выполненные команды, сырой stdout/stderr, большие diff и длинные блоки кода без запроса. Если пользователь просит код, команду или diff, покажи их. Эти правила относятся только к ответу пользователю и не ограничивают работу с инструментами.";
-
 export interface ContentOptions {
   reasoning?: string;
   priming?: string;
-  /** Appended at the very bottom so the agent emits a `{progress: N%}` marker. */
-  progress?: string;
 }
 
 export function buildContentBlocks(input: PromptInput, opts: ContentOptions = {}): ContentBlock[] {
@@ -35,12 +29,8 @@ export function buildContentBlocks(input: PromptInput, opts: ContentOptions = {}
   if (opts.priming) {
     text = `${opts.priming}\n\n---\n\nНовое сообщение пользователя:\n${text}`;
   }
-  text = `${RESPONSE_LANGUAGE_DIRECTIVE}\n\n${text}`;
   if (opts.reasoning) {
     text = `(${opts.reasoning})\n\n${text}`;
-  }
-  if (opts.progress) {
-    text = `${text}\n\n${opts.progress}`;
   }
 
   blocks.push({ type: "text", text });

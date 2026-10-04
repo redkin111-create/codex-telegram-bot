@@ -1,12 +1,7 @@
 /**
  * Bot-side FALLBACK task-progress estimate.
  *
- * The primary progress signal is the `{progress: N%}` marker the agent is asked
- * to emit (see PROGRESS_DIRECTIVE). But that marker is only an *instruction* the
- * model can ignore — weaker/free models and long, tool-heavy turns frequently
- * never emit one, leaving the bar empty for the whole turn. This module gives
- * the bot a way to show a live, advancing bar anyway, derived ONLY from real,
- * observable work signals (never random):
+ * The bot estimates progress from observable work signals (never random):
  *
  *   • completed tool calls   — each is concrete progress, weighted most
  *   • streamed prose chars    — the agent explaining / answering
@@ -16,7 +11,7 @@
  * The estimate is monotonic by construction (every input only grows during a
  * turn) and asymptotically capped well below 100 while running, so the bar never
  * claims "done" on its own — the caller pushes 100 only when the turn actually
- * completes. The agent's own marker, when present, always takes precedence.
+ * completes.
  */
 
 /** Observable, monotonically-increasing signals collected during one turn. */

@@ -13,7 +13,21 @@ import { showHistory } from "../src/bot/handlers/history.js";
 import { PermissionService } from "../src/bot/permission-service.js";
 import { SessionRuntime } from "../src/bot/session-runtime.js";
 import { briefErrorMessage, formatErrorSummary, formatRetryNotice } from "../src/bot/prompt-retry.js";
-import { conversationEntries, readConversationHistory } from "../src/sessions/history.js";
+import { conversationEntries, parseEventLine, readConversationHistory } from "../src/sessions/history.js";
+
+test("history hides prompt rules previously added by the bot", () => {
+  const oldPrompt = [
+    "Пиши пояснения и сообщения пользователю по-русски. Сохраняй исходный язык кода, цитат и контента. Если пользователь явно просит другой язык, выполни просьбу. В Telegram по умолчанию кратко опиши результат человеческим языком: не копируй уже выполненные команды, сырой stdout/stderr, большие diff и длинные блоки кода без запроса. Если пользователь просит код, команду или diff, покажи их. Эти правила относятся только к ответу пользователю и не ограничивают работу с инструментами.",
+    "Моё короткое сообщение",
+    "PROGRESS REPORTING IS MANDATORY ON EVERY SINGLE MESSAGE YOU SEND — NO EXCEPTIONS.",
+    "ещё много старых правил",
+  ].join("\n\n");
+  const entry = parseEventLine(JSON.stringify({
+    type: "response_item",
+    payload: { type: "message", role: "user", content: [{ type: "input_text", text: oldPrompt }] },
+  }));
+  assert.equal(entry?.text, "Моё короткое сообщение");
+});
 import type { SettingsStore } from "../src/app/settings-store.js";
 
 test("clean Telegram defaults hide tools and diffs while explicit settings still work", () => {

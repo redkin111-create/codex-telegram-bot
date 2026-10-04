@@ -3,7 +3,7 @@
  * Reads only the tail of large logs to stay fast.
  */
 import { closeSync, openSync, readSync, statSync } from "node:fs";
-import { extractProgress, PROGRESS_DIRECTIVE } from "../render/progress.js";
+import { extractProgress } from "../render/progress.js";
 import type { HistoryEntry, HistoryRole } from "./types.js";
 
 const TAIL_WINDOWS = [256 * 1024, 1024 * 1024, 4 * 1024 * 1024]; // grow until entries found
@@ -198,14 +198,18 @@ function str(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
 
-/** Strip the `{progress: N%}` markers (any role) and the appended progress
- *  directive (user prompts) from persisted text so history / unread / previews
- *  / fork-priming never surface the raw plumbing. */
+/** Strip progress markers and old bot-added prompt text from persisted history. */
 function cleanStoredText(text: string): string {
   if (!text) return text;
   let t = extractProgress(text).cleaned;
-  if (t.includes(PROGRESS_DIRECTIVE)) t = t.split(PROGRESS_DIRECTIVE).join("").trim();
-  return t;
+  const oldLanguageStart = t.indexOf("Пиши пояснения и сообщения пользователю по-русски.");
+  if (oldLanguageStart !== -1) {
+    const oldLanguageEnd = t.indexOf("\n\n", oldLanguageStart);
+    if (oldLanguageEnd !== -1) t = `${t.slice(0, oldLanguageStart)}${t.slice(oldLanguageEnd + 2)}`;
+  }
+  const oldProgressStart = t.indexOf("PROGRESS REPORTING IS MANDATORY ON EVERY SINGLE MESSAGE YOU SEND");
+  if (oldProgressStart !== -1) t = t.slice(0, oldProgressStart).trimEnd();
+  return t.trim();
 }
 
 function roleOf(role?: string): HistoryRole | undefined {

@@ -10,7 +10,6 @@ import type { SessionUpdate } from "../acp/types.js";
 import { createLogger } from "../logger.js";
 import { briefErrorMessage } from "../bot/prompt-retry.js";
 import { sendMarkdownDoc } from "../bot/telegram-io.js";
-import { RESPONSE_LANGUAGE_DIRECTIVE } from "../bot/prompt-content.js";
 import type { Task } from "./types.js";
 
 const log = createLogger("task-runner");
@@ -43,7 +42,7 @@ export class TaskRunner {
         }
       }
       this.acp.on("session-update", listener);
-      await this.acp.prompt(sessionId, [{ type: "text", text: `${RESPONSE_LANGUAGE_DIRECTIVE}\n\n${task.prompt}` }]);
+      await this.acp.prompt(sessionId, [{ type: "text", text: task.prompt }]);
       this.acp.off("session-update", listener);
       await this.deliver(task, text);
       return true;
