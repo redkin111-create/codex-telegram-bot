@@ -85,13 +85,13 @@ export type CodexThreadSourceKind =
 export type CodexSubAgentSource =
   | "review"
   | "compact"
-  | "memoryConsolidation"
-  | { threadSpawn: {
-      parentThreadId: string;
+  | "memory_consolidation"
+  | { thread_spawn: {
+      parent_thread_id: string;
       depth: number;
-      agentPath?: string | null;
-      agentNickname?: string | null;
-      agentRole?: string | null;
+      agent_path?: unknown;
+      agent_nickname?: string | null;
+      agent_role?: string | null;
     } }
   | { other: string };
 

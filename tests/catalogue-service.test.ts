@@ -92,31 +92,41 @@ test("project matching trusts the actual working folder over stale project ids",
   assert(projectContainsThread(project, thread("t", "cli", { projectId: "stale-id", cwd: "C:\\work\\tools" })));
 });
 
-test("conversation list includes Codex Desktop appServer threads but hides other Telegram users", () => {
-  const interactive = [
+test("session catalogue prioritizes Telegram ownership and hides non-user sources", () => {
+  const threads = [
     thread("cli", "cli"),
     thread("vscode", "vscode"),
     thread("exec", "exec"),
     thread("agent", { subAgent: "review" }),
     thread("review", { subAgent: "review" }),
     thread("compact", { subAgent: "compact" }),
-    thread("spawn", { subAgent: { threadSpawn: { parentThreadId: "parent", depth: 1 } } }),
-    thread("memory-consolidation", { subAgent: "memoryConsolidation" }),
+    thread("spawn", { subAgent: { thread_spawn: { parent_thread_id: "parent", depth: 1, agent_path: ["parent", "child"], agent_nickname: null, agent_role: "worker" } } }),
+    thread("memory-consolidation", { subAgent: "memory_consolidation" }),
     thread("other-subagent", { subAgent: { other: "future-agent" } }),
     thread("custom", { custom: "something" }),
     thread("unknown", "unknown"),
+    thread("current-vscode", "vscode"),
+    thread("foreign-vscode", "vscode"),
     thread("foreign-app", "appServer"),
+    thread("ours", "appServer"),
+    thread("desktop", "appServer"),
   ];
   const telegram: TelegramSessionRecord = { createdBy: "telegram", createdAt: "2026-01-01T00:00:00.000Z", chatId: 7, projectPath: "C:\\work\\toy", projectName: "toy" };
   const list = catalogThreadSessions(
-    interactive,
-    [thread("ours", "appServer"), thread("desktop", "appServer"), thread("other-user", "appServer")],
-    new Map([["ours", telegram]]),
+    threads,
+    new Map([["current-vscode", telegram], ["ours", telegram]]),
     [],
-    new Set(["other-user"]),
+    new Set(["foreign-vscode", "foreign-app"]),
   );
-  assert.deepEqual(list.map((item) => item.sessionId).sort(), ["cli", "desktop", "ours", "vscode"]);
+  assert.deepEqual(list.map((item) => item.sessionId).sort(), ["cli", "current-vscode", "desktop", "ours", "vscode"]);
+  assert.equal(list.find((item) => item.sessionId === "current-vscode")?.telegramCreated, true);
+  assert.equal(list.find((item) => item.sessionId === "vscode")?.telegramCreated, false);
   assert.equal(list.find((item) => item.sessionId === "ours")?.telegramCreated, true);
+  const labels = sessionPage(list, "Все переписки", 0, "0123456789abcdef").keyboard.inline_keyboard.flat()
+    .flatMap((button) => "text" in button ? [button.text] : []);
+  assert(labels.some((label) => label.includes("📱 Current-vscode")), JSON.stringify(labels));
+  assert(labels.some((label) => label.includes("🖥 Vscode")), JSON.stringify(labels));
+  assert(!labels.some((label) => label.includes("foreign-vscode") || label.includes("foreign-app")));
   assert(isInteractiveThread(thread("cli", "cli")));
   assert(isInteractiveThread(thread("vscode", "vscode")));
   assert(!isInteractiveThread(thread("missing", undefined)));
@@ -124,10 +134,11 @@ test("conversation list includes Codex Desktop appServer threads but hides other
   assert(!isInteractiveThread(thread("unknown", "unknown")));
   assert(!isInteractiveThread(thread("custom", { custom: "something" })));
   assert(!isInteractiveThread(thread("subagent", { subAgent: "compact" })));
-  assert(!isInteractiveThread(thread("memory-consolidation", { subAgent: "memoryConsolidation" })));
+  assert(!isInteractiveThread(thread("memory-consolidation", { subAgent: "memory_consolidation" })));
   assert(!isInteractiveThread(thread("other-subagent", { subAgent: { other: "future-agent" } })));
   assert.equal(threadSourceKind(thread("custom", { custom: "something" })), "custom");
-  assert.equal(threadSourceKind(thread("subagent", { subAgent: { threadSpawn: { parentThreadId: "parent", depth: 1 } } })), "subAgent");
+  assert.equal(threadSourceKind(thread("subagent", { subAgent: { thread_spawn: { parent_thread_id: "parent", depth: 1 } } })), "subAgent");
+  assert.deepEqual(list.map(({ sessionId }) => sessionId).filter((id) => ["agent", "review", "compact", "spawn", "memory-consolidation", "other-subagent", "custom", "unknown", "exec"].includes(id)), []);
 });
 
 test("real project and thread Unix-second timestamps normalize and sort newest first", () => {
@@ -147,7 +158,7 @@ test("real project and thread Unix-second timestamps normalize and sort newest f
 
   const newer = thread("newer", "cli", { createdAt: 1791000000, updatedAt: 1791000100, recencyAt: 1791000200 });
   const older = thread("older", "vscode", { createdAt: 1790000000, updatedAt: 1790000100, recencyAt: null });
-  const sessions = catalogThreadSessions([older, newer], [], new Map());
+  const sessions = catalogThreadSessions([older, newer], new Map());
   assert.deepEqual(sessions.map((session) => session.sessionId), ["newer", "older"]);
   assert.equal(sessions[0]?.createdAt, new Date(1791000000000).toISOString());
   assert.equal(sessions[0]?.updatedAt, new Date(1791000200000).toISOString());

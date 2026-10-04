@@ -163,6 +163,18 @@ export function isInteractiveThread(thread: CodexThreadSummary): boolean {
   return source === "cli" || source === "vscode";
 }
 
+/** Telegram ownership decides visibility before Codex's session source. */
+export function isVisibleThreadForChat(
+  thread: CodexThreadSummary,
+  allowedTelegram: ReadonlyMap<string, TelegramSessionRecord>,
+  foreignTelegramIds: ReadonlySet<string>,
+): boolean {
+  if (foreignTelegramIds.has(thread.id)) return false;
+  if (allowedTelegram.has(thread.id)) return true;
+  return isInteractiveThread(thread)
+    || (threadSourceKind(thread) === "appServer" && !thread.ephemeral);
+}
+
 export function threadSessionMeta(
   thread: CodexThreadSummary,
   telegram?: TelegramSessionRecord,
@@ -198,19 +210,15 @@ export function threadSessionMeta(
 }
 
 export function catalogThreadSessions(
-  interactive: CodexThreadSummary[],
-  telegramThreads: CodexThreadSummary[],
+  threads: CodexThreadSummary[],
   allowedTelegram: ReadonlyMap<string, TelegramSessionRecord>,
   projects: ProjectEntry[] = [],
   foreignTelegramIds: ReadonlySet<string> = new Set(),
   getStored?: (sessionId: string) => SessionMeta | undefined,
 ): SessionMeta[] {
   const byId = new Map<string, SessionMeta>();
-  for (const thread of interactive) {
-    if (isInteractiveThread(thread)) byId.set(thread.id, threadSessionMeta(thread, undefined, projects, getStored));
-  }
-  for (const thread of telegramThreads) {
-    if (threadSourceKind(thread) !== "appServer" || thread.ephemeral || foreignTelegramIds.has(thread.id)) continue;
+  for (const thread of threads) {
+    if (!isVisibleThreadForChat(thread, allowedTelegram, foreignTelegramIds)) continue;
     const record = allowedTelegram.get(thread.id);
     byId.set(thread.id, threadSessionMeta(thread, record, projects, getStored));
   }

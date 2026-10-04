@@ -3,7 +3,7 @@ import { type Bot, type Context, InlineKeyboard } from "grammy";
 import { basename } from "node:path";
 import type { CodexThreadListParams, CodexThreadSummary } from "../../acp/codex-protocol.js";
 import type { ProjectEntry } from "../../projects/manager.js";
-import { catalogThreadSessions, codexProjectAt, includeRegisteredTelegramSessions, isInteractiveThread, listAllCodexThreads, listRecentCodexThreads, loadCodexProjects, projectContainsThread, RECENT_SESSION_LIMIT, safeSessionTitle, sessionBelongsToProject, threadSourceKind } from "../catalog.js";
+import { catalogThreadSessions, codexProjectAt, includeRegisteredTelegramSessions, isVisibleThreadForChat, listAllCodexThreads, listRecentCodexThreads, loadCodexProjects, projectContainsThread, RECENT_SESSION_LIMIT, safeSessionTitle, sessionBelongsToProject } from "../catalog.js";
 import { readConversationHistory, readHistory } from "../../sessions/history.js";
 import { cleanSessionPrompt } from "../../sessions/title.js";
 import type { SessionMeta } from "../../sessions/types.js";
@@ -38,19 +38,14 @@ export async function showSessions(ctx: Context, deps: BotDeps, query?: string, 
       ...(scopedProject ? { cwd: scopedProject.roots?.length ? scopedProject.roots : [scopedProject.path] } : {}),
       ...(q ? { searchTerm: q } : {}),
     };
-    const eligible = (thread: CodexThreadSummary) => {
-      const source = threadSourceKind(thread);
-      const visibleSource = isInteractiveThread(thread)
-        || (source === "appServer" && !thread.ephemeral && !foreignTelegramIds.has(thread.id));
-      return visibleSource && (!scopedProject || projectContainsThread(scopedProject, thread));
-    };
+    const eligible = (thread: CodexThreadSummary) =>
+      isVisibleThreadForChat(thread, allowedTelegram, foreignTelegramIds)
+      && (!scopedProject || projectContainsThread(scopedProject, thread));
     const allThreads = q
       ? await listAllCodexThreads(deps.acp, options)
       : await listRecentCodexThreads(deps.acp, options, eligible, RECENT_SESSION_LIMIT);
-    const interactive = allThreads.filter(isInteractiveThread);
-    const appServer = allThreads.filter((thread) => threadSourceKind(thread) === "appServer");
     const projects = scopedProject ? [scopedProject] : await loadCodexProjects(deps.acp);
-    metas = catalogThreadSessions(interactive, appServer, allowedTelegram, projects, foreignTelegramIds, (id) => deps.store.get(id));
+    metas = catalogThreadSessions(allThreads, allowedTelegram, projects, foreignTelegramIds, (id) => deps.store.get(id));
     metas = includeRegisteredTelegramSessions(
       metas,
       [...allowedTelegram].map(([sessionId, record]) => ({ sessionId, record })),
