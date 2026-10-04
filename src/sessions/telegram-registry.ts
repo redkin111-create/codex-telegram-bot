@@ -33,6 +33,13 @@ export class TelegramSessionRegistry {
     });
   }
 
+  listAll(): Array<{ sessionId: string; record: TelegramSessionRecord }> {
+    return Object.keys(this.records()).flatMap((sessionId) => {
+      const record = this.get(sessionId);
+      return record ? [{ sessionId, record }] : [];
+    });
+  }
+
   record(sessionId: string, chatId: number, projectPath: string, projectName: string): void {
     if (!/^[a-z0-9_-]{1,128}$/i.test(sessionId)) return;
     const entry: TelegramSessionRecord = {

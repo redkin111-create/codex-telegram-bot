@@ -41,7 +41,7 @@ export async function openMainMenu(ctx: Context, deps: BotDeps): Promise<void> {
     model: friendlyModel(rt.model || deps.acp.currentModelId, deps.acp.availableModels),
     reasoning: reasoningLabel(rt.reasoning),
     sandbox: deps.cfg.trustAllTools ? "полный" : "только к рабочим папкам",
-    approval: deps.cfg.trustAllTools ? "выключено" : "по запросу",
+    approval: deps.cfg.trustAllTools ? "выключено" : "для внешних папок и сети",
     unsafe: deps.cfg.trustAllTools,
     busy: rt.isBusy,
   };

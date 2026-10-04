@@ -11,6 +11,8 @@ import { createLogger } from "../logger.js";
 const log = createLogger("image-return");
 
 const PATH_RE = /[^\s"'`<>|()*\[\]]+\.(?:png|jpe?g|gif|webp|bmp)/gi;
+const QUOTED_PATH_RE = /["'`]([^"'`\r\n]+\.(?:png|jpe?g|gif|webp|bmp))["'`]/gi;
+const ABSOLUTE_PATH_RE = /(?:[a-z]:\\|\\\\|\/)[^"'`<>|\r\n]*?\.(?:png|jpe?g|gif|webp|bmp)(?=$|[\s"'`<>|.,;:!?)}\]])/gi;
 const PHOTO_EXT = new Set(["png", "jpg", "jpeg", "webp"]);
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 const MAX_FILE_BYTES = 45 * 1024 * 1024;
@@ -18,9 +20,18 @@ const MAX_FILE_BYTES = 45 * 1024 * 1024;
 /** Pull candidate image paths out of arbitrary text, resolved against cwd. */
 export function extractImagePaths(text: string, cwd: string): string[] {
   const out = new Set<string>();
-  for (const m of text.matchAll(PATH_RE)) {
-    const raw = m[0].replace(/[).,;:]+$/, "");
-    out.add(isAbsolute(raw) ? raw : join(cwd, raw));
+  const quoted = [...text.matchAll(QUOTED_PATH_RE)].map((m) => m[1]!);
+  const absolute = [...text.matchAll(ABSOLUTE_PATH_RE)].map((m) => m[0]);
+  const unquoted = text.replace(QUOTED_PATH_RE, " ").replace(ABSOLUTE_PATH_RE, " ");
+  const candidates = [
+    ...quoted,
+    ...absolute,
+    ...[...unquoted.matchAll(PATH_RE)].map((m) => m[0]),
+  ];
+  for (const candidate of candidates) {
+    const raw = candidate.replace(/[).,;:]+$/, "");
+    const isAbsoluteImagePath = isAbsolute(raw) || /^[a-z]:[\\/]/i.test(raw) || /^\\\\/.test(raw);
+    out.add(isAbsoluteImagePath ? raw : join(cwd, raw));
   }
   return [...out];
 }
@@ -32,6 +43,8 @@ export interface SendImagesOptions {
   already: Set<string>;
   /** Max images to send in this call. */
   max: number;
+  /** User prompt to thread the image under. */
+  replyTo?: number;
 }
 
 /** Send the valid, fresh, not-yet-sent images. Returns how many were sent. */
@@ -58,8 +71,11 @@ export async function sendImages(
       const ext = path.toLowerCase().split(".").pop() ?? "";
       const asPhoto = PHOTO_EXT.has(ext) && st.size <= MAX_PHOTO_BYTES;
       const file = new InputFile(path);
-      if (asPhoto) await api.sendPhoto(chatId, file, { caption: basename(path) });
-      else await api.sendDocument(chatId, file, { caption: basename(path) });
+      const reply = opts.replyTo === undefined ? {} : {
+        reply_parameters: { message_id: opts.replyTo, allow_sending_without_reply: true },
+      };
+      if (asPhoto) await api.sendPhoto(chatId, file, { caption: basename(path), ...reply });
+      else await api.sendDocument(chatId, file, { caption: basename(path), ...reply });
       sent++;
     } catch (e) {
       log.debug(`failed to send ${path}:`, (e as Error).message);

@@ -21,7 +21,7 @@ export function compactKeyboard(): Keyboard {
 export function mainMenuInline(state: { busy: boolean }): InlineKeyboard {
   const kb = new InlineKeyboard()
     .text("\u{1F4C1} Проекты", "m:project")
-    .text("\u{1F4AC} Сеансы", "m:sessions")
+    .text("\u{1F4AC} Переписки", "m:sessions")
     .row()
     .text("\u{1F195} Новый", "m:new")
     .text("\u{1F9ED} Активные", "m:running")

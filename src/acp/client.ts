@@ -415,6 +415,28 @@ export class AcpClient extends EventEmitter {
     return Array.isArray(threads) ? threads.filter((t) => typeof t?.id === "string") : [];
   }
 
+  /** Read every page of the Codex conversation catalogue. */
+  async listAllThreads(params: CodexThreadListParams = {}): Promise<CodexThreadSummary[]> {
+    const byId = new Map<string, CodexThreadSummary>();
+    const seenCursors = new Set<string>();
+    let cursor = params.cursor;
+    for (let page = 0; page < 1000; page++) {
+      const pageParams = { ...params };
+      if (cursor) pageParams.cursor = cursor;
+      else delete pageParams.cursor;
+      const response = await this.request("thread/list", pageParams) as CodexThreadListResponse;
+      const threads = response?.threads ?? response?.data ?? [];
+      if (Array.isArray(threads)) {
+        for (const thread of threads) if (typeof thread?.id === "string") byId.set(thread.id, thread);
+      }
+      const next = response?.nextCursor ?? undefined;
+      if (!next || next === cursor || seenCursors.has(next)) break;
+      seenCursors.add(next);
+      cursor = next;
+    }
+    return [...byId.values()];
+  }
+
   hasMode(id: string): boolean {
     return this.collaborationModes.has(id);
   }
@@ -465,7 +487,11 @@ export class AcpClient extends EventEmitter {
         threadId: sessionId,
         input: toCodexInput(content),
         cwd: this.threadCwd.get(sessionId),
-        approvalPolicy: this.opts.trustAllTools ? "never" : "on-request",
+        // Workspace writes and commands are already bounded by workspaceWrite.
+        // Avoid a Telegram prompt for every in-project action; explicit
+        // request_permissions_tool expansions (outside paths/network) still
+        // go through the user's one-time approval flow.
+        approvalPolicy: "never",
         sandboxPolicy: this.opts.trustAllTools
           ? { type: "dangerFullAccess" }
           : { type: "workspaceWrite", writableRoots: [this.threadCwd.get(sessionId) ?? this.opts.workspace], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },

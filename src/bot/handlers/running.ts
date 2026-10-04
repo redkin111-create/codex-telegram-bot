@@ -11,6 +11,7 @@ import { conversationEntries, jsonlMtimeMs, readFirstPrompt } from "../../sessio
 import { progressBar } from "../../render/progress.js";
 import { sameProjectPath } from "../../projects/manager.js";
 import { loadCodexProjects, safeSessionTitle } from "../catalog.js";
+import { cleanSessionPrompt } from "../../sessions/title.js";
 import { refreshMenu } from "../menu/refresh.js";
 import { sendMarkdownDoc } from "../telegram-io.js";
 
@@ -42,11 +43,7 @@ function timeAgo(ms: number): string {
 /** Reduce a stored first prompt to a clean one-liner: drop the leading reasoning
  *  directive and any fork-priming preamble, then collapse whitespace. */
 export function cleanPrompt(raw: string): string {
-  let t = raw.trim().replace(/^\([^)]*\)\s*/, "");
-  const marker = "User's new message:";
-  const i = t.lastIndexOf(marker);
-  if (i !== -1) t = t.slice(i + marker.length);
-  return safeSessionTitle(t.replace(/\s+/g, " ").trim()) ?? "";
+  return safeSessionTitle(cleanSessionPrompt(raw)) ?? "";
 }
 
 /** A useful session label even before Codex has saved a title or first prompt. */

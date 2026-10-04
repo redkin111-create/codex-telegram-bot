@@ -26,7 +26,7 @@ Use a **different Telegram bot token** for each bot instance.
 | Capability | What it does |
 |---|---|
 | 🗂 **Projects** | `/projects` shows recent Codex projects and folders explicitly allowed in `PROJECT_ROOTS`; selecting one opens its sessions. |
-| ♻️ **Resume sessions** | `/sessions` lists recent Codex sessions (rollouts); tap to resume via `thread/resume`. |
+| ♻️ **Resume sessions** | `/sessions` lists all Codex conversations across projects; tap one to resume it. |
 | 📜 **History** | `/history` shows the latest messages of any session. |
 | 🧭 **Always-visible menu** | A persistent keyboard plus a pinned status panel showing project, model, reasoning, session and queue. |
 | 📱 **Phone-friendly controls** | `/menu` opens compact inline screens for projects, sessions, MCP, skills, models, settings, and status. |
@@ -105,7 +105,7 @@ No build step — TypeScript runs directly via `tsx`.
 ```
 /menu         Show the persistent menu keyboard
 /projects     Recent Codex projects · search · allowed folders · new <name>
-/sessions     List & resume sessions · /sessions <q> to filter
+  /sessions     All conversations across projects · /sessions <q> to filter
 /mcp          Live MCP inventory · health-check · enable/disable
 /models       List models reported by the running Codex app-server
 /agents       List collaboration modes and observed subagents
@@ -130,10 +130,14 @@ your messages are queued and sent automatically when it finishes.
 
 ### Phone-friendly inline controls
 
-Open `/menu` or tap **☰ Menu** for a compact control panel. Project and session
-lists are paged, and each screen offers a clear way back to the main menu. Model,
-reasoning, and MCP controls use the live information reported by Codex. Tool
-approval requests still ask before acting when full-access mode is off.
+Open `/menu` or tap **☰ Menu** for a compact control panel. Conversation lists
+cover all projects, show the project beside each title, and are paged. Selecting
+a project narrows the list to its actual working folder. Each screen offers a
+clear way back to the main menu. Model,
+reasoning, and MCP controls use the live information reported by Codex. The bot
+works without repeated prompts inside the selected project folder. Requests to
+access other folders or the network still ask for one-time approval when
+full-access mode is off.
 
 ---
 
@@ -198,7 +202,7 @@ separate real MCP `initialize` health check for enabled configured servers.
 | `CODEX_CLI_PATH` | no | auto | Path to the `codex` binary (auto-resolved via PATH otherwise). |
 | `CODEX_HOME` | no | `~/.codex` | Holds `sessions/`, `auth.json`, `config.toml`. |
 | `CODEX_WORKSPACE` | no | cwd | Default working directory. |
-| `CODEX_TRUST_ALL_TOOLS` | no | `false` | `false` keeps `workspace-write` and asks before tool actions. `true` enables `danger-full-access` with approvals disabled. |
+| `CODEX_TRUST_ALL_TOOLS` | no | `false` | `false` allows work inside the selected project without repeated prompts; access outside it or to the network still requires approval. `true` enables `danger-full-access` with approvals disabled. |
 | `CODEX_TG_DIR` | no | `~/.codex/tg` | Folder holding this instance's `.env`, `logs/`, `data/`. |
 | `PROJECT_ROOTS` | no | none | Explicit allowlist for browsing immediate child project folders. Recent Codex projects are discovered from session history. If unset, no home-directory scan occurs; an explicitly set `CODEX_WORKSPACE` may be browsed. |
 | `STREAM_THROTTLE_MS` | no | `1500` | Live-edit interval while streaming. |
@@ -206,6 +210,8 @@ separate real MCP `initialize` health check for enabled configured servers.
 | `SHOW_TOOL_CALLS` | no | `false` | Show terminal/tool traces in Telegram; enable for verbose debugging. |
 | `SHOW_EDIT_DIFFS` | no | `false` | Show file diffs in Telegram; requires `SHOW_TOOL_CALLS=true`. |
 | `DIFF_MAX_LINES` | no | `120` | Max diff lines shown inline. |
+| `SEND_AGENT_IMAGES` | no | `true` | Send fresh image files (including screenshots) to Telegram when their paths appear in agent output or tool data. |
+| `AGENT_IMAGES_MAX` | no | `8` | Maximum number of images sent after one agent turn. |
 | `DOC_MAX_CHARS` | no | `100000` | Max chars of a text attachment inlined (0 = unlimited). |
 | `SHOW_PROGRESS` | no | `true` | Ask for a `{progress: N%}` marker and render a bar. |
 | `PROGRESS_FALLBACK` | no | `true` | Bot-computed progress bar when the agent emits no marker. |

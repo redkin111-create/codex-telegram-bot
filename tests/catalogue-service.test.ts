@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import type { CodexProjectSummary, CodexThreadSummary } from "../src/acp/codex-protocol.js";
 import { catalogThreadSessions, codexProjectAt, codexProjects, includeRegisteredTelegramSessions, isInteractiveThread, loadCodexProjects, projectContainsThread, safeSessionTitle, sessionBelongsToProject, threadSessionMeta, threadsAsProjects } from "../src/bot/catalog.js";
 import { sessionPage } from "../src/bot/handlers/sessions.js";
+import { cleanSessionPrompt } from "../src/sessions/title.js";
 import { callbackDataFits } from "../src/bot/menu/paging.js";
 import { ProjectManager } from "../src/projects/manager.js";
 import { formatDiagnostics, runtimeIdentity } from "../src/bot/handlers/diagnostics.js";
@@ -77,16 +78,17 @@ test("project list fallback uses interactive thread cwd and groups multiple root
   assert.equal((await loadCodexProjects({ listProjects: async () => { throw Error(); }, listThreads: async () => { throw Error(); } } as never)).length, 0);
 });
 
-test("multi-root project matches by project id or normalized cwd", () => {
+test("project matching trusts the actual working folder over stale project ids", () => {
   const project = { id: "codex-project", name: "Workspace", path: "C:\\work\\main", roots: ["C:\\work\\main", "C:\\work\\tools"], lastUsed: 1 };
-  assert(projectContainsThread(project, thread("t", "cli", { projectId: "codex-project", cwd: "C:\\elsewhere" })));
+  assert(!projectContainsThread(project, thread("t", "cli", { projectId: "codex-project", cwd: "C:\\elsewhere" })));
+  assert(projectContainsThread(project, thread("t", "cli", { projectId: "codex-project", cwd: "" })));
   assert(sessionBelongsToProject({ sessionId: "s", cwd: "c:\\WORK\\TOOLS", title: "t", createdAt: "", updatedAt: "", active: false, historyBytes: 0 }, project));
   assert(!sessionBelongsToProject({ sessionId: "s", projectId: "other", cwd: "C:\\other", title: "t", createdAt: "", updatedAt: "", active: false, historyBytes: 0 }, project));
   assert(sessionBelongsToProject({ sessionId: "s", projectId: "stale-id", cwd: "C:\\work\\tools", title: "t", createdAt: "", updatedAt: "", active: false, historyBytes: 0 }, project));
   assert(projectContainsThread(project, thread("t", "cli", { projectId: "stale-id", cwd: "C:\\work\\tools" })));
 });
 
-test("sessions include interactive cli/vscode and only registered Telegram appServer threads", () => {
+test("conversation list includes Codex Desktop appServer threads but hides other Telegram users", () => {
   const interactive = [
     thread("cli", "cli"),
     thread("vscode", "vscode"),
@@ -99,8 +101,14 @@ test("sessions include interactive cli/vscode and only registered Telegram appSe
     thread("foreign-app", "appServer"),
   ];
   const telegram: TelegramSessionRecord = { createdBy: "telegram", createdAt: "2026-01-01T00:00:00.000Z", chatId: 7, projectPath: "C:\\work\\toy", projectName: "toy" };
-  const list = catalogThreadSessions(interactive, [thread("ours", "appServer"), thread("unregistered", "appServer")], new Map([["ours", telegram]]));
-  assert.deepEqual(list.map((item) => item.sessionId).sort(), ["cli", "ours", "vscode"]);
+  const list = catalogThreadSessions(
+    interactive,
+    [thread("ours", "appServer"), thread("desktop", "appServer"), thread("other-user", "appServer")],
+    new Map([["ours", telegram]]),
+    [],
+    new Set(["other-user"]),
+  );
+  assert.deepEqual(list.map((item) => item.sessionId).sort(), ["cli", "desktop", "ours", "vscode"]);
   assert.equal(list.find((item) => item.sessionId === "ours")?.telegramCreated, true);
   assert(isInteractiveThread(thread("legacy", undefined)));
   assert(!isInteractiveThread(thread("exec", "exec")));
@@ -144,9 +152,21 @@ test("thread.name leads, preview is fallback, and bootstrap titles are rejected"
   assert.equal(safeSessionTitle("<recommended_plugins> Here is a list of plugins"), undefined);
   assert.equal(safeSessionTitle("# Context from my IDE setup: ## Active selection"), undefined);
   assert.equal(safeSessionTitle("Untitled"), undefined);
+  assert.equal(safeSessionTitle("Новый сеанс"), undefined);
   assert.equal(safeSessionTitle("(untitled)"), undefined);
   assert.equal(safeSessionTitle("а сейчас подключение к МСП есть?"), "А сейчас подключение к МСП есть?");
   assert.equal(safeSessionTitle("You are Codex"), undefined);
+});
+
+test("stored first prompts provide real session titles after removing Codex setup text", () => {
+  const prompt = "(Reasoning: high)\nПиши пояснения и сообщения пользователю по-русски.\n\nНовое сообщение пользователя:\nПроверь подключение к MCP";
+  assert.equal(cleanSessionPrompt(prompt), "Проверь подключение к MCP");
+  const stored: SessionMeta = {
+    sessionId: "session", cwd: "C:\\work\\toy", title: "Проверь подключение к MCP",
+    createdAt: "", updatedAt: "", active: false, historyBytes: 0,
+  };
+  const fallback = threadSessionMeta(thread("session", "cli", { name: "Новый сеанс" }), undefined, [], () => stored);
+  assert.equal(fallback.title, "Проверь подключение к MCP");
 });
 
 test("controlled-session cards suppress bootstrap prompts but keep the user's actual prompt", () => {
@@ -168,7 +188,8 @@ test("session picker is short, search-based and does not repeat titles in body",
     historyBytes: 1,
   }));
   const first = sessionPage(metas, "Сеансы · toy", 0, "0123456789abcdef", metas[0]?.sessionId);
-  assert(first.text.includes("Последние 25"));
+  assert(first.text.includes("Всего: 100"));
+  assert(first.text.includes("1/17"));
   assert(!first.text.includes("Сеанс 0"));
   assert(first.keyboard.inline_keyboard.flat().filter((button) => "callback_data" in button && button.callback_data.startsWith("s:0123456789abcdef:")).length <= 6);
   assert(first.keyboard.inline_keyboard.flat().some((button) => "callback_data" in button && button.callback_data === "s:search"));

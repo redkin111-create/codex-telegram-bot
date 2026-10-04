@@ -11,7 +11,7 @@ import { showMcp } from "./mcp.js";
 import { showProjects } from "./projects.js";
 import { showRunning } from "./running.js";
 import { showAccounts } from "./accounts.js";
-import { showNewSessionConfirmation, showCurrentProjectSessions } from "./sessions.js";
+import { showNewSessionConfirmation, showSessions } from "./sessions.js";
 import { showDiagnostics } from "./diagnostics.js";
 import { showTasks } from "./tasks.js";
 import { showUsage } from "./usage.js";
@@ -78,7 +78,7 @@ async function dispatchMenu(ctx: Context, deps: BotDeps, action: string): Promis
       return showProjects(ctx, deps);
     case "sessions":
       await ctx.answerCallbackQuery();
-      return showCurrentProjectSessions(ctx, deps);
+      return showSessions(ctx, deps);
     case "running":
       await ctx.answerCallbackQuery();
       return showRunning(ctx, deps);
@@ -158,7 +158,7 @@ async function showSecurity(ctx: Context, deps: BotDeps): Promise<void> {
   const text = [
     "🔐 Безопасность",
     `Sandbox: ${deps.cfg.trustAllTools ? "полный доступ" : "только рабочие папки"}`,
-    `Подтверждения: ${deps.cfg.trustAllTools ? "выключены" : "по запросу"}`,
+    `Подтверждения: ${deps.cfg.trustAllTools ? "выключены" : "для внешних папок и сети"}`,
     `Доверять всем инструментам: ${deps.cfg.trustAllTools ? "ВКЛ" : "ВЫКЛ"}`,
     `Разрешённые пользователи: ${deps.cfg.allowedUsers.size > 0 ? "настроены" : "не настроены"}`,
   ].join("\n");

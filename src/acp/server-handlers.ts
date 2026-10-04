@@ -2,10 +2,10 @@
  * Handlers for requests the Codex agent may send back to us (client) during a
  * turn: exec/patch approval decisions (and, forward-compatibly, fs/terminal).
  *
- * In full-auto mode (approvalPolicy "never") Codex executes tools itself and
- * sends no approval requests; when a stricter policy is set, approvals route to
- * the chat (see acp/approvals.ts). The fs/terminal handlers below are retained
- * for protocol completeness.
+ * With approvalPolicy "never", Codex executes tools inside the configured
+ * sandbox without per-action approval requests. Explicit permission expansions
+ * still route to the chat (see acp/approvals.ts). The fs/terminal handlers
+ * below are retained for protocol completeness.
  */
 import { execSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";

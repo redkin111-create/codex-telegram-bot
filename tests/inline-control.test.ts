@@ -140,7 +140,7 @@ test("main menu has home navigation and avoids exposing a full project path", ()
   assert(!callbacks(keyboard).includes("C:\\private\\workspace"));
   const labels = keyboard.inline_keyboard.flat().map((button) => button.text);
   assert(labels.includes("\u{1F4C1} Проекты"));
-  assert(labels.includes("\u{1F4AC} Сеансы"));
+  assert(labels.includes("\u{1F4AC} Переписки"));
   assert([MENU_BTN, RUNNING_BTN, STOP_BTN].every((label) => /[А-Яа-яЁё]/.test(label)));
   assert(COMMANDS.every(({ description }) => /[А-Яа-яЁё]/.test(description)));
   assert(HELP_TEXT.includes("КАК ЭТО РАБОТАЕТ"));
@@ -263,7 +263,7 @@ test("choosing a project opens its filtered sessions without creating a thread",
   const deps = {
     menuCache: cache,
     store: { list: () => [], get: () => undefined },
-    telegramSessions: { prune: () => 0, get: () => undefined, listForChat: () => [] },
+    telegramSessions: { prune: () => 0, get: () => undefined, listForChat: () => [], listAll: () => [] },
     registry: {
       get: () => ({ sessionId: undefined }),
       controller: () => ({ addNew: async () => { starts++; } }),

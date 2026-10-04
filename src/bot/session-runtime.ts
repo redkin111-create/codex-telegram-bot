@@ -44,6 +44,13 @@ export type AttachResult = "resumed" | "forked";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+function collectText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(collectText).join(" ");
+  if (value && typeof value === "object") return Object.values(value).map(collectText).join(" ");
+  return "";
+}
+
 /**
  * Continuation nudge sent to the SAME session to recover from a transient error
  * that struck mid-stream. The partial reply + any completed tool results are
@@ -838,6 +845,7 @@ export class SessionRuntime {
         since: this.turnStartedAt,
         already: this.sentImagesThisTurn,
         max: this.cfg.agentImagesMax,
+        replyTo: this.turnReplyTo,
       });
     } catch {
       /* non-fatal */
@@ -911,8 +919,7 @@ export class SessionRuntime {
     // completion message still reports what changed / which images were made).
     if (kind === "tool_call" || kind === "tool_call_update") {
       this.toolActivity = true;
-      if (update.rawInput) this.imageScanText += " " + JSON.stringify(update.rawInput);
-      if (update.title) this.imageScanText += " " + update.title;
+      this.imageScanText += " " + collectText(update);
       const fo = fileOpFromUpdate(update);
       if (fo) this.fileOps.set(fo.path, mergeFileOp(this.fileOps.get(fo.path), fo.op));
     } else if (kind === "agent_message_chunk") {

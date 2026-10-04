@@ -19,8 +19,10 @@ import { safeEdit, safeSend } from "../bot/telegram-io.js";
 
 const SOFT_LIMIT = 3500;
 const THINK_TAIL = 500;
+const MAX_REASONING_CHARS = 1400;
 
-type SegKind = "out" | "think" | "summary" | "tool";
+type SegKind = "out" | "tool";
+type ReasoningKind = "think" | "summary";
 interface Seg {
   kind: SegKind;
   text: string;
@@ -28,8 +30,10 @@ interface Seg {
 
 export class ResponseStreamer {
   private readonly segs: Seg[] = [];
+  private readonly reasoningSegs: Array<{ kind: ReasoningKind; text: string }> = [];
   private sealedIdx = 0;
   private liveId: number | undefined;
+  private reasoningLiveId: number | undefined;
   private timer: NodeJS.Timeout | undefined;
   private dirty = false;
   private flushing = false;
@@ -118,14 +122,14 @@ export class ResponseStreamer {
   appendThought(text: string): void {
     if (!text) return;
     this.thoughtChars += text.length;
-    this.merge("think", text);
+    this.mergeReasoning("think", text);
     this.schedule();
   }
 
   appendReasoningSummary(text: string): void {
     if (!text) return;
     this.thoughtChars += text.length;
-    this.merge("summary", text);
+    this.mergeReasoning("summary", text);
     this.schedule();
   }
 
@@ -137,7 +141,9 @@ export class ResponseStreamer {
   }
 
   get hasOutput(): boolean {
-    return this.liveId !== undefined || this.segs.some((s) => s.text.trim().length > 0);
+    return this.liveId !== undefined || this.reasoningLiveId !== undefined ||
+      this.segs.some((s) => s.text.trim().length > 0) ||
+      this.reasoningSegs.some((s) => s.text.trim().length > 0);
   }
 
   async finalize(): Promise<void> {
@@ -153,6 +159,12 @@ export class ResponseStreamer {
     const last = this.segs.at(-1);
     if (last && last.kind === kind) last.text += text;
     else this.segs.push({ kind, text });
+  }
+
+  private mergeReasoning(kind: ReasoningKind, text: string): void {
+    const last = this.reasoningSegs.at(-1);
+    if (last && last.kind === kind) last.text += text;
+    else this.reasoningSegs.push({ kind, text });
   }
 
   private schedule(): void {
@@ -174,6 +186,7 @@ export class ResponseStreamer {
     this.flushing = true;
     this.dirty = false;
     try {
+      await this.flushReasoning();
       await this.sealOverflow();
       const base = this.captureProgress(renderSegs(this.segs.slice(this.sealedIdx)));
       this.applyFallback();
@@ -207,6 +220,38 @@ export class ResponseStreamer {
     }
   }
 
+  /** Stream the progress note in its own Telegram bubble, separate from the
+   *  answer. Keep a short rolling tail so verbose updates stay within limits. */
+  private async flushReasoning(): Promise<void> {
+    const body = renderReasoningSegs(this.reasoningSegs);
+    if (!body) return;
+    const tail = body.length > MAX_REASONING_CHARS ? `…${body.slice(-MAX_REASONING_CHARS)}` : body;
+    const src = `💭 Ход работы\n\n${tail}`;
+    const rendered = toTelegramMarkdown(src);
+    const chunks = chunkMarkdown(rendered);
+    const plain = chunkMarkdown(src);
+    if (chunks.length === 1) {
+      const mdv2 = chunks[0] ?? rendered;
+      if (this.reasoningLiveId === undefined) {
+        this.reasoningLiveId = await safeSend(this.api, this.chatId, mdv2, src, this.replyExtra());
+      } else {
+        await safeEdit(this.api, this.chatId, this.reasoningLiveId, mdv2, src);
+      }
+      return;
+    }
+
+    // Fallback for unusual Markdown expansion: send the note once and keep the
+    // final Telegram chunk live for subsequent edits.
+    for (let i = 0; i < chunks.length; i++) {
+      if (i === chunks.length - 1 && this.reasoningLiveId !== undefined) {
+        await safeEdit(this.api, this.chatId, this.reasoningLiveId, chunks[i]!, plain[i] ?? chunks[i]!);
+      } else {
+        const id = await safeSend(this.api, this.chatId, chunks[i]!, plain[i] ?? chunks[i]!, this.replyExtra());
+        if (i === chunks.length - 1) this.reasoningLiveId = id;
+      }
+    }
+  }
+
   /** Seal leading segments into finalized messages while the live view is too big. */
   private async sealOverflow(): Promise<void> {
     let live = this.segs.slice(this.sealedIdx);
@@ -236,12 +281,14 @@ export class ResponseStreamer {
 
 function renderSegs(segs: Seg[]): string {
   return segs
-    .map((s) => {
-      if (s.kind === "out") return s.text.trim();
-      if (s.kind === "think") return quoteThought(s.text);
-      if (s.kind === "summary") return `💭 ${s.text.trim()}`;
-      return s.text.trim();
-    })
+    .map((s) => s.text.trim())
+    .filter((x) => x.length > 0)
+    .join("\n\n");
+}
+
+function renderReasoningSegs(segs: Array<{ kind: ReasoningKind; text: string }>): string {
+  return segs
+    .map((s) => s.kind === "think" ? quoteThought(s.text) : s.text.trim())
     .filter((x) => x.length > 0)
     .join("\n\n");
 }
@@ -251,5 +298,5 @@ function quoteThought(text: string): string {
   if (!t) return "";
   const short = t.length > THINK_TAIL ? "…" + t.slice(-THINK_TAIL) : t;
   const lines = short.split("\n");
-  return lines.map((l, i) => (i === 0 ? `> 💭 *thinking:* ${l}` : `> ${l}`)).join("\n");
+  return lines.map((l, i) => (i === 0 ? `> 💭 *Промежуточный шаг:* ${l}` : `> ${l}`)).join("\n");
 }

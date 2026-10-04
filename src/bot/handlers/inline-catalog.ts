@@ -41,7 +41,7 @@ export async function showSettings(ctx: Context, deps: BotDeps): Promise<void> {
     `Проект: ${compactLabel(project, 50)}`,
     `Сеанс: ${compactLabel(session, 50)}`,
     `Доступ: ${deps.cfg.trustAllTools ? "полный доступ" : "к рабочим папкам"}`,
-    `Подтверждение действий: ${deps.cfg.trustAllTools ? "выключено" : "по запросу"}`,
+    `Подтверждение действий: ${deps.cfg.trustAllTools ? "выключено" : "для внешних папок и сети"}`,
   ];
   if (deps.cfg.trustAllTools) {
     lines.push("\n\u26A0\uFE0F Включён полный доступ. Чтобы снова подтверждать действия отдельно, установите CODEX_TRUST_ALL_TOOLS=false.");

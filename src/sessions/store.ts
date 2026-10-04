@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { closeSync, openSync, readSync } from "node:fs";
 import { createLogger } from "../logger.js";
 import { readFirstPrompt } from "./history.js";
+import { cleanSessionPrompt } from "./title.js";
 import type { SessionMeta } from "./types.js";
 
 const log = createLogger("sessions:store");
@@ -174,7 +175,7 @@ function readMetaLine(path: string): HeadMeta {
 
 /** First user prompt of a session, used as its display title. */
 function firstPromptTitle(path: string): string {
-  const first = readFirstPrompt(path).trim();
+  const first = cleanSessionPrompt(readFirstPrompt(path));
   if (!first) return "(untitled)";
   const oneLine = first.replace(/\s+/g, " ");
   return oneLine.length > 80 ? oneLine.slice(0, 79) + "…" : oneLine;

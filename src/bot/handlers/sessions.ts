@@ -2,8 +2,7 @@
 import { type Bot, type Context, InlineKeyboard } from "grammy";
 import { basename } from "node:path";
 import type { ProjectEntry } from "../../projects/manager.js";
-import { sameProjectPath } from "../../projects/manager.js";
-import { catalogThreadSessions, codexProjectAt, includeRegisteredTelegramSessions, loadCodexProjects, safeSessionTitle, sessionBelongsToProject, threadSourceKind } from "../catalog.js";
+import { catalogThreadSessions, includeRegisteredTelegramSessions, isInteractiveThread, listAllCodexThreads, loadCodexProjects, safeSessionTitle, sessionBelongsToProject, threadSourceKind } from "../catalog.js";
 import { readHistory } from "../../sessions/history.js";
 import type { SessionMeta } from "../../sessions/types.js";
 import type { BotDeps } from "../deps.js";
@@ -15,24 +14,26 @@ import { briefErrorMessage } from "../prompt-retry.js";
 
 const PAGE_SIZE = INLINE_PAGE_SIZE;
 const UUID = "([0-9a-fA-F-]{36})";
-const SESSION_LIMIT = 25;
-const THREAD_LIMIT = 100;
+const THREAD_PAGE_SIZE = 100;
+const STORE_FALLBACK_LIMIT = 5000;
 
 export async function showSessions(ctx: Context, deps: BotDeps, query?: string, project?: ProjectEntry, reuseLatest = false): Promise<void> {
   const chatId = ctx.chat!.id;
   deps.menuCache.setSelectedProject(chatId, project);
   const q = (query ?? "").trim();
-  const allowedTelegram = new Map(deps.telegramSessions.listForChat(chatId).map(({ sessionId, record }) => [sessionId, record]));
+  const registered = deps.telegramSessions.listAll();
+  const allowedTelegram = new Map(registered.filter(({ record }) => record.chatId === chatId)
+    .map(({ sessionId, record }) => [sessionId, record]));
+  const foreignTelegramIds = new Set(registered.filter(({ record }) => record.chatId !== chatId)
+    .map(({ sessionId }) => sessionId));
   let metas: SessionMeta[];
   try {
-    const options = { limit: THREAD_LIMIT, sortKey: "recency_at" as const, sortDirection: "desc" as const, ...(q ? { searchTerm: q } : {}) };
-    const interactive = await deps.acp.listThreads({ ...options, sourceKinds: ["cli", "vscode"] });
-    const appServer = await deps.acp.listThreads({ ...options, sourceKinds: ["appServer"] }).catch(async () => {
-      const allThreads = await deps.acp.listThreads(options).catch(() => []);
-      return allThreads.filter((thread) => threadSourceKind(thread) === "appServer");
-    });
+    const options = { limit: THREAD_PAGE_SIZE, sortKey: "recency_at" as const, sortDirection: "desc" as const, ...(q ? { searchTerm: q } : {}) };
+    const allThreads = await listAllCodexThreads(deps.acp, options);
+    const interactive = allThreads.filter(isInteractiveThread);
+    const appServer = allThreads.filter((thread) => threadSourceKind(thread) === "appServer");
     const projects = project ? [project] : await loadCodexProjects(deps.acp);
-    metas = catalogThreadSessions(interactive, appServer, allowedTelegram, projects);
+    metas = catalogThreadSessions(interactive, appServer, allowedTelegram, projects, foreignTelegramIds, (id) => deps.store.get(id));
     metas = includeRegisteredTelegramSessions(
       metas,
       [...allowedTelegram].map(([sessionId, record]) => ({ sessionId, record })),
@@ -40,7 +41,7 @@ export async function showSessions(ctx: Context, deps: BotDeps, query?: string, 
     );
   } catch {
     // Compatibility path for app-server versions without thread/list.
-    metas = deps.store.list(THREAD_LIMIT).flatMap((meta) => {
+    metas = deps.store.list(STORE_FALLBACK_LIMIT).flatMap((meta) => {
       const telegram = deps.telegramSessions.get(meta.sessionId);
       if (telegram && telegram.chatId !== chatId) return [];
       const title = safeSessionTitle(meta.title);
@@ -60,29 +61,9 @@ export async function showSessions(ctx: Context, deps: BotDeps, query?: string, 
     const needle = q.toLocaleLowerCase();
     metas = metas.filter((meta) => `${meta.title} ${meta.cwd}`.toLocaleLowerCase().includes(needle));
   }
-  metas = metas.slice(0, SESSION_LIMIT);
-  const heading = project ? `Сеансы · ${project.name}` : q ? `Сеансы · «${q}»` : "Все сеансы";
+  const heading = project ? `Сеансы · ${project.name}` : q ? `Переписки · «${q}»` : "Все переписки";
   deps.menuCache.setSessions(chatId, metas, heading, project);
   await renderSessionPage(ctx, deps, 0, reuseLatest);
-}
-
-/** Main-menu Sessions follows the foreground project's Codex catalogue entry. */
-export async function showCurrentProjectSessions(ctx: Context, deps: BotDeps): Promise<void> {
-  const chatId = ctx.chat!.id;
-  const runtime = deps.registry.get(chatId);
-  const currentPath = runtime.cwd;
-  let project = currentPath ? deps.menuCache.getSelectedProject(chatId) : undefined;
-  if (currentPath && (!project || !(project.roots ?? [project.path]).some((root) => sameProjectPath(root, currentPath)))) {
-    try {
-      const entries = await loadCodexProjects(deps.acp);
-      project = entries.find((entry) => (entry.roots ?? [entry.path]).some((root) => sameProjectPath(root, currentPath)));
-    } catch {
-      project = undefined;
-    }
-    project ??= { name: runtime.projectName || basename(currentPath), path: currentPath, roots: [currentPath], lastUsed: Date.now() };
-  }
-  project ??= deps.menuCache.getSelectedProject(chatId);
-  await showSessions(ctx, deps, undefined, project);
 }
 
 function matchesProject(meta: SessionMeta, project: ProjectEntry): boolean {
@@ -145,14 +126,17 @@ export function sessionPage(
   currentId?: string, isTelegramCreated: (id: string) => boolean = () => false,
   projectScoped = false,
 ): { text: string; keyboard: InlineKeyboard } {
-  const visible = metas.slice(0, SESSION_LIMIT);
+  const visible = metas;
   const { page: p, pages, start, end } = pageWindow(visible.length, requestedPage, PAGE_SIZE);
   const kb = new InlineKeyboard();
   for (let i = start; i < end; i++) {
     const meta = visible[i]!;
     const current = meta.sessionId === currentId ? "✅ " : "";
     const origin = meta.telegramCreated || isTelegramCreated(meta.sessionId) ? "📱" : "🖥";
-    kb.text(`${current}${origin} ${compactLabel(meta.title, 40)} · ${relTime(meta.updatedAt)}`, `s:${token}:${i}`).row();
+    const projectName = !projectScoped ? meta.projectName || (meta.cwd ? basename(meta.cwd) : "") : "";
+    const projectLabel = projectName ? ` · ${compactLabel(projectName, 18)}` : "";
+    const title = compactLabel(meta.title, projectName ? 26 : 40);
+    kb.text(`${current}${origin} ${title}${projectLabel} · ${relTime(meta.updatedAt)}`, `s:${token}:${i}`).row();
   }
   if (pages > 1) {
     if (p > 0) kb.text("◀", `sp:${token}:${p - 1}`);
@@ -161,14 +145,13 @@ export function sessionPage(
     kb.row();
   }
   kb.text("🔎 Поиск", "s:search").text("🆕 Новый сеанс", "s:new").row();
-  if (projectScoped) {
-    kb.text("🌐 Все сеансы", "s:all").text("⬅ Проекты", "p:menu").row();
-  }
+  if (projectScoped) kb.text("🌐 Все переписки", "s:all").text("⬅ Проекты", "p:menu").row();
+  else kb.text("📁 По проектам", "p:menu").row();
   kb.text("🏠 Главное меню", "ui:home");
 
-  const lines = [`💬 ${compactLabel(heading, 56)}`, `Последние ${visible.length}`];
-  if (visible.length === 0) lines.push(projectScoped ? "В этом проекте пока нет сеансов." : "Сеансов не найдено.");
-  if (pages > 1) lines[1] = `Последние ${visible.length} · ${p + 1}/${pages}`;
+  const lines = [`💬 ${compactLabel(heading, 56)}`, `Всего: ${visible.length}`];
+  if (visible.length === 0) lines.push(projectScoped ? "В этом проекте пока нет сеансов." : "Переписок не найдено.");
+  if (pages > 1) lines[1] = `Всего: ${visible.length} · ${p + 1}/${pages}`;
   return { text: lines.join("\n"), keyboard: kb };
 }
 
@@ -182,7 +165,7 @@ export function selectionCard(meta: SessionMeta, token: string, index: number, s
 }
 
 export function registerSessions(bot: Bot, deps: BotDeps): void {
-  bot.command("sessions", async (ctx) => showSessions(ctx, deps, ctx.match?.toString(), await currentProjectHint(ctx, deps)));
+  bot.command("sessions", (ctx) => showSessions(ctx, deps, ctx.match?.toString()));
 
   bot.on("message:text", async (ctx, next) => {
     const chatId = ctx.chat.id;
@@ -298,19 +281,4 @@ function connectMessage(result: "resumed" | "forked", meta: SessionMeta): string
   const projectName = meta.projectName || basename(meta.cwd) || "проект";
   if (result === "resumed") return `✅ Сеанс выбран: ${meta.title}\n📁 ${projectName}\n\nОтправьте сообщение.`;
   return `⚠️ Исходный сеанс занят. Codex создал связанный сеанс с недавним контекстом.\n📁 ${projectName}\n\nОтправьте сообщение.`;
-}
-
-async function currentProjectHint(ctx: Context, deps: BotDeps): Promise<ProjectEntry | undefined> {
-  const chatId = ctx.chat!.id;
-  const rt = deps.registry.get(chatId);
-  const selected = deps.menuCache.getSelectedProject(chatId);
-  if (rt.cwd && selected && (selected.roots ?? [selected.path]).some((root) => sameProjectPath(root, rt.cwd))) return selected;
-  if (rt.cwd) {
-    try {
-      const project = await codexProjectAt(deps.acp, rt.cwd);
-      if (project) return project;
-    } catch { /* fall back to the runtime's project path */ }
-    return { name: rt.projectName || basename(rt.cwd), path: rt.cwd, roots: [rt.cwd], lastUsed: Date.now() };
-  }
-  return selected;
 }
