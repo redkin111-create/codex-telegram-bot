@@ -5,6 +5,7 @@
 import { join } from "node:path";
 import { JsonStore } from "./json-store.js";
 import { type ChatSettings, defaultSettings } from "./types.js";
+import { DEFAULT_NOTIFICATION_PREFERENCES } from "./notifications.js";
 
 type SettingsMap = Record<string, ChatSettings>;
 
@@ -17,7 +18,11 @@ export class SettingsStore {
 
   get(chatId: number): ChatSettings {
     const existing = this.store.get()[String(chatId)];
-    return existing ?? defaultSettings();
+    return {
+      ...defaultSettings(),
+      ...existing,
+      notifications: { ...DEFAULT_NOTIFICATION_PREFERENCES, ...existing?.notifications },
+    };
   }
 
   update(chatId: number, patch: Partial<ChatSettings>): ChatSettings {

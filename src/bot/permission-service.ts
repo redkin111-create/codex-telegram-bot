@@ -10,6 +10,7 @@ import { InlineKeyboard } from "grammy";
 import type { PermissionOutcome, RequestPermissionParams } from "../acp/types.js";
 import { describeRequestedPermissions } from "../acp/approvals.js";
 import { createLogger } from "../logger.js";
+import type { SettingsStore } from "../app/settings-store.js";
 import type { RuntimeRegistry } from "./registry.js";
 
 const log = createLogger("permissions");
@@ -44,6 +45,7 @@ export class PermissionService {
   constructor(
     private readonly api: Api,
     private readonly registry: RuntimeRegistry,
+    private readonly settings?: SettingsStore,
   ) {}
 
   /** Handle a permission request: ask the owning chat, or auto-allow if none. */
@@ -82,7 +84,7 @@ export class PermissionService {
         describe(params, { label: isForeground ? undefined : label, subagent: desc.subagent, canSwitch, permissionDetails }),
         {
           reply_markup: kb,
-          disable_notification: false, // requires interaction → always with sound
+          disable_notification: this.settings?.get(chatId).notifications?.mode === "quiet",
         },
       );
       messageId = msg.message_id;

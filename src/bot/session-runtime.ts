@@ -5,12 +5,14 @@
  * to the settings store so it survives restarts.
  */
 import { basename } from "node:path";
+import { randomBytes } from "node:crypto";
 import { type Api, InlineKeyboard } from "grammy";
 import { type AcpClient, isAccountExhaustedError, isContextExhaustedError, isTransientAcpError, type SessionMetadata } from "../acp/client.js";
 import type { AccountRotator } from "./account-rotator.js";
 import type { ContentBlock, PromptResult, SessionUpdate } from "../acp/types.js";
 import type { AppConfig } from "../config.js";
 import { reasoningDirective } from "../app/reasoning.js";
+import { notificationCompletionEnabled } from "../app/notifications.js";
 import type { SettingsStore } from "../app/settings-store.js";
 import { type PromptInput, type ReasoningEffort, textPrompt } from "../app/types.js";
 import { createLogger } from "../logger.js";
@@ -24,7 +26,8 @@ import { isActiveStatus, renderSubagentTransition, statusKey } from "../render/s
 import type { PendingStage, SubagentInfo } from "../acp/types.js";
 import { ResponseStreamer } from "../stream/streamer.js";
 import { extractImagePaths, sendImages } from "./image-return.js";
-import { buildContentBlocks, mergeInputs } from "./prompt-content.js";
+import { removeIncomingAttachment } from "./incoming-files.js";
+import { buildContentBlocks } from "./prompt-content.js";
 import { backoffSchedule, briefErrorMessage, formatErrorSummary, formatRetryNotice, RETRY_BASE_MS } from "./prompt-retry.js";
 import { sendMarkdownDoc } from "./telegram-io.js";
 import { TypingIndicator } from "./typing.js";
@@ -40,6 +43,11 @@ const WATCH_ICON: Record<string, string> = {
 };
 
 export type AttachResult = "resumed" | "forked";
+
+export interface QueuedPrompt {
+  id: string;
+  input: PromptInput;
+}
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -71,7 +79,13 @@ export class SessionRuntime {
 
   private busy = false;
   private cancelled = false;
-  private readonly queue: PromptInput[] = [];
+  private readonly queue: QueuedPrompt[] = [];
+  private queuePaused = false;
+  private queueSeriesActive = false;
+  private queueCompleted = 0;
+  private queuedArtifactPaths: string[] = [];
+  private queueSeq = 0;
+  private currentPromptText: string | undefined;
   private streamer: ResponseStreamer | undefined;
   private readonly typing: TypingIndicator;
   private shownToolIds = new Set<string>();
@@ -86,6 +100,7 @@ export class SessionRuntime {
   /** Latest task-completion % parsed from the agent's `{progress: N%}` markers,
    *  shown as a bar in the status panel and session cards. Reset each turn. */
   private progress: number | undefined;
+  private progressNotice = 0;
   /** Subagent sessionId -> last status key shown this turn (dedupe). */
   private subagentShown = new Map<string, string>();
   private turnStartedAt = 0;
@@ -116,6 +131,7 @@ export class SessionRuntime {
   onSessionChange: (() => void) | undefined;
   /** Called only for a freshly returned `thread/start` id, never on resume. */
   onSessionCreated: ((sessionId: string, cwd: string, projectName?: string) => void) | undefined;
+  onArtifactOffer: ((cwd: string, paths: string[], base?: InlineKeyboard) => { keyboard?: InlineKeyboard; names: string[] }) | undefined;
   /** Optional multi-account rotator: when a turn gives up, cycle through the
    *  other saved logins once and retry on each. Injected by the registry. */
   accountRotator: AccountRotator | undefined;
@@ -156,6 +172,15 @@ export class SessionRuntime {
   get queueLength(): number {
     return this.queue.length;
   }
+  get queuedPrompts(): QueuedPrompt[] {
+    return this.queue.map(({ id, input }) => ({ id, input: { ...input, images: [...input.images] } }));
+  }
+  get isQueuePaused(): boolean {
+    return this.queuePaused;
+  }
+  get activePromptText(): string | undefined {
+    return this.currentPromptText;
+  }
   get isWatching(): boolean {
     return this.watcher?.running ?? false;
   }
@@ -180,6 +205,13 @@ export class SessionRuntime {
     const next = Math.max(this.progress ?? 0, pct);
     if (next === this.progress) return;
     this.progress = next;
+    const milestone = Math.min(75, Math.floor(next / 25) * 25);
+    const prefs = this.settings.get(this.chatId).notifications!;
+    if (prefs.progress && milestone >= 25 && milestone > this.progressNotice
+      && (this.foreground || this.cfg.notifyOtherSessions)) {
+      this.progressNotice = milestone;
+      void this.notify(`📈 ${this.sessionLabel()} · выполнение ${milestone}%`);
+    }
     this.changed();
   }
 
@@ -290,18 +322,19 @@ export class SessionRuntime {
     sessionId: string,
     cwd: string,
     projectName: string | undefined,
-    priorEntries: HistoryEntry[],
+    _priorEntries?: HistoryEntry[],
   ): Promise<AttachResult> {
     try {
       await this.resumeSession(sessionId, cwd, projectName);
       return "resumed";
     } catch (err) {
-      if (!isLiveSessionConflict(err)) throw err;
-      log.warn(`session ${sessionId.slice(0, 8)} is already live; forking a continuation`);
-      await this.startNewSession(cwd, projectName);
-      if (priorEntries.length > 0) this.primingContext = buildPriming(buildTranscript(priorEntries));
-      return "forked";
+      if (isLiveSessionConflict(err)) throw new LiveSessionConflictError();
+      throw err;
     }
+  }
+
+  setPrimingContext(context: string): void {
+    this.primingContext = context;
   }
 
   startWatch(jsonlPath: string, follow = false): void {
@@ -387,8 +420,8 @@ export class SessionRuntime {
 
   async submit(input: PromptInput): Promise<"ran" | "queued"> {
     await this.ensureSession();
-    if (this.busy) {
-      this.queue.push(input);
+    if (this.busy || this.queuePaused || this.queue.length > 0) {
+      this.enqueue(input);
       this.changed();
       return "queued";
     }
@@ -404,15 +437,57 @@ export class SessionRuntime {
   }
 
   clearQueue(): number {
-    const n = this.queue.length;
-    this.queue.length = 0;
+    const removed = this.queue.splice(0);
+    const n = removed.length;
+    for (const item of removed) this.cleanupAttachments(item.input);
+    this.queuePaused = false;
+    this.queueSeriesActive = false;
+    this.queueCompleted = 0;
+    this.queuedArtifactPaths = [];
     this.changed();
     return n;
   }
 
+  removeQueued(id: string): boolean {
+    const index = this.queue.findIndex((item) => item.id === id);
+    if (index < 0) return false;
+    const [removed] = this.queue.splice(index, 1);
+    if (removed) this.cleanupAttachments(removed.input);
+    if (this.queue.length === 0 && !this.busy) this.queuePaused = false;
+    this.changed();
+    return true;
+  }
+
+  editQueued(id: string, text: string): boolean {
+    const item = this.queue.find((entry) => entry.id === id);
+    if (!item) return false;
+    const caption = text.trim();
+    if (!caption) return false;
+    item.input = {
+      ...item.input,
+      text: item.input.attachmentContext ? `${caption}\n\n${item.input.attachmentContext}` : caption,
+      displayText: caption,
+    };
+    this.changed();
+    return true;
+  }
+
+  resumeQueue(): boolean {
+    if (this.busy || this.queue.length === 0) return false;
+    this.queuePaused = false;
+    void this.flushQueue();
+    this.changed();
+    return true;
+  }
+
   drainQueueToPrompt(): PromptInput | undefined {
     if (this.queue.length === 0) return undefined;
-    return mergeInputs(this.queue.splice(0, this.queue.length));
+    return this.queue.shift()?.input;
+  }
+
+  private enqueue(input: PromptInput): void {
+    this.queue.push({ id: `${(++this.queueSeq).toString(36)}${randomBytes(4).toString("hex")}`, input });
+    this.queueSeriesActive = true;
   }
 
   private async ensureSession(): Promise<void> {
@@ -478,8 +553,9 @@ export class SessionRuntime {
     }
   }
 
-  private async runTurn(input: PromptInput): Promise<void> {
+  private async runTurn(input: PromptInput, fromQueue = false): Promise<void> {
     this.busy = true;
+    this.currentPromptText = input.displayText ?? input.text;
     this.cancelled = false;
     this.turnReplyTo = input.replyTo;
     this.shownToolIds = new Set();
@@ -487,6 +563,7 @@ export class SessionRuntime {
     this.fileOps = new Map();
     this.subagentShown = new Map();
     this.progress = undefined; // a new turn = a new task; clear the old bar
+    this.progressNotice = 0;
     // A new streamed turn supersedes any transient "follow" watch of this same
     // session's previous in-flight turn (avoids duplicated output).
     if (this.watchIsFollow) this.stopWatch();
@@ -530,7 +607,8 @@ export class SessionRuntime {
       // Always build the completion (records `lastCompletion` so switching back
       // to this session can replay its Done + summary). Only PING the chat for
       // the foreground turn, or a background turn when NOTIFY_OTHER_SESSIONS is on.
-      const canPing = this.foreground || this.cfg.notifyOtherSessions;
+      const notificationPrefs = this.settings.get(this.chatId).notifications!;
+      const canNotifyBackground = this.foreground || this.cfg.notifyOtherSessions;
       // A background session about to run a queued follow-up shouldn't ping its
       // interim "Done" — only the final, queue-empty turn announces completion.
       const hasQueued = this.queue.length > 0;
@@ -538,26 +616,66 @@ export class SessionRuntime {
       if (final.result && !this.cancelled) this.turnCount++;
       if (final.result || this.cancelled) {
         const live = this.completionMessage(final.result?.stopReason, startedAt, streamedOutput);
-        const pingDone = canPing && (this.foreground || !hasQueued);
-        if (pingDone) await this.notify(live, { loud: true, replyTo: this.turnReplyTo, replyMarkup: switchKb });
+        const pingDone = notificationCompletionEnabled(this.foreground, notificationPrefs, this.cfg.notifyOtherSessions)
+          && !this.queueSeriesActive && (this.foreground || !hasQueued);
+        if (final.result && !this.cancelled && this.queueSeriesActive) {
+          this.queuedArtifactPaths.push(...this.createdArtifactPaths());
+        }
+        const offered = this.queueSeriesActive
+          ? { keyboard: switchKb, names: [] }
+          : this.offerArtifacts(this.createdArtifactPaths(), switchKb);
+        if (pingDone) await this.notify(live, { loud: true, replyTo: this.turnReplyTo, replyMarkup: offered.keyboard ?? switchKb });
+        else if (offered.names.length > 0 && canNotifyBackground && (this.foreground || notificationPrefs.backgroundCompletion)) {
+          await this.notify(`📎 Созданы файлы:\n${offered.names.map((name) => `• ${name}`).join("\n")}`, {
+            loud: true,
+            replyTo: this.turnReplyTo,
+            replyMarkup: offered.keyboard,
+          });
+        }
       } else if (final.error) {
         const transient = isTransientAcpError(final.error);
-        const live = this.errorMessage(final.error, startedAt, final.attempts, transient);
-        if (canPing) await this.notify(live, { loud: true, replyTo: this.turnReplyTo, replyMarkup: switchKb });
+        this.queuePaused = this.queue.length > 0;
+        if (fromQueue && this.queue.length === 0) {
+          this.queueSeriesActive = false;
+          this.queueCompleted = 0;
+        }
+        const paused = this.queuePaused ? `\n\nОчередь приостановлена · осталось ${this.queue.length}` : "";
+        const live = `${this.errorMessage(final.error, startedAt, final.attempts, transient)}${paused}`;
+        const errorPaths = [...this.queuedArtifactPaths, ...this.createdArtifactPaths()];
+        const offered = this.offerArtifacts(errorPaths, switchKb);
+        if (canNotifyBackground && (notificationPrefs.error || !transient)) {
+          await this.notify(live, { loud: true, replyTo: this.turnReplyTo, replyMarkup: offered.keyboard ?? switchKb });
+        } else if (offered.names.length && canNotifyBackground && (this.foreground || notificationPrefs.backgroundCompletion)) {
+          await this.notify(`📎 Созданы файлы:\n${offered.names.map((name) => `• ${name}`).join("\n")}`, {
+            loud: true, replyTo: this.turnReplyTo, replyMarkup: offered.keyboard,
+          });
+        }
+        this.queuedArtifactPaths = [];
       }
+      if (final.result && !this.cancelled && fromQueue) this.queueCompleted++;
     } catch (err) {
       // Unexpected failure outside the prompt path (e.g. while finalizing).
       await this.streamer?.finalize().catch(() => {});
       const msg = `\u274C Задачу не удалось завершить.\nПричина: ${briefErrorMessage(err as Error)}`;
       this.lastCompletion = msg;
+      this.queuePaused = this.queue.length > 0;
+      if (fromQueue && this.queue.length === 0) {
+        this.queueSeriesActive = false;
+        this.queueCompleted = 0;
+      }
+      const offered = this.offerArtifacts([...this.queuedArtifactPaths, ...this.createdArtifactPaths()], this.switchKeyboard());
       if (this.foreground || this.cfg.notifyOtherSessions) {
         const from = this.foreground ? "" : `\u{1F4E8} Другой сеанс · ${this.sessionLabel()}\n`;
-        await this.notify(`${from}${msg}`, { loud: true, replyTo: this.turnReplyTo, replyMarkup: this.switchKeyboard() });
+        const paused = this.queuePaused ? `\n\nОчередь приостановлена · осталось ${this.queue.length}` : "";
+        await this.notify(`${from}${msg}${paused}`, { loud: true, replyTo: this.turnReplyTo, replyMarkup: offered.keyboard ?? this.switchKeyboard() });
       }
+      this.queuedArtifactPaths = [];
     } finally {
+      this.cleanupAttachments(input);
       this.typing.stop();
       this.streamer = undefined;
       this.busy = false;
+      this.currentPromptText = undefined;
       this.activity(false);
       // The in-flight turn we may have been following live is over.
       if (this.watchIsFollow) this.stopWatch();
@@ -569,6 +687,12 @@ export class SessionRuntime {
     }
 
     await this.flushQueue();
+  }
+
+  private cleanupAttachments(input: PromptInput): void {
+    for (const path of input.attachmentPaths ?? []) {
+      void removeIncomingAttachment(this.cfg.dataDir, path);
+    }
   }
 
   private activity(busy: boolean): void {
@@ -899,10 +1023,42 @@ export class SessionRuntime {
   }
 
   private async flushQueue(): Promise<void> {
-    if (this.queue.length === 0 || this.busy) return;
-    const batch = mergeInputs(this.queue.splice(0, this.queue.length));
-    if (this.foreground) await this.notify("\u25B6\uFE0F Выполняю сообщение из очереди…");
-    void this.runTurn(batch);
+    if (this.busy || this.queuePaused) return;
+    const next = this.queue.shift();
+    if (next) {
+      this.queueSeriesActive = true;
+      if (this.foreground) await this.notify("\u25B6\uFE0F Выполняю сообщение из очереди…");
+      void this.runTurn(next.input, true);
+      this.changed();
+      return;
+    }
+    if (!this.queueSeriesActive) return;
+    const completed = this.queueCompleted;
+    const offered = this.offerArtifacts(this.queuedArtifactPaths, this.switchKeyboard());
+    this.queueSeriesActive = false;
+    this.queueCompleted = 0;
+    this.queuedArtifactPaths = [];
+    this.changed();
+    if (completed > 0 && notificationCompletionEnabled(this.foreground, this.settings.get(this.chatId).notifications!, this.cfg.notifyOtherSessions)) {
+      const label = this.sessionLabel();
+      await this.notify(`✅ ${label} · очередь завершена\nВыполнено: ${completed} ${pluralTasks(completed)}`, {
+        loud: true,
+        replyMarkup: offered.keyboard ?? this.switchKeyboard(),
+      });
+    } else if (offered.names.length > 0 && (this.foreground || this.cfg.notifyOtherSessions)) {
+      await this.notify(`📎 Созданы файлы:\n${offered.names.map((name) => `• ${name}`).join("\n")}`, {
+        loud: true,
+        replyMarkup: offered.keyboard,
+      });
+    }
+  }
+
+  private createdArtifactPaths(): string[] {
+    return [...this.fileOps].filter(([, op]) => op === "created").map(([path]) => path);
+  }
+
+  private offerArtifacts(paths: string[], base?: InlineKeyboard): { keyboard?: InlineKeyboard; names: string[] } {
+    return this.onArtifactOffer?.(this.cwd, paths, base) ?? { keyboard: base, names: [] };
   }
 
   private onUpdate(sessionId: string, update: SessionUpdate): void {
@@ -1010,9 +1166,16 @@ export class SessionRuntime {
 }
 
 /** Fork only when Codex explicitly says the thread is live or locked elsewhere. */
-function isLiveSessionConflict(err: unknown): boolean {
+export function isLiveSessionConflict(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
   return /(?:thread|session).{0,48}(?:already\s+(?:active|running|loaded|in use)|locked|busy|in use)|(?:already\s+(?:active|running|loaded|in use)|locked|busy|in use).{0,48}(?:thread|session)/i.test(message);
+}
+
+export class LiveSessionConflictError extends Error {
+  constructor() {
+    super("Этот сеанс уже открыт в другом окне Codex.");
+    this.name = "LiveSessionConflictError";
+  }
 }
 
 /** Format an elapsed duration compactly (e.g. "8s", "2m 13s", "1h 4m"). */
@@ -1022,6 +1185,15 @@ function fmtDuration(ms: number): string {
   const m = Math.floor(s / 60);
   if (m < 60) return `${m} мин. ${s % 60} с`;
   return `${Math.floor(m / 60)} ч. ${m % 60} мин.`;
+}
+
+function pluralTasks(count: number): string {
+  const lastTwo = count % 100;
+  const last = count % 10;
+  if (lastTwo >= 11 && lastTwo <= 14) return "задач";
+  if (last === 1) return "задача";
+  if (last >= 2 && last <= 4) return "задачи";
+  return "задач";
 }
 
 /** Format a credits/cost figure compactly (drops noise decimals). */

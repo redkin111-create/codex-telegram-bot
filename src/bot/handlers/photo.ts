@@ -8,6 +8,7 @@ import type { PromptImage } from "../../app/types.js";
 import { createLogger } from "../../logger.js";
 import type { BotDeps } from "../deps.js";
 import { extractReplyContext } from "../reply-context.js";
+import { downloadTelegramFile, IncomingFileError, isSafeTelegramImageMime } from "../incoming-files.js";
 
 const log = createLogger("photo");
 const GROUP_DEBOUNCE_MS = 900;
@@ -65,14 +66,26 @@ export function registerPhotos(bot: Bot, deps: BotDeps): void {
   bot.on("message:photo", async (ctx) => {
     const photos = ctx.message.photo;
     const largest = photos[photos.length - 1];
-    const image = largest ? await download(ctx, largest.file_id, "image/jpeg", deps.cfg.token) : undefined;
+    const image = largest ? await download(ctx, largest.file_id, "image/jpeg", deps.cfg.token, largest.file_size) : undefined;
+    if (!image) {
+      await ctx.reply("❌ Не удалось безопасно загрузить изображение. Лимит — 10 МБ.");
+      return;
+    }
     await onMedia(ctx, image, ctx.message.caption ?? "");
   });
 
   bot.on("message:document", async (ctx, next) => {
     const doc = ctx.message.document;
     if (!doc.mime_type?.startsWith("image/")) return next(); // let document-handler logic pass
-    const image = await download(ctx, doc.file_id, doc.mime_type, deps.cfg.token);
+    if (!isSafeTelegramImageMime(doc.mime_type)) {
+      await ctx.reply("❌ Поддерживаются только JPEG, PNG, GIF и WebP.");
+      return;
+    }
+    const image = await download(ctx, doc.file_id, doc.mime_type, deps.cfg.token, doc.file_size);
+    if (!image) {
+      await ctx.reply("❌ Не удалось безопасно загрузить изображение. Лимит — 10 МБ.");
+      return;
+    }
     await onMedia(ctx, image, ctx.message.caption ?? "");
   });
 }
@@ -92,13 +105,14 @@ async function submit(
   replyTo?: number,
   quoted?: string,
 ): Promise<void> {
-  const rt = deps.registry.get(chatId);
-  const outcome = await rt.submit({ text: caption, images, replyTo, quotedText: quoted });
-  if (outcome === "queued") {
+  const result = await deps.registry.submitPrompt(chatId, { text: caption, images, replyTo, quotedText: quoted });
+  if (result.kind === "submitted" && result.outcome === "queued") {
     await deps.api.sendMessage(
       chatId,
-      `\u{1F4E5} Изображений в очереди: ${images.length}. Они будут обработаны после текущей задачи.`,
+      `📥 Изображение добавлено в очередь · позиция ${result.runtime.queueLength}`,
     );
+  } else {
+    await deps.api.sendMessage(chatId, "🖼 Изображение добавлено к задаче.");
   }
 }
 
@@ -107,17 +121,13 @@ async function download(
   fileId: string,
   mimeType: string,
   token: string,
+  sizeHint?: number,
 ): Promise<PromptImage | undefined> {
   try {
-    const file = await ctx.api.getFile(fileId);
-    if (!file.file_path) return undefined;
-    const url = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const buf = Buffer.from(await res.arrayBuffer());
+    const buf = await downloadTelegramFile(ctx.api, token, fileId, sizeHint);
     return { data: buf.toString("base64"), mimeType };
   } catch (e) {
-    log.warn("image download failed:", (e as Error).message);
+    log.warn(e instanceof IncomingFileError ? `image rejected: ${e.reason}` : "image download failed.");
     return undefined;
   }
 }

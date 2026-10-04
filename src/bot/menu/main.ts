@@ -45,7 +45,7 @@ export async function openMainMenu(ctx: Context, deps: BotDeps): Promise<void> {
     unsafe: deps.cfg.trustAllTools,
     busy: rt.isBusy,
   };
-  await deps.ephemeral.reply(ctx, mainMenuText(state), { reply_markup: mainMenuInline({ busy: state.busy }) });
+  await deps.ephemeral.reply(ctx, mainMenuText(state), { reply_markup: mainMenuInline({ busy: state.busy, queueLength: rt.queueLength }) });
 }
 
 async function currentProjectName(chatId: number, cwd: string, fallback: string | undefined, deps: BotDeps): Promise<string> {

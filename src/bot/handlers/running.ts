@@ -72,6 +72,7 @@ function buildRunningCard(s: RunningSession, deps: BotDeps, now: number): { text
   const meta = [when, state];
   if (s.busy) meta.push("\u23F3");
   if (s.unread > 0) meta.push(`${s.unread} \u{1F4EC} непрочитано`);
+  if (s.queueLength > 0) meta.push(`📥 очередь ${s.queueLength}${s.queuePaused ? " · пауза" : ""}`);
 
   const lines = [
     `${dot} ${s.projectName}`,
@@ -87,6 +88,7 @@ function buildRunningCard(s: RunningSession, deps: BotDeps, now: number): { text
   if (s.foreground) kb.text("\u25B6\uFE0F Текущий", "run:noop");
   else kb.text("\u{1F500} Переключиться", `run:switch:${s.sessionId}`);
   kb.text("\u{1F4DC} История", `hist:${s.sessionId}`).text("\u2716 Закрыть", `run:close:${s.sessionId}`);
+  if (s.queueLength > 0) kb.row().text(`📥 Очередь · ${s.queueLength}`, `q:view:${s.sessionId}`);
   return { text: lines.join("\n"), kb };
 }
 

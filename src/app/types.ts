@@ -19,6 +19,16 @@ export interface ChatSettings {
   controlledSessions?: ControlledSession[];
   /** Which controlled session is currently in the foreground. */
   foregroundSessionId?: string;
+  notifications?: NotificationPreferences;
+}
+
+export interface NotificationPreferences {
+  completion: boolean;
+  approval: boolean;
+  error: boolean;
+  backgroundCompletion: boolean;
+  progress: boolean;
+  mode: "all" | "attention" | "quiet" | "custom";
 }
 
 export interface ControlledSession {
@@ -41,6 +51,14 @@ export interface PromptImage {
 export interface PromptInput {
   text: string;
   images: PromptImage[];
+  /** Safe labels for file attachments; paths remain inside the prompt only. */
+  attachmentNames?: string[];
+  /** Attachment-specific prompt context kept separate from the editable caption. */
+  attachmentContext?: string;
+  /** Bot-owned temporary paths to delete after the corresponding turn. */
+  attachmentPaths?: string[];
+  /** Optional short queue-screen text that never includes local paths. */
+  displayText?: string;
   /** Telegram message id of the prompt, so the reply threads to it. */
   replyTo?: number;
   /**

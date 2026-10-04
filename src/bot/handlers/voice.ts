@@ -32,10 +32,11 @@ export function registerVoice(bot: Bot, deps: BotDeps): void {
         return;
       }
       await ctx.reply(`\u{1F399} \u201C${text}\u201D`);
-      const rt = deps.registry.get(chatId);
       const quoted = extractReplyContext(ctx);
-      const outcome = await rt.submit(textPrompt(text, ctx.message?.message_id, quoted));
-      if (outcome === "queued") await ctx.reply("\u{1F4E5} Сообщение добавлено в очередь и будет обработано после текущей задачи.");
+      const result = await deps.registry.submitPrompt(chatId, textPrompt(text, ctx.message?.message_id, quoted));
+      if (result.kind === "submitted" && result.outcome === "queued") {
+        await ctx.reply(`📥 Добавлено в очередь · позиция ${result.runtime.queueLength}`);
+      }
     } catch (e) {
       log.warn("voice failed:", (e as Error).message);
       await ctx.reply(`\u274C Не удалось распознать голосовое сообщение: ${briefErrorMessage(e as Error)}`);

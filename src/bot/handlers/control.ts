@@ -14,7 +14,6 @@ import { showStatus } from "./inline-catalog.js";
 
 export function registerControl(bot: Bot, deps: BotDeps): void {
   bot.command("start", async (ctx) => {
-    const rt = deps.registry.get(ctx.chat.id);
     const agent = deps.acp.agentInfo;
     const lines = [
       "\u{1F44B} Добро пожаловать! Я связываю Telegram с Codex на этом компьютере.",
@@ -57,12 +56,12 @@ export function registerControl(bot: Bot, deps: BotDeps): void {
     const rt = deps.registry.get(ctx.chat.id);
     // Run it right away when idle; otherwise queue it to run automatically the
     // moment the current turn finishes (can't interrupt an in-flight agent turn).
-    const outcome = await rt.submit(textPrompt(text, undefined, extractReplyContext(ctx)));
-    if (outcome === "queued") {
+    const result = await deps.registry.submitPrompt(ctx.chat.id, textPrompt(text, undefined, extractReplyContext(ctx)));
+    if (result.kind === "submitted" && result.outcome === "queued") {
       await ctx.reply(
-        `\u{1F4E5} Добавлено в очередь (место ${rt.queueLength}). Выполню после текущей задачи.`,
+        `📥 Добавлено в очередь · позиция ${result.runtime.queueLength}`,
       );
-    } else {
+    } else if (result.kind === "submitted") {
       await ctx.reply("\u25B6\uFE0F Принято, выполняю…");
     }
   });
@@ -77,9 +76,7 @@ export function registerControl(bot: Bot, deps: BotDeps): void {
       await ctx.reply(`\u23F3 В очереди: ${rt.queueLength}. Сообщения выполнятся после текущей задачи.`);
       return;
     }
-    // Idle: drain the queue by submitting an empty trigger that flushes.
-    await ctx.reply("\u25B6\uFE0F Выполняю сообщения из очереди…");
-    const drained = rt.drainQueueToPrompt();
-    if (drained) await rt.submit(drained);
+    await ctx.reply("\u25B6\uFE0F Продолжаю очередь по порядку…");
+    rt.resumeQueue();
   });
 }

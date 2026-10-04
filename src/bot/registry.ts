@@ -21,6 +21,8 @@ import type { TelegramSessionRegistry } from "../sessions/telegram-registry.js";
 import type { AccountRotator } from "./account-rotator.js";
 import { ChatController } from "./chat-controller.js";
 import type { SessionRuntime } from "./session-runtime.js";
+import type { PromptInput } from "../app/types.js";
+import { OutgoingArtifactStore } from "./outgoing-artifacts.js";
 
 export interface SessionDescription {
   /** Chat that owns the session (controlled session or subagent parent). */
@@ -41,6 +43,7 @@ export class RuntimeRegistry {
   private readonly activeChats: number[] = [];
   /** Subagent sessionId -> owner chat id. */
   private readonly subagentParents = new Map<string, number>();
+  private readonly outgoingArtifacts = new OutgoingArtifactStore();
 
   constructor(
     private readonly api: Api,
@@ -77,6 +80,7 @@ export class RuntimeRegistry {
         () => this.rotator,
         (sessionId, ownerChatId, cwd, projectName) =>
           this.telegramSessions.record(sessionId, ownerChatId, cwd, projectName || basename(cwd)),
+        (ownerChatId, cwd, paths, base) => this.outgoingArtifacts.offer(ownerChatId, cwd, paths, base),
       );
       this.controllers.set(chatId, c);
     }
@@ -86,6 +90,18 @@ export class RuntimeRegistry {
   /** The chat's foreground runtime (backward-compatible with existing handlers). */
   get(chatId: number): SessionRuntime {
     return this.controller(chatId).foreground();
+  }
+
+  runtimeForSession(chatId: number, sessionId: string): SessionRuntime | undefined {
+    return this.controller(chatId).runtimeForSession(sessionId);
+  }
+
+  submitPrompt(chatId: number, input: PromptInput) {
+    return this.controller(chatId).submitPrompt(input);
+  }
+
+  sendArtifact(chatId: number, token: string): Promise<boolean> {
+    return this.outgoingArtifacts.send(this.api, chatId, token);
   }
 
   modelLabel(id?: string): string {

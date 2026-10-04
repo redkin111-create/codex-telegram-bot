@@ -76,17 +76,16 @@ async function flush(deps: BotDeps, batches: Map<number, TextBatch>, chatId: num
     return;
   }
 
-  const rt = deps.registry.get(chatId);
-  const note = batch.parts.length > 1 ? ` (объединено сообщений: ${batch.parts.length})` : "";
+  const note = batch.parts.length > 1 ? ` · объединено частей: ${batch.parts.length}` : "";
   try {
     // Thread the reply to the prompt message (the user's message is left intact;
     // the agent's response + completion reply to it).
-    const outcome = await rt.submit(textPrompt(combined, batch.ids[0], batch.quoted));
-    if (outcome === "queued") {
+    const result = await deps.registry.submitPrompt(chatId, textPrompt(combined, batch.ids[0], batch.quoted));
+    if (result.kind === "submitted" && result.outcome === "queued") {
       await send(
         deps,
         chatId,
-        `\u{1F4E5} Добавлено в очередь (место ${rt.queueLength})${note}. Сначала завершу текущую задачу, затем выполню это сообщение.`,
+        `📥 Добавлено в очередь · позиция ${result.runtime.queueLength}${note}`,
       );
     }
   } catch (err) {

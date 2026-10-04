@@ -5,15 +5,19 @@
  * session's rollout .jsonl and is replayed as "unread" when you switch to them.
  */
 import { basename } from "node:path";
-import type { Api } from "grammy";
+import { randomBytes } from "node:crypto";
+import { type Api, InlineKeyboard } from "grammy";
 import type { AcpClient } from "../acp/client.js";
 import type { SettingsStore } from "../app/settings-store.js";
 import type { AppConfig } from "../config.js";
 import { conversationEntries, jsonlSize, readConversationHistory, readEntriesFrom } from "../sessions/history.js";
 import type { SessionStore } from "../sessions/store.js";
 import type { HistoryEntry } from "../sessions/types.js";
+import type { PromptInput } from "../app/types.js";
+import { buildPriming, recentTranscript } from "./session-fork.js";
+import { removeIncomingAttachment } from "./incoming-files.js";
 import type { AccountRotator } from "./account-rotator.js";
-import { SessionRuntime } from "./session-runtime.js";
+import { LiveSessionConflictError, SessionRuntime } from "./session-runtime.js";
 
 export interface RunningSession {
   sessionId?: string;
@@ -24,6 +28,8 @@ export interface RunningSession {
   busy: boolean;
   foreground: boolean;
   unread: number;
+  queueLength: number;
+  queuePaused: boolean;
   /** Latest task-completion % (0–100) for this session, if known. */
   progress?: number;
 }
@@ -38,11 +44,17 @@ export interface SwitchResult {
   alreadyForeground: boolean;
 }
 
+type RoutedPrompt =
+  | { kind: "submitted"; runtime: SessionRuntime; outcome: "ran" | "queued" }
+  | { kind: "held" | "blocked" };
+
 export class ChatController {
   private readonly runtimes: SessionRuntime[] = [];
   private fg: SessionRuntime | undefined;
   private readonly lastRead = new Map<string, number>();
   private restored = false;
+  private watchOnly: { sessionId: string; cwd: string; projectName: string } | undefined;
+  private pendingPrompt: { token: string; input: PromptInput; timer: NodeJS.Timeout } | undefined;
 
   constructor(
     private readonly api: Api,
@@ -55,6 +67,7 @@ export class ChatController {
     private readonly notifyActivity: (busy: boolean) => void,
     private readonly getRotator?: () => AccountRotator | undefined,
     private readonly recordCreatedSession?: (sessionId: string, chatId: number, cwd: string, projectName?: string) => void,
+    private readonly offerArtifacts?: (chatId: number, cwd: string, paths: string[], base?: InlineKeyboard) => { keyboard?: InlineKeyboard; names: string[] },
   ) {}
 
   /** The current foreground runtime (created/restored lazily). */
@@ -80,6 +93,8 @@ export class ChatController {
       busy: rt.isBusy,
       foreground: rt.isForeground,
       unread: this.unreadCount(rt),
+      queueLength: rt.queueLength,
+      queuePaused: rt.isQueuePaused,
       progress: rt.taskProgress,
     }));
   }
@@ -106,7 +121,7 @@ export class ChatController {
     sessionId: string,
     cwd: string,
     projectName: string | undefined,
-    priorEntries: HistoryEntry[],
+    _priorEntries: HistoryEntry[],
   ): Promise<{ rt: SessionRuntime; result: "resumed" | "forked"; alreadyControlled: boolean }> {
     this.ensureRestored();
     if (this.runtimes.some((r) => r.sessionId === sessionId)) {
@@ -120,10 +135,92 @@ export class ChatController {
     this.runtimes.push(rt);
     this.fg = rt;
     await this.background(prevFg);
-    const result = await rt.attach(sessionId, cwd, projectName, priorEntries);
+    let result: "resumed" | "forked";
+    try {
+      result = await rt.attach(sessionId, cwd, projectName);
+    } catch (error) {
+      rt.dispose();
+      const index = this.runtimes.indexOf(rt);
+      if (index >= 0) this.runtimes.splice(index, 1);
+      this.fg = prevFg;
+      if (prevFg) await prevFg.setForeground(true).catch(() => {});
+      this.persist();
+      if (error instanceof LiveSessionConflictError) throw error;
+      throw error;
+    }
     this.markSeen(rt);
     this.persist();
     return { rt, result, alreadyControlled: false };
+  }
+
+  async submitPrompt(input: PromptInput): Promise<RoutedPrompt> {
+    if (this.watchOnly) {
+      if (this.pendingPrompt) {
+        this.cleanupAttachments(input);
+        await this.api.sendMessage(this.chatId, "Уже есть одно ожидающее сообщение. Сначала отправьте его в продолжение или отмените кнопкой.");
+        return { kind: "blocked" };
+      }
+      const token = randomBytes(8).toString("hex");
+      const timer = setTimeout(() => {
+        if (this.cancelPendingPrompt(token)) {
+          void this.api.sendMessage(this.chatId, "⌛ Ожидающее сообщение удалено: срок подтверждения истёк.");
+        }
+      }, 5 * 60_000);
+      this.pendingPrompt = { token, input, timer };
+      await this.api.sendMessage(
+        this.chatId,
+        "👁 Сейчас открыт режим наблюдения. Сообщение сохранено и не отправлено в исходный сеанс.",
+        { reply_markup: new InlineKeyboard()
+          .text("🌿 Создать продолжение и отправить", `handoff:send:${token}`)
+          .row().text("✖ Отменить сообщение", `handoff:cancel:${token}`) },
+      );
+      return { kind: "held" };
+    }
+    const runtime = this.foreground();
+    const outcome = await runtime.submit(input);
+    return { kind: "submitted", runtime, outcome };
+  }
+
+  enterWatchOnly(sessionId: string, cwd: string, projectName: string, jsonlPath: string): void {
+    this.pendingPrompt && this.cancelPendingPrompt(this.pendingPrompt.token);
+    this.watchOnly = { sessionId, cwd, projectName };
+    this.foreground().startWatch(jsonlPath);
+  }
+
+  leaveWatchOnly(): boolean {
+    if (!this.watchOnly) return false;
+    this.watchOnly = undefined;
+    this.foreground().stopWatch();
+    if (this.pendingPrompt) this.cancelPendingPrompt(this.pendingPrompt.token);
+    return true;
+  }
+
+  async sendPendingInContinuation(token: string): Promise<{ runtime: SessionRuntime; outcome: "ran" | "queued" } | undefined> {
+    const pending = this.pendingPrompt;
+    const target = this.watchOnly;
+    if (!pending || pending.token !== token || !target) return undefined;
+    clearTimeout(pending.timer);
+    this.pendingPrompt = undefined;
+    this.watchOnly = undefined;
+    this.foreground().stopWatch();
+    const runtime = await this.addNew(target.cwd, target.projectName);
+    const transcript = recentTranscript(this.cfg.sessionsDir, target.sessionId);
+    if (transcript) runtime.setPrimingContext(buildPriming(transcript));
+    const outcome = await runtime.submit(pending.input);
+    return { runtime, outcome };
+  }
+
+  cancelPendingPrompt(token: string): boolean {
+    const pending = this.pendingPrompt;
+    if (!pending || pending.token !== token) return false;
+    clearTimeout(pending.timer);
+    this.pendingPrompt = undefined;
+    this.cleanupAttachments(pending.input);
+    return true;
+  }
+
+  private cleanupAttachments(input: PromptInput): void {
+    for (const path of input.attachmentPaths ?? []) void removeIncomingAttachment(this.cfg.dataDir, path);
   }
 
   /** Connect to an existing session: switch if already controlled, else add it. */
@@ -209,6 +306,11 @@ export class ChatController {
     return this.runtimes.some((r) => r.sessionId === sessionId);
   }
 
+  runtimeForSession(sessionId: string): SessionRuntime | undefined {
+    this.ensureRestored();
+    return this.runtimes.find((runtime) => runtime.sessionId === sessionId);
+  }
+
   dispose(): void {
     for (const rt of this.runtimes) rt.dispose();
     this.runtimes.length = 0;
@@ -270,6 +372,7 @@ export class ChatController {
 
   private create(init: { cwd: string; projectName?: string; sessionId?: string }): SessionRuntime {
     const rt = new SessionRuntime(this.api, this.chatId, this.acp, this.cfg, this.settings, init);
+    rt.onArtifactOffer = (cwd, paths, base) => this.offerArtifacts?.(this.chatId, cwd, paths, base) ?? { keyboard: base, names: [] };
     rt.onStateChange = () => this.refresh(this.chatId);
     rt.onActivity = (busy) => this.notifyActivity(busy);
     rt.onSessionCreated = (sessionId, cwd, projectName) =>

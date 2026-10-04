@@ -15,6 +15,7 @@ import { showNewSessionConfirmation, showSessions } from "./sessions.js";
 import { showDiagnostics } from "./diagnostics.js";
 import { showTasks } from "./tasks.js";
 import { showUsage } from "./usage.js";
+import { showNotificationSettings } from "./notifications.js";
 
 export function registerMenu(bot: Bot, deps: BotDeps): void {
   bot.hears(BAR_LABELS, async (ctx) => {
@@ -97,6 +98,9 @@ async function dispatchMenu(ctx: Context, deps: BotDeps, action: string): Promis
     case "settings":
       await ctx.answerCallbackQuery();
       return showSettings(ctx, deps);
+    case "notifications":
+      await ctx.answerCallbackQuery();
+      return showNotificationSettings(ctx, deps);
     case "security":
       await ctx.answerCallbackQuery();
       return showSecurity(ctx, deps);
@@ -142,6 +146,8 @@ async function showMore(ctx: Context, deps: BotDeps): Promise<void> {
     .text("\u{1F4C5} Задачи", "m:tasks").text("\u{1F465} Аккаунты", "m:accounts")
     .row()
     .text("\u{1F4B3} Лимиты", "m:usage").text("\u{1F512} Безопасность", "m:security")
+    .row()
+    .text("🔔 Уведомления", "m:notifications")
     .row()
     .text("\u2699\uFE0F Настройки", "m:settings").text("\u{1F4CA} Статус", "m:status")
     .row()

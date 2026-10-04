@@ -18,7 +18,7 @@ export function compactKeyboard(): Keyboard {
 }
 
 /** The compact, phone-sized Codex control panel (opened via /menu). */
-export function mainMenuInline(state: { busy: boolean }): InlineKeyboard {
+export function mainMenuInline(state: { busy: boolean; queueLength?: number }): InlineKeyboard {
   const kb = new InlineKeyboard()
     .text("\u{1F4C1} Проекты", "m:project")
     .text("\u{1F4AC} Переписки", "m:sessions")
@@ -30,6 +30,9 @@ export function mainMenuInline(state: { busy: boolean }): InlineKeyboard {
     .text("\u{1F9E0} Рассуждения", "m:reasoning")
     .row()
     .text("\u2699\uFE0F Ещё", "m:more");
+  if ((state.queueLength ?? 0) > 0) {
+    kb.row().text(`📥 Очередь · ${state.queueLength}`, "q:open");
+  }
   if (state.busy) return kb.row().text("\u{1F6D1} Остановить задачу", "m:stop");
   return kb;
 }

@@ -24,6 +24,8 @@ import { createAuthMiddleware } from "./auth.js";
 import { COMMANDS } from "./commands.js";
 import { type BotDeps, MenuCache } from "./deps.js";
 import { registerControl } from "./handlers/control.js";
+import { registerQueue } from "./handlers/queue.js";
+import { registerNotifications } from "./handlers/notifications.js";
 import { registerDocuments } from "./handlers/document.js";
 import { registerHistory } from "./handlers/history.js";
 import { registerKill } from "./handlers/kill.js";
@@ -49,6 +51,7 @@ import { Ephemeral } from "./menu/ephemeral.js";
 import { BAR_LABELS } from "./menu/keyboard.js";
 import { PermissionService } from "./permission-service.js";
 import { RuntimeRegistry } from "./registry.js";
+import { cleanupIncomingAttachments } from "./incoming-files.js";
 import { TaskWizard } from "./wizard/task-wizard.js";
 
 const log = createLogger("bot");
@@ -75,6 +78,7 @@ export interface BotBundle {
 }
 
 export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBundle> {
+  void cleanupIncomingAttachments(cfg.dataDir).catch(() => {});
   const bot = new Bot(cfg.token);
 
   // Quiet mode (default): silence every outgoing message unless the caller
@@ -134,7 +138,7 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
   registry.setAccountRotator(accountRotator);
 
   // Inline approvals: when NOT in trust-all mode, Codex asks before risky tools.
-  const permissions = new PermissionService(bot.api, registry);
+  const permissions = new PermissionService(bot.api, registry, settings);
   acp.permissionHandler = (p) => permissions.handle(p);
 
   // The bot pins/unpins the status panel, and Telegram emits a "pinned a
@@ -143,6 +147,15 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
   bot.on("message:pinned_message", (ctx) => void ctx.deleteMessage().catch(() => {}));
 
   bot.use(createAuthMiddleware(cfg));
+
+  registerQueue(bot, deps);
+  registerNotifications(bot, deps);
+
+  bot.callbackQuery(/^artifact:([a-f0-9]{16})$/, async (ctx) => {
+    await ctx.answerCallbackQuery("Проверяю и отправляю файл…");
+    const sent = await registry.sendArtifact(ctx.chat!.id, ctx.match![1]!);
+    if (!sent) await ctx.reply("Не удалось отправить файл: ссылка устарела или файл больше недоступен.");
+  });
 
   // Keep history clean: after handling, delete the user's command (/…) and
   // persistent-bar button taps. Plain prompts and wizard input are kept.

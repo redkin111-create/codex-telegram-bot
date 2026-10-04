@@ -13,6 +13,8 @@ import { refreshMenu } from "../menu/refresh.js";
 import { showHistory } from "./history.js";
 import { buildSessionCard, relTime } from "./session-card.js";
 import { briefErrorMessage } from "../prompt-retry.js";
+import { LiveSessionConflictError } from "../session-runtime.js";
+import { buildPriming, recentTranscript } from "../session-fork.js";
 
 const PAGE_SIZE = INLINE_PAGE_SIZE;
 const UUID = "([0-9a-fA-F-]{36})";
@@ -136,8 +138,7 @@ export async function continueSession(deps: BotDeps, chatId: number, meta: Sessi
   const foreground = deps.registry.get(chatId);
   const cwd = meta.cwd || foreground.cwd;
   const projectName = meta.projectName || basename(meta.cwd || foreground.cwd) || "проект";
-  const prior = readHistory(deps.store.jsonlPath(meta.sessionId), 24);
-  const { result } = await deps.registry.controller(chatId).addAttach(meta.sessionId, cwd, projectName, prior);
+  const { result } = await deps.registry.controller(chatId).addAttach(meta.sessionId, cwd, projectName, []);
   return connectMessage(result, meta);
 }
 
@@ -285,8 +286,9 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
   });
 
   bot.command("unwatch", async (ctx) => {
-    const rt = deps.registry.get(ctx.chat.id);
-    await ctx.reply(rt.stopWatch() ? "🛑 Слежение остановлено." : "Слежение не включено.");
+    const controller = deps.registry.controller(ctx.chat.id);
+    const stopped = controller.leaveWatchOnly() || controller.foreground().stopWatch();
+    await ctx.reply(stopped ? "🛑 Слежение остановлено." : "Слежение не включено.");
   });
 
   bot.callbackQuery(new RegExp(`^sess:${UUID}$`), async (ctx) => {
@@ -300,6 +302,13 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
       await ctx.reply(await continueSession(deps, ctx.chat!.id, meta));
       await refreshMenu(ctx, deps, `📂 ${meta.title}`);
     } catch (err) {
+      if (err instanceof LiveSessionConflictError) {
+        await ctx.reply(
+          `Этот сеанс уже открыт в Codex Desktop: ${meta.title}\n\nМожно только наблюдать за ним или создать отдельное продолжение.`,
+          { reply_markup: handoffKeyboard(meta.sessionId) },
+        );
+        return;
+      }
       await ctx.reply(`❌ Не удалось продолжить этот сеанс: ${briefErrorMessage(err as Error)}`);
     }
   });
@@ -314,9 +323,69 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
     const id = ctx.match![1]!;
     await ctx.answerCallbackQuery();
     const meta = deps.menuCache.getSessionMeta(ctx.chat!.id, id) ?? deps.store.get(id);
-    deps.registry.get(ctx.chat!.id).startWatch(deps.store.jsonlPath(id));
+    const foreground = deps.registry.get(ctx.chat!.id);
+    const cwd = meta?.cwd || foreground.cwd;
+    const projectName = meta?.projectName || basename(cwd) || "проект";
+    deps.registry.controller(ctx.chat!.id).enterWatchOnly(id, cwd, projectName, deps.store.jsonlPath(id));
     await ctx.reply(`📡 Слежу за сеансом: ${meta?.title ?? "Сеанс Codex"}\nНовые события будут появляться здесь. Чтобы остановить, отправьте /unwatch.`);
   });
+
+  bot.callbackQuery(new RegExp(`^handoff:watch:${UUID}$`), async (ctx) => {
+    const id = ctx.match![1]!;
+    const meta = deps.menuCache.getSessionMeta(ctx.chat!.id, id) ?? deps.store.get(id);
+    if (!meta) return void ctx.answerCallbackQuery({ text: "Сеанс не найден." });
+    await ctx.answerCallbackQuery();
+    const cwd = meta.cwd || deps.registry.get(ctx.chat!.id).cwd;
+    deps.registry.controller(ctx.chat!.id).enterWatchOnly(id, cwd, meta.projectName || basename(cwd) || "проект", deps.store.jsonlPath(id));
+    await ctx.editMessageText(`👁 Только наблюдение: ${meta.title}\nСообщения не отправляются в этот сеанс. /unwatch — выйти из режима наблюдения.`).catch(() => {});
+  });
+
+  bot.callbackQuery(new RegExp(`^handoff:fork:${UUID}$`), async (ctx) => {
+    const id = ctx.match![1]!;
+    const meta = deps.menuCache.getSessionMeta(ctx.chat!.id, id) ?? deps.store.get(id);
+    if (!meta) return void ctx.answerCallbackQuery({ text: "Сеанс не найден." });
+    await ctx.answerCallbackQuery("Создаю отдельное продолжение…");
+    try {
+      await createContinuation(deps, ctx.chat!.id, meta);
+      await ctx.editMessageText(`🌿 Создано продолжение сеанса «${meta.title}» в отдельном чате Codex. Исходная Desktop-сессия не затронута.`).catch(() => {});
+    } catch (err) {
+      await ctx.reply(`❌ Не удалось создать продолжение: ${briefErrorMessage(err as Error)}`);
+    }
+  });
+
+  bot.callbackQuery(/^handoff:send:([a-f0-9]{16})$/, async (ctx) => {
+    await ctx.answerCallbackQuery("Создаю продолжение и отправляю сообщение…");
+    try {
+      const result = await deps.registry.controller(ctx.chat!.id).sendPendingInContinuation(ctx.match![1]!);
+      if (!result) return void ctx.reply("Сообщение уже отменено или срок его хранения истёк.");
+      await ctx.editMessageText("🌿 Создано отдельное продолжение. Сохранённое сообщение отправлено.").catch(() => {});
+      if (result.outcome === "queued") await ctx.reply(`📥 Добавлено в очередь · позиция ${result.runtime.queueLength}`);
+    } catch (err) {
+      await ctx.reply(`❌ Не удалось отправить сообщение в продолжение: ${briefErrorMessage(err as Error)}`);
+    }
+  });
+
+  bot.callbackQuery(/^handoff:cancel:([a-f0-9]{16})$/, async (ctx) => {
+    const cancelled = deps.registry.controller(ctx.chat!.id).cancelPendingPrompt(ctx.match![1]!);
+    await ctx.answerCallbackQuery(cancelled ? "Сообщение отменено." : "Срок кнопки истёк.");
+    if (cancelled) await ctx.editMessageText("✖ Ожидающее сообщение отменено. Вы остались в режиме наблюдения.").catch(() => {});
+  });
+}
+
+function handoffKeyboard(sessionId: string): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("👁 Наблюдать", `handoff:watch:${sessionId}`)
+    .text("🌿 Создать продолжение", `handoff:fork:${sessionId}`);
+}
+
+async function createContinuation(deps: BotDeps, chatId: number, meta: SessionMeta): Promise<void> {
+  const cwd = meta.cwd || deps.registry.get(chatId).cwd;
+  const projectName = meta.projectName || basename(cwd) || "проект";
+  const controller = deps.registry.controller(chatId);
+  controller.leaveWatchOnly();
+  const runtime = await controller.addNew(cwd, projectName);
+  const transcript = recentTranscript(deps.cfg.sessionsDir, meta.sessionId);
+  if (transcript) runtime.setPrimingContext(buildPriming(transcript));
 }
 
 function connectMessage(result: "resumed" | "forked", meta: SessionMeta): string {

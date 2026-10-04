@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { Context, InlineKeyboard } from "grammy";
 import { loadConfig, PROJECT_ROOT, type AppConfig } from "../src/config.js";
 import { ChatController } from "../src/bot/chat-controller.js";
+import { LiveSessionConflictError } from "../src/bot/session-runtime.js";
 import { createAuthMiddleware } from "../src/bot/auth.js";
 import { MenuCache, type BotDeps } from "../src/bot/deps.js";
 import { formatProbeResult, healthCheckKeyboard, mainPanel, snapshotMatches } from "../src/bot/handlers/mcp.js";
@@ -388,21 +389,23 @@ test("a non-lock resume failure is returned instead of silently forking", async 
   }
 });
 
-test("a real live-session conflict keeps the existing linked-continuation fallback", async () => {
+test("a live-session conflict asks for an explicit handoff and restores the previous session", async () => {
   const sessionId = "00000000-0000-4000-8000-000000000004";
   let starts = 0;
   const acp = Object.assign(new EventEmitter(), {
     loadSession: async () => { throw new Error("Thread is already active in another process"); },
-    newSession: async () => { starts++; return "linked-continuation"; },
+    newSession: async () => { starts++; return `bot-session-${starts}`; },
   }) as unknown as AcpClient;
   Object.defineProperty(acp, "supportsLoadSession", { value: true });
   let currentSettings = defaultSettings();
   const settings = { get: () => currentSettings, update: (_id: number, patch: Partial<typeof currentSettings>) => { currentSettings = { ...currentSettings, ...patch }; } };
   const controller = new ChatController({} as never, 49, acp, {} as AppConfig, settings as never, { jsonlPath: () => "missing.jsonl" } as never, () => {}, () => {});
   try {
-    const result = await controller.addAttach(sessionId, "C:\\work", "work", []);
-    assert.equal(result.result, "forked");
-    assert.equal(result.rt.sessionId, "linked-continuation");
+    const previous = await controller.addNew("C:\\work", "work");
+    await assert.rejects(controller.addAttach(sessionId, "C:\\work", "work", []), LiveSessionConflictError);
+    assert.equal(controller.count(), 1);
+    assert.equal(controller.list()[0]?.sessionId, previous.sessionId);
+    assert.equal(controller.list()[0]?.foreground, true);
     assert.equal(starts, 1);
   } finally {
     controller.dispose();
