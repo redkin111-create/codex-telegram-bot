@@ -82,6 +82,8 @@ export const windowsController: ServiceController = {
       `wscript.exe "${vbs}"`,
     ]);
     if (res.ok) {
+      const settings = configureTaskSettings();
+      if (!settings.ok) return fail(`Scheduled task was created, but its battery and runtime settings could not be updated: ${settings.out.trim()}`);
       removeStartupLauncher(); // avoid a leftover launcher double-starting the bot
       if (previousTask.exists && !sameWindowsCheckout(spec.cwd, previousTask.source) && previousTask.entry) {
         runSafe("powershell", ["-NoProfile", "-Command", killScript(previousTask.entry)]);
@@ -101,6 +103,8 @@ export const windowsController: ServiceController = {
       if (!sameWindowsCheckout(spec.cwd, existing.source)) {
         return fail(staleTargetMessage(spec.cwd, existing.source));
       }
+      const settings = configureTaskSettings();
+      if (!settings.ok) return fail(`Scheduled task exists, but its battery and runtime settings could not be updated: ${settings.out.trim()}`);
       removeStartupLauncher();
       if (!isRunning(spec)) runSafe("schtasks", ["/Run", "/TN", TASK]);
       return ok(`Scheduled task "${TASK}" already targets this checkout; launched it. (Re-run elevated to recreate it.)\nSource: ${spec.cwd}`);
@@ -152,6 +156,8 @@ export const windowsController: ServiceController = {
     const task = taskSource();
     if (task.exists) {
       if (!sameWindowsCheckout(spec.cwd, task.source)) return fail(staleTargetMessage(spec.cwd, task.source));
+      const settings = configureTaskSettings();
+      if (!settings.ok) return fail(`Could not update the scheduled task settings: ${settings.out.trim()}`);
       if (isRunning(spec)) return ok(`Already running.\nSource: ${spec.cwd}`);
       const res = runSafe("schtasks", ["/Run", "/TN", TASK]);
       return res.ok ? ok(`Started.\nSource: ${spec.cwd}`) : fail(res.out);
@@ -248,6 +254,15 @@ function killScript(entry: string): string {
 function countScript(entry: string): string {
   const encoded = Buffer.from(entry, "utf8").toString("base64");
   return `$entry = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')); @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like ('*' + $entry + '*') }).Count`;
+}
+
+/** Keep the background bot available on battery and prevent scheduler time caps. */
+function configureTaskSettings(): { ok: boolean; out: string } {
+  const script =
+    "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries " +
+    "-StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero); " +
+    `Set-ScheduledTask -TaskName '${TASK}' -Settings $settings | Out-Null`;
+  return runSafe("powershell", ["-NoProfile", "-Command", script]);
 }
 
 function ok(message: string): ServiceResult {

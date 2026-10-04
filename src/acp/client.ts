@@ -82,7 +82,7 @@ export interface AcpClientOptions {
   autoRestart?: boolean;
   /** Reject a turn only after this long with no streaming activity. */
   promptIdleTimeoutMs?: number;
-  /** Absolute safety cap for a single turn. */
+  /** Optional absolute safety cap for a single turn; disabled by default. */
   promptMaxMs?: number;
 }
 
@@ -96,6 +96,8 @@ interface Pending {
 interface TurnPending {
   threadId: string;
   turnId?: string;
+  terminalError?: Error;
+  terminalErrorTimer?: NodeJS.Timeout;
   resolve: (r: PromptResult) => void;
   reject: (e: Error) => void;
   watch: NodeJS.Timeout;
@@ -125,7 +127,7 @@ export class AcpClient extends EventEmitter {
   private readonly turns = new Map<string, TurnPending>();
   private readonly timeout: number;
   private readonly promptIdleMs: number;
-  private readonly promptMaxMs: number;
+  private readonly promptMaxMs?: number;
   private readonly lastActivity = new Map<string, number>();
   private stopped = false;
   /** True once an initialize handshake has ever succeeded (for error hints). */
@@ -167,7 +169,7 @@ export class AcpClient extends EventEmitter {
     this.setMaxListeners(0);
     this.timeout = opts.requestTimeoutMs ?? 120_000;
     this.promptIdleMs = opts.promptIdleTimeoutMs ?? 900_000;
-    this.promptMaxMs = opts.promptMaxMs ?? 60 * 60_000;
+    this.promptMaxMs = opts.promptMaxMs;
   }
 
   async start(): Promise<void> {
@@ -466,18 +468,19 @@ export class AcpClient extends EventEmitter {
         const last = this.lastActivity.get(sessionId) ?? start;
         const idle = Date.now() - last;
         const total = Date.now() - start;
-        if (total > this.promptMaxMs) {
+        if (this.promptMaxMs !== undefined && total > this.promptMaxMs) {
+          void this.cancel(sessionId);
           this.finishTurn(sessionId, "reject", new Error(`Prompt exceeded the ${Math.round(this.promptMaxMs / 60_000)}min cap`));
-          void this.cancel(sessionId);
         } else if (idle > this.promptIdleMs) {
-          this.finishTurn(sessionId, "reject", new Error(`No agent activity for ${Math.round(idle / 1000)}s — giving up`));
           void this.cancel(sessionId);
+          this.finishTurn(sessionId, "reject", new Error(`No agent activity for ${Math.round(idle / 1000)}s — giving up`));
         }
       }, 15_000);
 
       const prev = this.turns.get(sessionId);
       if (prev) {
         clearInterval(prev.watch);
+        if (prev.terminalErrorTimer) clearTimeout(prev.terminalErrorTimer);
         prev.reject(new AcpError("superseded by a new turn"));
       }
       this.turns.set(sessionId, { threadId: sessionId, resolve, reject, watch, start });
@@ -524,6 +527,7 @@ export class AcpClient extends EventEmitter {
     const p = this.turns.get(threadId);
     if (!p) return;
     clearInterval(p.watch);
+    if (p.terminalErrorTimer) clearTimeout(p.terminalErrorTimer);
     this.turns.delete(threadId);
     this.lastActivity.delete(threadId);
     if (how === "resolve") p.resolve(value as PromptResult);
@@ -758,6 +762,30 @@ export class AcpClient extends EventEmitter {
       case "turn/failed":
         this.onTurnCompleted(p);
         break;
+      case "error": {
+        // Codex may report a terminal turn error without following it with
+        // turn/completed. A retrying error is only an update; keep waiting.
+        if (p.willRetry !== true) {
+          const threadId = this.resolveThread(p);
+          const pending = threadId ? this.turns.get(threadId) : undefined;
+          const turnId = typeof p.turnId === "string" ? p.turnId : undefined;
+          if (threadId && pending && (!turnId || !pending.turnId || pending.turnId === turnId)) {
+            const error = p.error as { message?: unknown; codexErrorInfo?: unknown } | undefined;
+            const message = typeof error?.message === "string" ? error.message : "Codex turn failed";
+            pending.terminalError = new AcpError(message, undefined, { codexErrorInfo: error?.codexErrorInfo });
+            // Usually turn/completed follows immediately. Give it a moment to
+            // arrive so retries do not race the still-closing server turn.
+            if (!pending.terminalErrorTimer) {
+              pending.terminalErrorTimer = setTimeout(() => {
+                if (this.turns.get(threadId) !== pending) return;
+                void this.cancel(threadId);
+                this.finishTurn(threadId, "reject", pending.terminalError!);
+              }, 3_000);
+            }
+          }
+        }
+        break;
+      }
       case "thread/tokenUsage/updated":
         this.onTokenUsage(p);
         break;
@@ -780,6 +808,11 @@ export class AcpClient extends EventEmitter {
       turn?.threadId ??
       this.threadByTurnId((turn?.id as string | undefined) ?? (p.turnId as string | undefined));
     if (!threadId) return;
+    const pending = this.turns.get(threadId);
+    if (pending?.terminalError) {
+      this.finishTurn(threadId, "reject", pending.terminalError);
+      return;
+    }
     const status = turn?.status;
     if (status === "failed") {
       const msg = turnErrorMessage(turn) || "Codex turn failed";
@@ -878,9 +911,11 @@ export class AcpClient extends EventEmitter {
     this.pending.clear();
     for (const [, t] of this.turns) {
       clearInterval(t.watch);
+      if (t.terminalErrorTimer) clearTimeout(t.terminalErrorTimer);
       t.reject(err);
     }
     this.turns.clear();
+    this.lastActivity.clear();
   }
 }
 
