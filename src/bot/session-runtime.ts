@@ -995,8 +995,8 @@ export class SessionRuntime {
       }
       if (opts?.replyMarkup) extra.reply_markup = opts.replyMarkup;
       await this.api.sendMessage(this.chatId, text, extra);
-    } catch {
-      /* non-fatal */
+    } catch (err) {
+      log.warn(`chat ${this.chatId} Telegram notification failed: ${(err as Error).message}`);
     }
   }
 

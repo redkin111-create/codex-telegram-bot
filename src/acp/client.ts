@@ -127,7 +127,6 @@ export class AcpClient extends EventEmitter {
   private readonly promptIdleMs: number;
   private readonly promptMaxMs: number;
   private readonly lastActivity = new Map<string, number>();
-  private lastActivityAny = 0;
   private stopped = false;
   /** True once an initialize handshake has ever succeeded (for error hints). */
   private everConnected = false;
@@ -168,7 +167,7 @@ export class AcpClient extends EventEmitter {
     this.setMaxListeners(0);
     this.timeout = opts.requestTimeoutMs ?? 120_000;
     this.promptIdleMs = opts.promptIdleTimeoutMs ?? 900_000;
-    this.promptMaxMs = opts.promptMaxMs ?? 6 * 60 * 60_000;
+    this.promptMaxMs = opts.promptMaxMs ?? 60 * 60_000;
   }
 
   async start(): Promise<void> {
@@ -464,7 +463,7 @@ export class AcpClient extends EventEmitter {
       const start = Date.now();
       this.lastActivity.set(sessionId, start);
       const watch = setInterval(() => {
-        const last = Math.max(this.lastActivity.get(sessionId) ?? start, this.lastActivityAny);
+        const last = this.lastActivity.get(sessionId) ?? start;
         const idle = Date.now() - last;
         const total = Date.now() - start;
         if (total > this.promptMaxMs) {
@@ -526,6 +525,7 @@ export class AcpClient extends EventEmitter {
     if (!p) return;
     clearInterval(p.watch);
     this.turns.delete(threadId);
+    this.lastActivity.delete(threadId);
     if (how === "resolve") p.resolve(value as PromptResult);
     else p.reject(value as Error);
   }
@@ -708,7 +708,6 @@ export class AcpClient extends EventEmitter {
     const p = (params as Record<string, unknown>) ?? {};
     const threadHint = this.resolveThread(p);
     if (threadHint) this.lastActivity.set(threadHint, Date.now());
-    this.lastActivityAny = Date.now();
 
     switch (method) {
       case "item/agentMessage/delta": {
