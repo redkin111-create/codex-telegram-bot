@@ -3,7 +3,8 @@ import { type Bot, type Context, InlineKeyboard } from "grammy";
 import { basename } from "node:path";
 import type { ProjectEntry } from "../../projects/manager.js";
 import { catalogThreadSessions, includeRegisteredTelegramSessions, isInteractiveThread, listAllCodexThreads, loadCodexProjects, safeSessionTitle, sessionBelongsToProject, threadSourceKind } from "../catalog.js";
-import { readHistory } from "../../sessions/history.js";
+import { readConversationHistory, readHistory } from "../../sessions/history.js";
+import { cleanSessionPrompt } from "../../sessions/title.js";
 import type { SessionMeta } from "../../sessions/types.js";
 import type { BotDeps } from "../deps.js";
 import { INLINE_PAGE_SIZE, pageWindow, compactLabel } from "../menu/paging.js";
@@ -193,6 +194,14 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
     }
     await ctx.answerCallbackQuery({ text: "Информация о сеансе" });
     const card = selectionCard(meta, token, index, deps.acp.pid, Boolean(deps.telegramSessions.get(meta.sessionId)));
+    const latest = readConversationHistory(deps.store.jsonlPath(meta.sessionId), 1)[0];
+    if (latest) {
+      const message = latest.role === "user" ? cleanSessionPrompt(latest.text) : latest.text.trim();
+      if (message) {
+        const label = latest.role === "assistant" ? "🤖 Последний ответ Codex" : "👤 Последнее сообщение";
+        card.text += `\n\n${label}:\n${message.length > 600 ? `${message.slice(0, 600).trimEnd()}…` : message}`;
+      }
+    }
     await deps.ephemeral.reply(ctx, card.text, { reply_markup: card.keyboard });
   });
 
