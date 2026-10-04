@@ -64,3 +64,20 @@ test("full conversation catalogue follows every thread/list cursor page", async 
   assert.deepEqual(threads.map((thread) => thread.id), ["one", "duplicate", "two"]);
   assert.equal(threads.find((thread) => thread.id === "duplicate")?.name, "new");
 });
+
+test("Codex project/list follows its native data and nextCursor fields", async () => {
+  const client = new AcpClient({ codexCliPath: "codex", workspace: "C:\\work", trustAllTools: false });
+  const cursors: Array<string | undefined> = [];
+  const internal = client as unknown as { request: (method: string, params: unknown) => Promise<unknown> };
+  internal.request = async (method, params) => {
+    assert.equal(method, "project/list");
+    const cursor = (params as { cursor?: string }).cursor;
+    cursors.push(cursor);
+    return cursor
+      ? { data: [{ id: "project-2" }], nextCursor: null }
+      : { data: [{ id: "project-1" }], nextCursor: "page-2" };
+  };
+  const projects = await client.listProjects();
+  assert.deepEqual(cursors, [undefined, "page-2"]);
+  assert.deepEqual(projects.map((project) => project.id), ["project-1", "project-2"]);
+});

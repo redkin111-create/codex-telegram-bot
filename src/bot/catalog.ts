@@ -1,6 +1,6 @@
 /** Converts Codex app-server catalogue records into safe Telegram labels. */
 import { basename } from "node:path";
-import type { CodexProjectSummary, CodexThreadSummary, CodexThreadSourceKind } from "../acp/codex-protocol.js";
+import type { CodexProjectSummary, CodexThreadListParams, CodexThreadSummary, CodexThreadSourceKind } from "../acp/codex-protocol.js";
 import type { AcpClient } from "../acp/client.js";
 import type { ProjectEntry } from "../projects/manager.js";
 import { sameProjectPath } from "../projects/manager.js";
@@ -8,24 +8,75 @@ import type { SessionMeta } from "../sessions/types.js";
 import type { TelegramSessionRecord } from "../sessions/telegram-registry.js";
 import { cleanSessionPrompt } from "../sessions/title.js";
 
-type ThreadReader = Pick<AcpClient, "listThreads"> & Partial<Pick<AcpClient, "listAllThreads">>;
+type ThreadReader = Pick<AcpClient, "listThreads"> & Partial<Pick<AcpClient, "listAllThreads" | "listThreadsPage">>;
 
-export async function listAllCodexThreads(client: ThreadReader, params: Parameters<AcpClient["listThreads"]>[0] = {}) {
-  return client.listAllThreads ? client.listAllThreads(params) : client.listThreads(params);
+export const RECENT_SESSION_LIMIT = 24;
+const THREAD_PAGE_SIZE = 50;
+
+export async function listAllCodexThreads(client: ThreadReader, params: CodexThreadListParams = {}): Promise<CodexThreadSummary[]> {
+  if (client.listAllThreads) return client.listAllThreads(params);
+  if (!client.listThreadsPage) return client.listThreads(params);
+  const threads = new Map<string, CodexThreadSummary>();
+  const seen = new Set<string>();
+  let cursor = params.cursor;
+  for (let page = 0; page < 1000; page++) {
+    const pageParams = { ...params, ...(cursor ? { cursor } : {}) };
+    if (!cursor) delete pageParams.cursor;
+    const result = await client.listThreadsPage(pageParams);
+    for (const thread of result.threads) threads.set(thread.id, thread);
+    const next = result.nextCursor;
+    if (!next || next === cursor || seen.has(next)) break;
+    seen.add(next);
+    cursor = next;
+  }
+  return [...threads.values()];
+}
+
+/** Read newest matching threads without materializing the full history. */
+export async function listRecentCodexThreads(
+  client: ThreadReader,
+  params: CodexThreadListParams,
+  accept: (thread: CodexThreadSummary) => boolean,
+  limit = RECENT_SESSION_LIMIT,
+): Promise<CodexThreadSummary[]> {
+  if (!client.listThreadsPage) {
+    return (await client.listThreads({ ...params, limit: Math.min(params.limit ?? limit, limit) })).filter(accept).slice(0, limit);
+  }
+  const accepted = new Map<string, CodexThreadSummary>();
+  const seen = new Set<string>();
+  let cursor = params.cursor;
+  for (let page = 0; page < 1000 && accepted.size < limit; page++) {
+    const pageParams: CodexThreadListParams = { ...params, limit: THREAD_PAGE_SIZE };
+    if (cursor) pageParams.cursor = cursor;
+    else delete pageParams.cursor;
+    const result = await client.listThreadsPage(pageParams);
+    for (const thread of result.threads) {
+      if (accept(thread)) accepted.set(thread.id, thread);
+      if (accepted.size >= limit) break;
+    }
+    const next = result.nextCursor;
+    if (accepted.size >= limit || !next || next === cursor || seen.has(next)) break;
+    seen.add(next);
+    cursor = next;
+  }
+  return [...accepted.values()];
 }
 
 export function codexProjects(items: CodexProjectSummary[]): ProjectEntry[] {
   const entries = items.flatMap((item): ProjectEntry[] => {
     const roots = (item.roots ?? []).map((root) => typeof root === "string" ? root : root.path ?? root.root ?? "").filter(Boolean);
     if (roots.length === 0) return [];
-    const recency = Date.parse(item.recencyAt ?? item.updatedAt ?? item.createdAt ?? "");
+    const recency = codexTimestampMilliseconds(item.recencyAt)
+      ?? codexTimestampMilliseconds(item.updatedAt)
+      ?? codexTimestampMilliseconds(item.createdAt)
+      ?? 0;
     return [{
       id: item.id,
       name: item.name?.trim() || basename(roots[0]!) || "Проект",
       path: roots[0]!,
       roots,
       position: item.position,
-      lastUsed: Number.isFinite(recency) ? recency : 0,
+      lastUsed: recency,
     }];
   });
   return entries.sort((a, b) => b.lastUsed - a.lastUsed || (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER) || a.name.localeCompare(b.name));
@@ -36,8 +87,8 @@ export async function loadCodexProjects(client: Pick<AcpClient, "listProjects"> 
     return codexProjects(await client.listProjects());
   } catch {
     try {
-      const threads = await listAllCodexThreads(client, {
-        limit: 500,
+      const threads = await client.listThreads({
+        limit: 100,
         sortKey: "recency_at",
         sortDirection: "desc",
         sourceKinds: ["cli", "vscode"],
@@ -63,7 +114,10 @@ export function threadsAsProjects(threads: CodexThreadSummary[]): ProjectEntry[]
     const cwd = thread.cwd?.trim();
     if (!cwd) continue;
     const key = thread.projectId || cwd.toLocaleLowerCase();
-    const time = Date.parse(thread.recencyAt ?? thread.updatedAt ?? thread.createdAt ?? "");
+    const time = codexTimestampMilliseconds(thread.recencyAt)
+      ?? codexTimestampMilliseconds(thread.updatedAt)
+      ?? codexTimestampMilliseconds(thread.createdAt)
+      ?? 0;
     const entry = byId.get(key);
     if (!entry) {
       byId.set(key, {
@@ -71,10 +125,10 @@ export function threadsAsProjects(threads: CodexThreadSummary[]): ProjectEntry[]
         name: basename(cwd) || "Проект",
         path: cwd,
         roots: [cwd],
-        lastUsed: Number.isFinite(time) ? time : 0,
+        lastUsed: time,
       });
     } else {
-      entry.lastUsed = Math.max(entry.lastUsed, Number.isFinite(time) ? time : 0);
+      entry.lastUsed = Math.max(entry.lastUsed, time);
       if (!entry.roots!.some((root) => sameProjectPath(root, cwd))) entry.roots!.push(cwd);
     }
   }
@@ -92,14 +146,21 @@ export function sessionBelongsToProject(session: SessionMeta, project: ProjectEn
   return Boolean(project.id && session.projectId && project.id === session.projectId);
 }
 
-export function threadSourceKind(thread: CodexThreadSummary): CodexThreadSourceKind | undefined {
+export function threadSourceKind(thread: CodexThreadSummary): CodexThreadSourceKind | "custom" | undefined {
   const source = thread.source;
-  return typeof source === "string" ? source : source?.kind;
+  if (typeof source === "string") {
+    const known = ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"];
+    return known.includes(source) ? source as CodexThreadSourceKind : undefined;
+  }
+  if (!source || typeof source !== "object") return undefined;
+  if ("subAgent" in source) return "subAgent";
+  if ("custom" in source) return "custom";
+  return undefined;
 }
 
 export function isInteractiveThread(thread: CodexThreadSummary): boolean {
   const source = threadSourceKind(thread);
-  return source === undefined || source === "cli" || source === "vscode";
+  return source === "cli" || source === "vscode";
 }
 
 export function threadSessionMeta(
@@ -110,7 +171,11 @@ export function threadSessionMeta(
 ): SessionMeta {
   const title = safeSessionTitle(thread.name, thread.preview);
   const stored = getStored && (!title || (!telegram?.projectPath && !thread.cwd)) ? getStored(thread.id) : undefined;
-  const updatedAt = thread.recencyAt ?? thread.updatedAt ?? stored?.updatedAt ?? thread.createdAt ?? new Date(0).toISOString();
+  const updatedAt = codexTimestampIso(thread.recencyAt)
+    ?? codexTimestampIso(thread.updatedAt)
+    ?? codexTimestampIso(stored?.updatedAt)
+    ?? codexTimestampIso(thread.createdAt)
+    ?? new Date(0).toISOString();
   const source = threadSourceKind(thread);
   const status = typeof thread.status === "string" ? thread.status : thread.status?.type;
   const cwd = telegram?.projectPath ?? thread.cwd ?? stored?.cwd ?? "";
@@ -121,7 +186,7 @@ export function threadSessionMeta(
     sessionId: thread.id,
     cwd,
     title: title || safeSessionTitle(stored?.title) || "Сеанс Codex",
-    createdAt: thread.createdAt ?? stored?.createdAt ?? updatedAt,
+    createdAt: codexTimestampIso(thread.createdAt) ?? codexTimestampIso(stored?.createdAt) ?? updatedAt,
     updatedAt,
     active: status === "active" || status === "inProgress" || status === "running" || stored?.active === true,
     historyBytes: stored?.historyBytes ?? 0,
@@ -149,7 +214,7 @@ export function catalogThreadSessions(
     const record = allowedTelegram.get(thread.id);
     byId.set(thread.id, threadSessionMeta(thread, record, projects, getStored));
   }
-  return [...byId.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return sortSessionsNewestFirst([...byId.values()]);
 }
 
 /** Keep a newly created, empty Telegram session visible before thread/list indexes it. */
@@ -176,7 +241,30 @@ export function includeRegisteredTelegramSessions(
       telegramCreated: true,
     });
   }
-  return [...byId.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return sortSessionsNewestFirst([...byId.values()]);
+}
+
+/** Converts Codex Unix seconds to milliseconds; accepts old ISO strings defensively. */
+export function codexTimestampMilliseconds(value: unknown): number | undefined {
+  const milliseconds = typeof value === "number"
+    ? value * 1000
+    : typeof value === "string" && value.trim() ? Date.parse(value) : NaN;
+  return Number.isFinite(milliseconds) && Math.abs(milliseconds) <= 8.64e15 ? milliseconds : undefined;
+}
+
+function codexTimestampIso(value: unknown): string | undefined {
+  const milliseconds = codexTimestampMilliseconds(value);
+  if (milliseconds === undefined) return undefined;
+  try {
+    return new Date(milliseconds).toISOString();
+  } catch {
+    return undefined;
+  }
+}
+
+function sortSessionsNewestFirst(sessions: SessionMeta[]): SessionMeta[] {
+  return sessions.sort((a, b) =>
+    (codexTimestampMilliseconds(b.updatedAt) ?? 0) - (codexTimestampMilliseconds(a.updatedAt) ?? 0));
 }
 
 export function safeSessionTitle(name?: string, preview?: string): string | undefined {

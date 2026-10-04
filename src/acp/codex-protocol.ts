@@ -65,20 +65,41 @@ export interface CodexProjectSummary {
   name?: string;
   roots?: Array<string | { path?: string; root?: string }>;
   position?: number;
-  createdAt?: string;
-  updatedAt?: string;
-  recencyAt?: string;
+  /** Unix timestamps in seconds, as returned by project/list. */
+  createdAt: number;
+  updatedAt: number;
+  recencyAt: number | null;
   metadata?: Record<string, unknown>;
 }
 
 export interface CodexProjectListResponse {
   projects?: CodexProjectSummary[];
   data?: CodexProjectSummary[];
+  nextCursor?: string | null;
 }
 
 export type CodexThreadSourceKind =
   | "cli" | "vscode" | "exec" | "appServer" | "subAgent" | "subAgentReview"
   | "subAgentCompact" | "subAgentThreadSpawn" | "subAgentOther" | "unknown";
+
+export type CodexSubAgentSource =
+  | "review"
+  | "compact"
+  | "memoryConsolidation"
+  | { threadSpawn: {
+      parentThreadId: string;
+      depth: number;
+      agentPath?: string | null;
+      agentNickname?: string | null;
+      agentRole?: string | null;
+    } }
+  | { other: string };
+
+/** SessionSource's wire shape: scalar sources or tagged custom/subAgent objects. */
+export type CodexThreadSource =
+  | "cli" | "vscode" | "exec" | "appServer" | "unknown"
+  | { custom: string }
+  | { subAgent: CodexSubAgentSource };
 
 export interface CodexThreadSummary {
   id: string;
@@ -86,11 +107,12 @@ export interface CodexThreadSummary {
   name?: string;
   preview?: string;
   cwd?: string;
-  createdAt?: string;
-  updatedAt?: string;
-  recencyAt?: string;
+  /** Unix timestamps in seconds, as returned by thread/list. */
+  createdAt: number;
+  updatedAt: number;
+  recencyAt: number | null;
   status?: string | { type?: string };
-  source?: CodexThreadSourceKind | { kind?: CodexThreadSourceKind };
+  source?: CodexThreadSource;
   projectId?: string;
   parentThreadId?: string;
   ephemeral?: boolean;
@@ -103,7 +125,7 @@ export interface CodexThreadListParams {
   sortDirection?: "asc" | "desc";
   sourceKinds?: CodexThreadSourceKind[];
   archived?: boolean;
-  cwd?: string;
+  cwd?: string | string[];
   useStateDbOnly?: boolean;
   searchTerm?: string;
 }
@@ -111,7 +133,7 @@ export interface CodexThreadListParams {
 export interface CodexThreadListResponse {
   threads?: CodexThreadSummary[];
   data?: CodexThreadSummary[];
-  nextCursor?: string;
+  nextCursor?: string | null;
 }
 
 // ── turns ────────────────────────────────────────────────────────────────────

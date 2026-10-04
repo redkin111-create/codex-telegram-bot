@@ -404,16 +404,36 @@ export class AcpClient extends EventEmitter {
   /** Return Codex's own project catalogue. This experimental method may not
    *  exist in older app-server builds; callers can fall back to thread/list. */
   async listProjects(): Promise<CodexProjectSummary[]> {
-    const response = await this.request("project/list", {}) as CodexProjectListResponse;
-    const projects = response?.projects ?? response?.data ?? [];
-    return Array.isArray(projects) ? projects.filter((p) => typeof p?.id === "string") : [];
+    const byId = new Map<string, CodexProjectSummary>();
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 1000; page++) {
+      const response = await this.request("project/list", cursor ? { cursor } : {}) as CodexProjectListResponse;
+      const projects = response?.projects ?? response?.data ?? [];
+      if (Array.isArray(projects)) {
+        for (const project of projects) if (typeof project?.id === "string") byId.set(project.id, project);
+      }
+      const next = response?.nextCursor ?? undefined;
+      if (!next || next === cursor || seenCursors.has(next)) break;
+      seenCursors.add(next);
+      cursor = next;
+    }
+    return [...byId.values()];
   }
 
   /** List persisted Codex threads with the app-server's native filters. */
   async listThreads(params: CodexThreadListParams = {}): Promise<CodexThreadSummary[]> {
+    return (await this.listThreadsPage(params)).threads;
+  }
+
+  /** Read one native page, retaining its cursor for bounded callers. */
+  async listThreadsPage(params: CodexThreadListParams = {}): Promise<{ threads: CodexThreadSummary[]; nextCursor?: string }> {
     const response = await this.request("thread/list", params) as CodexThreadListResponse;
     const threads = response?.threads ?? response?.data ?? [];
-    return Array.isArray(threads) ? threads.filter((t) => typeof t?.id === "string") : [];
+    return {
+      threads: Array.isArray(threads) ? threads.filter((thread) => typeof thread?.id === "string") : [],
+      nextCursor: typeof response?.nextCursor === "string" ? response.nextCursor : undefined,
+    };
   }
 
   /** Read every page of the Codex conversation catalogue. */
@@ -425,12 +445,8 @@ export class AcpClient extends EventEmitter {
       const pageParams = { ...params };
       if (cursor) pageParams.cursor = cursor;
       else delete pageParams.cursor;
-      const response = await this.request("thread/list", pageParams) as CodexThreadListResponse;
-      const threads = response?.threads ?? response?.data ?? [];
-      if (Array.isArray(threads)) {
-        for (const thread of threads) if (typeof thread?.id === "string") byId.set(thread.id, thread);
-      }
-      const next = response?.nextCursor ?? undefined;
+      const { threads, nextCursor: next } = await this.listThreadsPage(pageParams);
+      for (const thread of threads) byId.set(thread.id, thread);
       if (!next || next === cursor || seenCursors.has(next)) break;
       seenCursors.add(next);
       cursor = next;

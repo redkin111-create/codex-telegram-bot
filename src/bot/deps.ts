@@ -47,7 +47,7 @@ export interface BotDeps {
 /** Caches the last project list shown per chat for callback resolution. */
 export class MenuCache {
   private readonly projectLists = new Map<number, { token: string; entries: ProjectEntry[] }>();
-  private readonly sessionLists = new Map<number, { token: string; metas: SessionMeta[]; heading: string; project?: ProjectEntry }>();
+  private readonly sessionLists = new Map<number, { token: string; metas: SessionMeta[]; heading: string; project?: ProjectEntry; searchQuery?: string }>();
   private readonly sessionMetaById = new Map<number, Map<string, SessionMeta>>();
   private readonly modelLists = new Map<number, { token: string; entries: Array<{ modelId: string; name: string; description?: string }> }>();
   private readonly skillLists = new Map<number, { token: string; entries: CodexSkillInfo[] }>();
@@ -142,9 +142,9 @@ export class MenuCache {
   }
 
   /** Remember the session set + heading currently being paged for a chat. */
-  setSessions(chatId: number, metas: SessionMeta[], heading: string, project?: ProjectEntry): string {
+  setSessions(chatId: number, metas: SessionMeta[], heading: string, project?: ProjectEntry, searchQuery?: string): string {
     const token = this.createToken();
-    this.sessionLists.set(chatId, { token, metas, heading, project });
+    this.sessionLists.set(chatId, { token, metas, heading, project, searchQuery });
     const byId = this.sessionMetaById.get(chatId) ?? new Map<string, SessionMeta>();
     for (const meta of metas) byId.set(meta.sessionId, meta);
     this.sessionMetaById.set(chatId, byId);
@@ -155,7 +155,7 @@ export class MenuCache {
     return this.sessionMetaById.get(chatId)?.get(sessionId);
   }
 
-  getSessions(chatId: number, token?: string): { token: string; metas: SessionMeta[]; heading: string; project?: ProjectEntry } | undefined {
+  getSessions(chatId: number, token?: string): { token: string; metas: SessionMeta[]; heading: string; project?: ProjectEntry; searchQuery?: string } | undefined {
     const cached = this.sessionLists.get(chatId);
     return cached && (token === undefined || token === cached.token) ? cached : undefined;
   }
