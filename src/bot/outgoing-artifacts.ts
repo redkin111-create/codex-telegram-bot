@@ -7,8 +7,9 @@ import { InputFile, InlineKeyboard } from "grammy";
 
 const MAX_BYTES = 10 * 1024 * 1024;
 const TOKEN_TTL_MS = 15 * 60_000;
-const ALLOWED = new Set([".txt", ".md", ".json", ".csv", ".log", ".pdf", ".zip", ".png", ".jpg", ".jpeg", ".gif", ".webp"]);
-const SENSITIVE = /(?:^|[._ -])(env|secret|credential|token|password|passwd|private|id_rsa|api[_ -]?key)(?:[._ -]|$)/i;
+const ALLOWED = new Set([".txt", ".md", ".json", ".csv", ".log", ".pdf", ".zip", ".tar", ".gz", ".tgz", ".png", ".jpg", ".jpeg", ".gif", ".webp"]);
+const SENSITIVE = /(?:^|[._ -])(?:env|secret|credential|token|password|passwd|private|id_rsa|api[_ -]?key)/i;
+const SOURCE_OR_LOCK = new Set(["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"]);
 
 interface ArtifactToken {
   chatId: number;
@@ -70,7 +71,7 @@ export class OutgoingArtifactStore {
     const parts = rel.split("/");
     if (parts.some((part) => part === ".git" || part === "node_modules" || part.startsWith("."))) return false;
     const name = parts.at(-1) || "";
-    if (SENSITIVE.test(name) || name.toLowerCase() === ".env") return false;
+    if (SENSITIVE.test(name) || name.toLowerCase() === ".env" || SOURCE_OR_LOCK.has(name.toLowerCase())) return false;
     if (!ALLOWED.has(extname(name).toLowerCase())) return false;
     try {
       const rootReal = realpathSync(root);

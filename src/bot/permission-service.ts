@@ -1,8 +1,8 @@
 /**
  * PermissionService — turns Codex exec/patch approval requests into inline
- * Approve/Deny buttons. It names the session that needs approval, sends the
- * prompt WITH sound (it requires interaction), and — when the request belongs to
- * a *background* session — adds a "🔀 Switch to it" button. The Allow/Deny
+ * Approve/Deny buttons. It names the session that needs approval, keeps the
+ * prompt visible while honoring notification sound settings, and — when the
+ * request belongs to a *background* session — adds a "🔀 Switch to it" button. The Allow/Deny
  * buttons resolve the request in place, without switching.
  */
 import type { Api } from "grammy";
@@ -11,6 +11,7 @@ import type { PermissionOutcome, RequestPermissionParams } from "../acp/types.js
 import { describeRequestedPermissions } from "../acp/approvals.js";
 import { createLogger } from "../logger.js";
 import type { SettingsStore } from "../app/settings-store.js";
+import { notificationShouldBeLoud } from "../app/notifications.js";
 import type { RuntimeRegistry } from "./registry.js";
 
 const log = createLogger("permissions");
@@ -46,6 +47,7 @@ export class PermissionService {
     private readonly api: Api,
     private readonly registry: RuntimeRegistry,
     private readonly settings?: SettingsStore,
+    private readonly globalQuiet = false,
   ) {}
 
   /** Handle a permission request: ask the owning chat, or auto-allow if none. */
@@ -84,7 +86,11 @@ export class PermissionService {
         describe(params, { label: isForeground ? undefined : label, subagent: desc.subagent, canSwitch, permissionDetails }),
         {
           reply_markup: kb,
-          disable_notification: this.settings?.get(chatId).notifications?.mode === "quiet",
+          disable_notification: !notificationShouldBeLoud(
+            this.settings?.get(chatId).notifications?.mode ?? "all",
+            this.globalQuiet,
+            "approval",
+          ),
         },
       );
       messageId = msg.message_id;

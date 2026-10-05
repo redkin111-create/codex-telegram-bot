@@ -138,7 +138,7 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
   registry.setAccountRotator(accountRotator);
 
   // Inline approvals: when NOT in trust-all mode, Codex asks before risky tools.
-  const permissions = new PermissionService(bot.api, registry, settings);
+  const permissions = new PermissionService(bot.api, registry, settings, cfg.quietNotifications);
   acp.permissionHandler = (p) => permissions.handle(p);
 
   // The bot pins/unpins the status panel, and Telegram emits a "pinned a

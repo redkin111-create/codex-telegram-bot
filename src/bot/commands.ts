@@ -19,7 +19,6 @@ export const COMMANDS: { command: string; description: string }[] = [
   { command: "new", description: "Создать Telegram-сеанс после подтверждения" },
   { command: "status", description: "Текущий сеанс, проект и очередь" },
   { command: "diagnostics", description: "Версия, commit и источник запуска бота" },
-  { command: "diagnostics", description: "Версия, commit и источник запуска бота" },
   { command: "usage", description: "Использование аккаунта и контекста" },
   { command: "btw", description: "Выполнить при первой возможности: /btw <текст>" },
   { command: "flush", description: "Немедленно выполнить сообщения из очереди" },

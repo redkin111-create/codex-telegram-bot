@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context, InlineKeyboard } from "grammy";
 import { loadConfig, PROJECT_ROOT, type AppConfig } from "../src/config.js";
 import { ChatController } from "../src/bot/chat-controller.js";
-import { LiveSessionConflictError } from "../src/bot/session-runtime.js";
+import { LiveSessionConflictError, SessionRuntime } from "../src/bot/session-runtime.js";
 import { createAuthMiddleware } from "../src/bot/auth.js";
 import { MenuCache, type BotDeps } from "../src/bot/deps.js";
 import { formatProbeResult, healthCheckKeyboard, mainPanel, snapshotMatches } from "../src/bot/handlers/mcp.js";
@@ -25,7 +25,8 @@ import type { McpServer } from "../src/mcp/types.js";
 import { isNpmInstall } from "../src/app/updater.js";
 import { canonicalExistingDirectory, isPathWithinRoot, ProjectManager, recentProjects } from "../src/projects/manager.js";
 import { TelegramSessionRegistry } from "../src/sessions/telegram-registry.js";
-import { defaultSettings } from "../src/app/types.js";
+import { defaultSettings, textPrompt } from "../src/app/types.js";
+import { DEFAULT_NOTIFICATION_PREFERENCES, notificationPreset } from "../src/app/notifications.js";
 import type { AcpClient } from "../src/acp/client.js";
 import { RUNNING_COMMANDS } from "../src/bot/handlers/running.js";
 
@@ -342,6 +343,11 @@ test("/active remains an alias of the controlled sessions view", () => {
   assert.deepEqual(RUNNING_COMMANDS, ["running", "active"]);
 });
 
+test("Telegram command list has unique names", () => {
+  const names = COMMANDS.map(({ command }) => command);
+  assert.equal(new Set(names).size, names.length);
+});
+
 test("existing session attachment resumes the same session id without thread/start", async () => {
   const sessionId = "00000000-0000-4000-8000-000000000001";
   const cwd = "C:\\work\\toy";
@@ -352,7 +358,7 @@ test("existing session attachment resumes the same session id without thread/sta
     newSession: async () => { starts++; return "new-session"; },
   }) as unknown as AcpClient;
   Object.defineProperty(acp, "supportsLoadSession", { value: true });
-  let currentSettings = defaultSettings();
+  let currentSettings = { ...defaultSettings(), notifications: DEFAULT_NOTIFICATION_PREFERENCES };
   const settings = {
     get: () => currentSettings,
     update: (_chatId: number, patch: Partial<typeof currentSettings>) => { currentSettings = { ...currentSettings, ...patch }; },
@@ -409,6 +415,218 @@ test("a live-session conflict asks for an explicit handoff and restores the prev
     assert.equal(starts, 1);
   } finally {
     controller.dispose();
+  }
+});
+
+test("ordinary prompt on a restored Desktop-live session is held with handoff actions", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-tg-restored-handoff-"));
+  const sessionId = "00000000-0000-4000-8000-000000000041";
+  const attachment = join(dir, "attachment.txt");
+  writeFileSync(attachment, "keep until the user chooses", "utf8");
+  let starts = 0;
+  const sent: Array<{ text: string; extra?: Record<string, unknown> }> = [];
+  const api = { sendMessage: async (_id: number, text: string, extra?: Record<string, unknown>) => { sent.push({ text, extra }); return { message_id: 1 }; } };
+  const acp = Object.assign(new EventEmitter(), {
+    supportsLoadSession: true,
+    loadSession: async () => { throw new Error("thread already active in another process"); },
+    newSession: async () => { starts++; return "unexpected-new-session"; },
+  }) as unknown as AcpClient;
+  Object.defineProperty(acp, "supportsLoadSession", { value: true });
+  let currentSettings = { ...defaultSettings(), sessionId, projectPath: "C:\\work", notifications: notificationPreset("quiet") };
+  const settings = { get: () => currentSettings, update: (_id: number, patch: Partial<typeof currentSettings>) => { currentSettings = { ...currentSettings, ...patch }; } };
+  const controller = new ChatController(api as never, 501, acp, { workspace: "C:\\work", dataDir: dir } as AppConfig, settings as never, { jsonlPath: (id: string) => join(dir, `${id}.jsonl`) } as never, () => {}, () => {});
+  try {
+    const input = textPrompt("проверь вложение");
+    input.attachmentNames = ["attachment.txt"];
+    input.attachmentPaths = [attachment];
+    const routed = await controller.submitPrompt(input);
+    assert.equal(routed.kind, "held");
+    assert.equal(starts, 0);
+    assert.equal(existsSync(attachment), true);
+    assert(sent.at(-1)?.text.includes("Сообщение сохранено и не отправлено"));
+    assert.equal(sent.at(-1)?.extra?.disable_notification, true);
+    const keyboard = sent.at(-1)?.extra?.reply_markup as InlineKeyboard;
+    const data = callbacks(keyboard);
+    assert(data.some((item) => item === `handoff:watch:${sessionId}`));
+    assert(data.some((item) => item.startsWith("handoff:send:")));
+    assert(data.some((item) => item.startsWith("handoff:cancel:")));
+  } finally {
+    controller.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("failed continuation keeps its prompt and attachments, rolls back runtimes, then sends once on retry", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-tg-handoff-retry-"));
+  const incoming = join(dir, "telegram-incoming");
+  mkdirSync(incoming);
+  const attachment = join(incoming, "attachment.txt");
+  writeFileSync(attachment, "attachment data", "utf8");
+  const sent: Array<{ text: string; extra?: Record<string, unknown> }> = [];
+  const api = {
+    sendMessage: async (_id: number, text: string, extra?: Record<string, unknown>) => { sent.push({ text, extra }); return { message_id: 1 }; },
+    sendChatAction: async () => {},
+  };
+  let starts = 0;
+  let prompts = 0;
+  const acp = Object.assign(new EventEmitter(), {
+    newSession: async () => {
+      starts++;
+      if (starts === 2) throw new Error("thread/start failed");
+      return `telegram-session-${starts}`;
+    },
+    prompt: async () => { prompts++; return { stopReason: "end_turn" }; },
+    loadSession: async () => {},
+    metadataFor: () => undefined,
+  }) as unknown as AcpClient;
+  Object.defineProperty(acp, "supportsLoadSession", { value: true });
+  let currentSettings = { ...defaultSettings(), notifications: { completion: true, approval: true, error: true, backgroundCompletion: true, progress: false, mode: "all" as const } };
+  const settings = { get: () => currentSettings, update: (_id: number, patch: Partial<typeof currentSettings>) => { currentSettings = { ...currentSettings, ...patch }; } };
+  const cfg = {
+    workspace: dir, dataDir: dir, sessionsDir: dir, quietNotifications: true,
+    streamThrottleMs: 10, progressFallback: false, showToolCalls: false, showEditDiffs: false, diffMaxLines: 8,
+    promptRetryAttempts: 0, autoForkOnError: false, resumeOnStreamError: false, notifyOtherSessions: false,
+  } as AppConfig;
+  const controller = new ChatController(api as never, 502, acp, cfg, settings as never, { jsonlPath: (id: string) => join(dir, `${id}.jsonl`) } as never, () => {}, () => {});
+  const originalSubmit = SessionRuntime.prototype.submit;
+  let failNextSubmit = true;
+  let holdNextSubmit = false;
+  let announceSubmitStarted!: () => void;
+  const submitStarted = new Promise<void>((resolve) => { announceSubmitStarted = resolve; });
+  let releaseSubmit!: () => void;
+  const submitGate = new Promise<void>((resolve) => { releaseSubmit = resolve; });
+  try {
+    const original = await controller.addNew(dir, "project");
+    controller.enterWatchOnly("desktop-watch", dir, "project", join(dir, "desktop-watch.jsonl"));
+    const input = textPrompt("обработай файл");
+    input.attachmentNames = ["attachment.txt"];
+    input.attachmentPaths = [attachment];
+    await controller.submitPrompt(input);
+    const keyboard = sent.at(-1)?.extra?.reply_markup as InlineKeyboard;
+    const sendToken = callbacks(keyboard).find((item) => item.startsWith("handoff:send:"))!.slice("handoff:send:".length);
+
+    await assert.rejects(controller.sendPendingInContinuation(sendToken), /thread\/start failed/);
+    assert.equal(controller.count(), 1);
+    assert.equal(controller.list()[0]?.sessionId, original.sessionId);
+    assert.equal(controller.list()[0]?.foreground, true);
+    assert.equal(original.isWatching, true);
+    assert.equal(existsSync(attachment), true);
+
+    SessionRuntime.prototype.submit = async function (pendingInput) {
+      if (failNextSubmit) { failNextSubmit = false; throw new Error("prompt submit failed"); }
+      if (holdNextSubmit) { holdNextSubmit = false; announceSubmitStarted(); await submitGate; }
+      return originalSubmit.call(this, pendingInput);
+    };
+    await assert.rejects(controller.sendPendingInContinuation(sendToken), /prompt submit failed/);
+    assert.equal(controller.count(), 1);
+    assert.equal(controller.list()[0]?.sessionId, original.sessionId);
+    assert.equal(original.isWatching, true);
+    assert.equal(existsSync(attachment), true);
+
+    holdNextSubmit = true;
+    const sending = controller.sendPendingInContinuation(sendToken);
+    await submitStarted;
+    assert.equal(controller.isContinuationInProgress(sendToken), true);
+    assert.equal(controller.cancelPendingPrompt(sendToken), false);
+    assert.equal(controller.leaveWatchOnly(), false);
+    assert.equal(await controller.sendPendingInContinuation(sendToken), undefined);
+    releaseSubmit();
+    const sentResult = await sending;
+    assert.equal(sentResult?.outcome, "ran");
+    assert.equal(controller.count(), 2);
+    assert.equal(await controller.sendPendingInContinuation(sendToken), undefined);
+    for (let i = 0; sentResult!.runtime.isBusy && i < 200; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(prompts, 1);
+    assert.equal(original.isWatching, false);
+  } finally {
+    SessionRuntime.prototype.submit = originalSubmit;
+    controller.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("failed attach restores the previous watch-only watcher and keeps its pending prompt", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-tg-watch-attach-fail-"));
+  const incoming = join(dir, "telegram-incoming");
+  mkdirSync(incoming);
+  const attachment = join(incoming, "attachment.txt");
+  writeFileSync(attachment, "keep", "utf8");
+  const sent: Array<{ text: string; extra?: Record<string, unknown> }> = [];
+  const api = { sendMessage: async (_id: number, text: string, extra?: Record<string, unknown>) => { sent.push({ text, extra }); return { message_id: 1 }; } };
+  let seq = 0;
+  const acp = Object.assign(new EventEmitter(), {
+    newSession: async () => `managed-${++seq}`,
+    loadSession: async (id: string) => { if (id === "desktop-conflict") throw new Error("thread already active in another process"); },
+  }) as unknown as AcpClient;
+  Object.defineProperty(acp, "supportsLoadSession", { value: true });
+  let currentSettings = { ...defaultSettings(), notifications: DEFAULT_NOTIFICATION_PREFERENCES };
+  const settings = { get: () => currentSettings, update: (_id: number, patch: Partial<typeof currentSettings>) => { currentSettings = { ...currentSettings, ...patch }; } };
+  const controller = new ChatController(api as never, 504, acp, { workspace: dir, dataDir: dir } as AppConfig, settings as never, { jsonlPath: (id: string) => join(dir, `${id}.jsonl`) } as never, () => {}, () => {});
+  try {
+    const original = await controller.addNew(dir, "project");
+    controller.enterWatchOnly("desktop-watch", dir, "project", join(dir, "desktop-watch.jsonl"));
+    const input = textPrompt("сохрани ожидание");
+    input.attachmentPaths = [attachment];
+    input.attachmentNames = ["attachment.txt"];
+    await controller.submitPrompt(input);
+    await assert.rejects(controller.addAttach("desktop-conflict", dir, "desktop", []), LiveSessionConflictError);
+    assert.equal(controller.count(), 1);
+    assert.equal(controller.list()[0]?.sessionId, original.sessionId);
+    assert.equal(original.isWatching, true);
+    assert.equal((await controller.submitPrompt(textPrompt("второе сообщение"))).kind, "blocked");
+    assert.equal(existsSync(attachment), true);
+  } finally {
+    controller.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("watch-only exits on controlled-session switches, attach, resume, and new session", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-tg-watch-switch-"));
+  const prompts: string[] = [];
+  const api = { sendMessage: async () => ({ message_id: 1 }), sendChatAction: async () => {} };
+  let seq = 0;
+  const acp = Object.assign(new EventEmitter(), {
+    newSession: async () => `new-${++seq}`,
+    loadSession: async () => {},
+    prompt: async (id: string) => { prompts.push(id); return { stopReason: "end_turn" }; },
+    metadataFor: () => undefined,
+  }) as unknown as AcpClient;
+  Object.defineProperty(acp, "supportsLoadSession", { value: true });
+  let currentSettings = { ...defaultSettings(), notifications: DEFAULT_NOTIFICATION_PREFERENCES };
+  const settings = { get: () => currentSettings, update: (_id: number, patch: Partial<typeof currentSettings>) => { currentSettings = { ...currentSettings, ...patch }; } };
+  const cfg = { workspace: dir, dataDir: dir, sessionsDir: dir, quietNotifications: true, streamThrottleMs: 10, progressFallback: false, showToolCalls: false, showEditDiffs: false, diffMaxLines: 8, promptRetryAttempts: 0, autoForkOnError: false, resumeOnStreamError: false, notifyOtherSessions: false } as AppConfig;
+  const controller = new ChatController(api as never, 503, acp, cfg, settings as never, { jsonlPath: (id: string) => join(dir, `${id}.jsonl`) } as never, () => {}, () => {});
+  try {
+    const a = await controller.addNew(join(dir, "A"), "A");
+    const b = await controller.addNew(join(dir, "B"), "B");
+    controller.enterWatchOnly("desktop-a", dir, "A", join(dir, "desktop-a.jsonl"));
+    assert.equal(b.isWatching, true);
+    await controller.switchTo(b.sessionId!);
+    assert.equal(b.isWatching, false);
+    assert.equal((await controller.submitPrompt(textPrompt("в B"))).kind, "submitted");
+    for (let i = 0; b.isBusy && i < 200; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.deepEqual(prompts, [b.sessionId]);
+
+    controller.enterWatchOnly("desktop-b", dir, "B", join(dir, "desktop-b.jsonl"));
+    const watchedForAttach = controller.foreground();
+    await controller.addAttach("attached-session", dir, "attached", []);
+    assert.equal(watchedForAttach.isWatching, false);
+
+    controller.enterWatchOnly("desktop-c", dir, "C", join(dir, "desktop-c.jsonl"));
+    const watchedForResume = controller.foreground();
+    await controller.addResume("resumed-session", dir, "resumed");
+    assert.equal(watchedForResume.isWatching, false);
+
+    controller.enterWatchOnly("desktop-d", dir, "D", join(dir, "desktop-d.jsonl"));
+    const watchedForNew = controller.foreground();
+    await controller.addNew(join(dir, "D"), "D");
+    assert.equal(watchedForNew.isWatching, false);
+    assert(controller.count() >= 4);
+    assert(a.sessionId);
+  } finally {
+    controller.dispose();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

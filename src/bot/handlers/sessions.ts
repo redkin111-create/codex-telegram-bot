@@ -15,6 +15,7 @@ import { buildSessionCard, relTime } from "./session-card.js";
 import { briefErrorMessage } from "../prompt-retry.js";
 import { LiveSessionConflictError } from "../session-runtime.js";
 import { buildPriming, recentTranscript } from "../session-fork.js";
+import { notificationShouldBeLoud, type NotificationEvent } from "../../app/notifications.js";
 
 const PAGE_SIZE = INLINE_PAGE_SIZE;
 const UUID = "([0-9a-fA-F-]{36})";
@@ -287,6 +288,10 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
 
   bot.command("unwatch", async (ctx) => {
     const controller = deps.registry.controller(ctx.chat.id);
+    if (controller.isContinuationInProgress()) {
+      await ctx.reply("Создание продолжения ещё выполняется. Наблюдение пока нельзя остановить.");
+      return;
+    }
     const stopped = controller.leaveWatchOnly() || controller.foreground().stopWatch();
     await ctx.reply(stopped ? "🛑 Слежение остановлено." : "Слежение не включено.");
   });
@@ -305,7 +310,7 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
       if (err instanceof LiveSessionConflictError) {
         await ctx.reply(
           `Этот сеанс уже открыт в Codex Desktop: ${meta.title}\n\nМожно только наблюдать за ним или создать отдельное продолжение.`,
-          { reply_markup: handoffKeyboard(meta.sessionId) },
+          { ...notificationExtra(deps, ctx.chat!.id, "error"), reply_markup: handoffKeyboard(meta.sessionId) },
         );
         return;
       }
@@ -333,11 +338,16 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
   bot.callbackQuery(new RegExp(`^handoff:watch:${UUID}$`), async (ctx) => {
     const id = ctx.match![1]!;
     const meta = deps.menuCache.getSessionMeta(ctx.chat!.id, id) ?? deps.store.get(id);
-    if (!meta) return void ctx.answerCallbackQuery({ text: "Сеанс не найден." });
+    const controller = deps.registry.controller(ctx.chat!.id);
+    const currentTarget = controller.watchTarget(id);
+    if (!meta && !currentTarget) return void ctx.answerCallbackQuery({ text: "Сеанс не найден." });
     await ctx.answerCallbackQuery();
-    const cwd = meta.cwd || deps.registry.get(ctx.chat!.id).cwd;
-    deps.registry.controller(ctx.chat!.id).enterWatchOnly(id, cwd, meta.projectName || basename(cwd) || "проект", deps.store.jsonlPath(id));
-    await ctx.editMessageText(`👁 Только наблюдение: ${meta.title}\nСообщения не отправляются в этот сеанс. /unwatch — выйти из режима наблюдения.`).catch(() => {});
+    const cwd = meta?.cwd || currentTarget?.cwd || deps.registry.get(ctx.chat!.id).cwd;
+    const keptPending = controller.enterWatchOnly(
+      id, cwd, meta?.projectName || currentTarget?.projectName || basename(cwd) || "проект", deps.store.jsonlPath(id),
+    );
+    if (keptPending) return;
+    await ctx.editMessageText(`👁 Только наблюдение: ${meta?.title ?? "сеанс Codex"}\nСообщения не отправляются в этот сеанс. /unwatch — выйти из режима наблюдения.`).catch(() => {});
   });
 
   bot.callbackQuery(new RegExp(`^handoff:fork:${UUID}$`), async (ctx) => {
@@ -349,19 +359,25 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
       await createContinuation(deps, ctx.chat!.id, meta);
       await ctx.editMessageText(`🌿 Создано продолжение сеанса «${meta.title}» в отдельном чате Codex. Исходная Desktop-сессия не затронута.`).catch(() => {});
     } catch (err) {
-      await ctx.reply(`❌ Не удалось создать продолжение: ${briefErrorMessage(err as Error)}`);
+      await ctx.reply(`❌ Не удалось создать продолжение: ${briefErrorMessage(err as Error)}`, notificationExtra(deps, ctx.chat!.id, "error"));
     }
   });
 
   bot.callbackQuery(/^handoff:send:([a-f0-9]{16})$/, async (ctx) => {
+    const controller = deps.registry.controller(ctx.chat!.id);
+    const token = ctx.match![1]!;
     await ctx.answerCallbackQuery("Создаю продолжение и отправляю сообщение…");
     try {
-      const result = await deps.registry.controller(ctx.chat!.id).sendPendingInContinuation(ctx.match![1]!);
-      if (!result) return void ctx.reply("Сообщение уже отменено или срок его хранения истёк.");
+      const result = await controller.sendPendingInContinuation(token);
+      if (!result) {
+        return void ctx.reply(controller.isContinuationInProgress(token)
+          ? "Это сообщение уже отправляется. Дождитесь завершения."
+          : "Сообщение уже отменено или срок его хранения истёк.");
+      }
       await ctx.editMessageText("🌿 Создано отдельное продолжение. Сохранённое сообщение отправлено.").catch(() => {});
       if (result.outcome === "queued") await ctx.reply(`📥 Добавлено в очередь · позиция ${result.runtime.queueLength}`);
     } catch (err) {
-      await ctx.reply(`❌ Не удалось отправить сообщение в продолжение: ${briefErrorMessage(err as Error)}`);
+      await ctx.reply(`❌ Не удалось отправить сообщение в продолжение: ${briefErrorMessage(err as Error)}`, notificationExtra(deps, ctx.chat!.id, "error"));
     }
   });
 
@@ -376,6 +392,11 @@ function handoffKeyboard(sessionId: string): InlineKeyboard {
   return new InlineKeyboard()
     .text("👁 Наблюдать", `handoff:watch:${sessionId}`)
     .text("🌿 Создать продолжение", `handoff:fork:${sessionId}`);
+}
+
+function notificationExtra(deps: BotDeps, chatId: number, event: NotificationEvent): { disable_notification: boolean } {
+  const mode = deps.settings.get(chatId).notifications?.mode ?? "all";
+  return { disable_notification: !notificationShouldBeLoud(mode, deps.cfg.quietNotifications, event) };
 }
 
 async function createContinuation(deps: BotDeps, chatId: number, meta: SessionMeta): Promise<void> {

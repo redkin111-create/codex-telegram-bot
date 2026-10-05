@@ -7,6 +7,7 @@
  * Mapping summary:
  *   • item/agentMessage/delta          → agent_message_chunk
  *   • item/reasoning/*Delta            → agent_thought_chunk
+ *   • item/started (commandExecution)  → internal output-path snapshot event
  *   • item/completed (commandExecution)→ tool_call (kind "execute")
  *   • item/completed (fileChange)      → one tool_call per file (kind edit/…)
  *   • item/completed (mcpToolCall/…)   → tool_call (kind other/fetch/search)
@@ -81,7 +82,7 @@ export function itemToUpdates(item: CodexItem): SessionUpdate[] {
           kind: "execute",
           status,
           title: firstLine(cmd) || "Command",
-          rawInput: { command: cmd, cwd: item.cwd },
+          rawInput: { command: cmd, cwd: item.cwd, exitCode: item.exitCode },
         },
       ];
     }

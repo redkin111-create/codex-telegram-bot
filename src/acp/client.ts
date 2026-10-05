@@ -18,6 +18,7 @@ import { decideApproval, decidePermissionsApproval } from "./approvals.js";
 import { handleServerRequest, type ServerHandlerOptions } from "./server-handlers.js";
 import { JsonRpcTransport } from "./transport.js";
 import {
+  commandString,
   itemToUpdates,
   textChunk,
   thoughtChunk,
@@ -752,6 +753,13 @@ export class AcpClient extends EventEmitter {
         const item = p.item as CodexItem | undefined;
         const tid = threadHint;
         if (item?.id && tid) this.itemThread.set(item.id, tid);
+        if (item && tid && String(item.type ?? item.itemType ?? "") === "commandExecution" && method === "item/started") {
+          this.emit("session-update", tid, {
+            sessionUpdate: "command_execution_started",
+            toolCallId: item.id,
+            rawInput: { command: commandString(item.command), cwd: item.cwd },
+          });
+        }
         if (item && tid) this.updateSubagents(item, tid);
         break;
       }

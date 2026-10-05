@@ -4,7 +4,8 @@
  * and per-chat preferences (project, agent, model, reasoning). State persists
  * to the settings store so it survives restarts.
  */
-import { basename } from "node:path";
+import { lstatSync } from "node:fs";
+import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 import { type Api, InlineKeyboard } from "grammy";
 import { type AcpClient, isAccountExhaustedError, isContextExhaustedError, isTransientAcpError, type SessionMetadata } from "../acp/client.js";
@@ -12,7 +13,7 @@ import type { AccountRotator } from "./account-rotator.js";
 import type { ContentBlock, PromptResult, SessionUpdate } from "../acp/types.js";
 import type { AppConfig } from "../config.js";
 import { reasoningDirective } from "../app/reasoning.js";
-import { notificationCompletionEnabled } from "../app/notifications.js";
+import { notificationCompletionEnabled, notificationShouldBeLoud, type NotificationEvent } from "../app/notifications.js";
 import type { SettingsStore } from "../app/settings-store.js";
 import { type PromptInput, type ReasoningEffort, textPrompt } from "../app/types.js";
 import { createLogger } from "../logger.js";
@@ -31,6 +32,7 @@ import { buildContentBlocks } from "./prompt-content.js";
 import { backoffSchedule, briefErrorMessage, formatErrorSummary, formatRetryNotice, RETRY_BASE_MS } from "./prompt-retry.js";
 import { sendMarkdownDoc } from "./telegram-io.js";
 import { TypingIndicator } from "./typing.js";
+import { commandOutputPaths } from "./command-artifacts.js";
 
 const log = createLogger("runtime");
 
@@ -94,6 +96,9 @@ export class SessionRuntime {
   /** Files touched this turn (path -> operation), tracked even in background so
    *  the completion message can summarise what changed. */
   private fileOps = new Map<string, FileOp>();
+  /** Named command outputs and their state when the command began. */
+  private commandArtifactSnapshots = new Map<string, { existed: boolean }>();
+  private commandArtifactCandidates = new Set<string>();
   /** The full Done/summary of the most recent finished turn, replayed when you
    *  switch (back) into this session so you see how it ended. */
   private lastCompletion: string | undefined;
@@ -210,7 +215,7 @@ export class SessionRuntime {
     if (prefs.progress && milestone >= 25 && milestone > this.progressNotice
       && (this.foreground || this.cfg.notifyOtherSessions)) {
       this.progressNotice = milestone;
-      void this.notify(`📈 ${this.sessionLabel()} · выполнение ${milestone}%`);
+      void this.notify(`📈 ${this.sessionLabel()} · выполнение ${milestone}%`, { event: "progress" });
     }
     this.changed();
   }
@@ -495,17 +500,18 @@ export class SessionRuntime {
       // The ACP process is frequently mid-restart the first time we re-bind
       // (auto-restart after a crash, or a fresh bot boot), so a single attempt
       // is flaky. Retry briefly before giving up.
-      if (await this.rebindWithRetries(this.sessionId)) {
+      const rebind = await this.rebindWithRetries(this.sessionId);
+      if (rebind.status === "resumed") {
         this.sessionLive = true;
         this.rebindPending = false;
         await this.applySessionPrefs();
         log.info(`chat ${this.chatId} re-bound session ${this.sessionId.slice(0, 8)}`);
         return;
       }
-      // The session genuinely can't be reloaded (its exclusive lock is held,
-      // or its log/metadata is gone). Never silently drop the conversation:
-      // fork a linked continuation primed with the recent transcript so the
-      // thread survives — including any question the agent had just asked.
+      if (rebind.status === "live-conflict") throw new LiveSessionConflictError();
+      // A non-conflict failure after retries means the session couldn't be
+      // reloaded. Never silently drop the conversation: fork a linked
+      // continuation primed with its recent transcript.
       // forkFromLostSession() only throws if the agent is fully down, in which
       // case we leave rebindPending set so the next message retries cleanly.
       await this.forkFromLostSession(this.sessionId);
@@ -515,23 +521,29 @@ export class SessionRuntime {
     if (!this.sessionId) await this.startNewSession(this.cwd, this.projectName);
   }
 
-  /** Reload a persisted session, retrying flaky failures with a short backoff.
-   *  Returns true once loaded, false after the attempts are exhausted. */
-  private async rebindWithRetries(sessionId: string, attempts = 4): Promise<boolean> {
+  /** Reload a persisted session, retrying only ordinary transient failures. */
+  private async rebindWithRetries(
+    sessionId: string,
+    attempts = 4,
+  ): Promise<{ status: "resumed" } | { status: "live-conflict" } | { status: "unavailable"; error?: Error }> {
     const delays = [400, 1200, 3000]; // ≈4.6s total before giving up
     for (let i = 0; i < attempts; i++) {
       try {
         await this.acp.loadSession(sessionId, this.cwd);
-        return true;
+        return { status: "resumed" };
       } catch (err) {
+        if (isLiveSessionConflict(err)) {
+          log.info(`re-bind ${sessionId.slice(0, 8)} blocked by a live session in another client`);
+          return { status: "live-conflict" };
+        }
         log.warn(
           `re-bind ${sessionId.slice(0, 8)} attempt ${i + 1}/${attempts} failed: ${(err as Error).message}`,
         );
-        if (i === attempts - 1) return false;
+        if (i === attempts - 1) return { status: "unavailable", error: err as Error };
         await sleep(delays[Math.min(i, delays.length - 1)]!);
       }
     }
-    return false;
+    return { status: "unavailable" };
   }
 
   /** Continue a session we could not reload by forking a fresh one primed with
@@ -561,6 +573,8 @@ export class SessionRuntime {
     this.shownToolIds = new Set();
     this.toolActivity = false;
     this.fileOps = new Map();
+    this.commandArtifactSnapshots = new Map();
+    this.commandArtifactCandidates = new Set();
     this.subagentShown = new Map();
     this.progress = undefined; // a new turn = a new task; clear the old bar
     this.progressNotice = 0;
@@ -624,10 +638,10 @@ export class SessionRuntime {
         const offered = this.queueSeriesActive
           ? { keyboard: switchKb, names: [] }
           : this.offerArtifacts(this.createdArtifactPaths(), switchKb);
-        if (pingDone) await this.notify(live, { loud: true, replyTo: this.turnReplyTo, replyMarkup: offered.keyboard ?? switchKb });
+        if (pingDone) await this.notify(live, { event: "completion", replyTo: this.turnReplyTo, replyMarkup: offered.keyboard ?? switchKb });
         else if (offered.names.length > 0 && canNotifyBackground && (this.foreground || notificationPrefs.backgroundCompletion)) {
           await this.notify(`📎 Созданы файлы:\n${offered.names.map((name) => `• ${name}`).join("\n")}`, {
-            loud: true,
+            event: this.foreground ? "completion" : "backgroundCompletion",
             replyTo: this.turnReplyTo,
             replyMarkup: offered.keyboard,
           });
@@ -644,10 +658,10 @@ export class SessionRuntime {
         const errorPaths = [...this.queuedArtifactPaths, ...this.createdArtifactPaths()];
         const offered = this.offerArtifacts(errorPaths, switchKb);
         if (canNotifyBackground && (notificationPrefs.error || !transient)) {
-          await this.notify(live, { loud: true, replyTo: this.turnReplyTo, replyMarkup: offered.keyboard ?? switchKb });
+          await this.notify(live, { event: "error", replyTo: this.turnReplyTo, replyMarkup: offered.keyboard ?? switchKb });
         } else if (offered.names.length && canNotifyBackground && (this.foreground || notificationPrefs.backgroundCompletion)) {
           await this.notify(`📎 Созданы файлы:\n${offered.names.map((name) => `• ${name}`).join("\n")}`, {
-            loud: true, replyTo: this.turnReplyTo, replyMarkup: offered.keyboard,
+            event: this.foreground ? "completion" : "backgroundCompletion", replyTo: this.turnReplyTo, replyMarkup: offered.keyboard,
           });
         }
         this.queuedArtifactPaths = [];
@@ -667,7 +681,7 @@ export class SessionRuntime {
       if (this.foreground || this.cfg.notifyOtherSessions) {
         const from = this.foreground ? "" : `\u{1F4E8} Другой сеанс · ${this.sessionLabel()}\n`;
         const paused = this.queuePaused ? `\n\nОчередь приостановлена · осталось ${this.queue.length}` : "";
-        await this.notify(`${from}${msg}${paused}`, { loud: true, replyTo: this.turnReplyTo, replyMarkup: offered.keyboard ?? this.switchKeyboard() });
+        await this.notify(`${from}${msg}${paused}`, { event: "error", replyTo: this.turnReplyTo, replyMarkup: offered.keyboard ?? this.switchKeyboard() });
       }
       this.queuedArtifactPaths = [];
     } finally {
@@ -763,7 +777,7 @@ export class SessionRuntime {
       const reason = contextRelated
         ? "Похоже, контекст сеанса заполнен. Создаю продолжение и повторяю задачу"
         : "Похоже, сеанс завис или исчерпал ресурсы. Создаю продолжение и повторяю задачу";
-      await this.notify(`\u{1F517} ${reason}${transcript ? " (добавлена недавняя история)" : ""}…`, { replyTo: this.turnReplyTo });
+      await this.notify(`\u{1F517} ${reason}${transcript ? " (добавлена недавняя история)" : ""}…`, { event: "info", replyTo: this.turnReplyTo });
     }
     try {
       await this.bindNewSession(this.cwd, this.projectName); // new live id; old session dropped
@@ -811,7 +825,7 @@ export class SessionRuntime {
     for (const t of targets) {
       if (this.cancelled) return last;
       if (this.foreground) {
-        await this.notify(`\u{1F501} Переключаю аккаунт и пробую ${t.label}…`, { replyTo: this.turnReplyTo });
+        await this.notify(`\u{1F501} Переключаю аккаунт и пробую ${t.label}…`, { event: "info", replyTo: this.turnReplyTo });
       }
       try {
         last = await rotator.runExclusive(t.id, async () => {
@@ -831,7 +845,7 @@ export class SessionRuntime {
         continue;
       }
       if (last.result && !this.cancelled) {
-        if (this.foreground) await this.notify(`\u2705 Задача выполнена с аккаунтом ${t.label}.`, { replyTo: this.turnReplyTo });
+        if (this.foreground) await this.notify(`\u2705 Задача выполнена с аккаунтом ${t.label}.`, { event: "completion", replyTo: this.turnReplyTo });
         return last;
       }
       if (this.cancelled || (this.streamer?.hasOutput ?? false) || this.toolActivity) return last;
@@ -879,6 +893,7 @@ export class SessionRuntime {
         const waitMs = delays[attempt - 1]!;
         if (this.foreground) {
           await this.notify(formatRetryNotice(error, attempt + 1, totalAttempts, waitMs), {
+            event: "retry",
             replyTo: this.turnReplyTo,
           });
         }
@@ -937,7 +952,7 @@ export class SessionRuntime {
       if (this.cancelled) return last;
       const waitMs = delays[i]!;
       if (this.foreground) {
-        await this.notify(formatRetryNotice(last.error!, i + 1, delays.length, waitMs), { replyTo: this.turnReplyTo });
+        await this.notify(formatRetryNotice(last.error!, i + 1, delays.length, waitMs), { event: "retry", replyTo: this.turnReplyTo });
       }
       if (await this.interruptibleSleep(waitMs)) return last;
       attempts++; // this resume prompt is one more attempt for the turn
@@ -1027,7 +1042,7 @@ export class SessionRuntime {
     const next = this.queue.shift();
     if (next) {
       this.queueSeriesActive = true;
-      if (this.foreground) await this.notify("\u25B6\uFE0F Выполняю сообщение из очереди…");
+      if (this.foreground) await this.notify("\u25B6\uFE0F Выполняю сообщение из очереди…", { event: "progress" });
       void this.runTurn(next.input, true);
       this.changed();
       return;
@@ -1042,19 +1057,62 @@ export class SessionRuntime {
     if (completed > 0 && notificationCompletionEnabled(this.foreground, this.settings.get(this.chatId).notifications!, this.cfg.notifyOtherSessions)) {
       const label = this.sessionLabel();
       await this.notify(`✅ ${label} · очередь завершена\nВыполнено: ${completed} ${pluralTasks(completed)}`, {
-        loud: true,
+        event: "completion",
         replyMarkup: offered.keyboard ?? this.switchKeyboard(),
       });
     } else if (offered.names.length > 0 && (this.foreground || this.cfg.notifyOtherSessions)) {
       await this.notify(`📎 Созданы файлы:\n${offered.names.map((name) => `• ${name}`).join("\n")}`, {
-        loud: true,
+        event: this.foreground ? "completion" : "backgroundCompletion",
         replyMarkup: offered.keyboard,
       });
     }
   }
 
   private createdArtifactPaths(): string[] {
-    return [...this.fileOps].filter(([, op]) => op === "created").map(([path]) => path);
+    return [...new Set([
+      ...[...this.fileOps].filter(([, op]) => op === "created").map(([path]) => path),
+      ...this.commandArtifactCandidates,
+    ])];
+  }
+
+  private snapshotCommandArtifacts(update: SessionUpdate): void {
+    const raw = update.rawInput ?? {};
+    const command = typeof raw.command === "string" ? raw.command : "";
+    const cwd = typeof raw.cwd === "string" ? raw.cwd : this.cwd;
+    for (const candidate of commandOutputPaths(command)) {
+      const path = resolve(cwd, candidate);
+      if (!this.isWorkspacePath(path)) continue;
+      let existed = false;
+      try { existed = lstatSync(path).isFile(); } catch { /* not present before execution */ }
+      this.commandArtifactSnapshots.set(path, { existed });
+    }
+  }
+
+  private collectCommandArtifacts(update: SessionUpdate): void {
+    if (update.status !== "completed") return;
+    const raw = update.rawInput ?? {};
+    if (typeof raw.exitCode === "number" && raw.exitCode !== 0) return;
+    const command = typeof raw.command === "string" ? raw.command : "";
+    const cwd = typeof raw.cwd === "string" ? raw.cwd : this.cwd;
+    for (const candidate of commandOutputPaths(command)) {
+      const path = resolve(cwd, candidate);
+      if (!this.isWorkspacePath(path)) continue;
+      const snapshot = this.commandArtifactSnapshots.get(path);
+      // Started events provide a reliable before-state. If they were absent,
+      // accept only a file whose creation timestamp belongs to this turn.
+      try {
+        const info = lstatSync(path);
+        if (!info.isFile() || info.isSymbolicLink()) continue;
+        if (snapshot?.existed) continue;
+        if (!snapshot && (info.birthtimeMs < this.turnStartedAt || info.mtimeMs < this.turnStartedAt)) continue;
+        this.commandArtifactCandidates.add(path);
+      } catch { /* absent or inaccessible output is not an artifact */ }
+    }
+  }
+
+  private isWorkspacePath(path: string): boolean {
+    const rel = relative(resolve(this.cwd), path);
+    return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
   }
 
   private offerArtifacts(paths: string[], base?: InlineKeyboard): { keyboard?: InlineKeyboard; names: string[] } {
@@ -1068,11 +1126,14 @@ export class SessionRuntime {
     // Accumulate the turn's file-change summary + image-scan text even when this
     // session is in the background (its output isn't streamed here, but the
     // completion message still reports what changed / which images were made).
-    if (kind === "tool_call" || kind === "tool_call_update") {
+    if (kind === "command_execution_started") {
+      this.snapshotCommandArtifacts(update);
+    } else if (kind === "tool_call" || kind === "tool_call_update") {
       this.toolActivity = true;
       this.imageScanText += " " + collectText(update);
       const fo = fileOpFromUpdate(update);
       if (fo) this.fileOps.set(fo.path, mergeFileOp(this.fileOps.get(fo.path), fo.op));
+      if (update.kind === "execute") this.collectCommandArtifacts(update);
     } else if (kind === "agent_message_chunk") {
       const text = update.content?.text;
       if (typeof text === "string") this.imageScanText += text;
@@ -1137,10 +1198,13 @@ export class SessionRuntime {
 
   private async notify(
     text: string,
-    opts?: { loud?: boolean; replyTo?: number; replyMarkup?: InlineKeyboard },
+    opts?: { event?: NotificationEvent; replyTo?: number; replyMarkup?: InlineKeyboard },
   ): Promise<void> {
     try {
-      const extra: Record<string, unknown> = opts?.loud ? { disable_notification: false } : {};
+      const mode = this.settings.get(this.chatId).notifications?.mode ?? "all";
+      const extra: Record<string, unknown> = {
+        disable_notification: !notificationShouldBeLoud(mode, this.cfg.quietNotifications, opts?.event ?? "info"),
+      };
       if (opts?.replyTo !== undefined) {
         extra.reply_parameters = { message_id: opts.replyTo, allow_sending_without_reply: true };
       }
@@ -1161,7 +1225,11 @@ export class SessionRuntime {
       })
       .filter(Boolean)
       .join("\n\n");
-    if (body.trim()) await sendMarkdownDoc(this.api, this.chatId, body);
+    if (body.trim()) {
+      const mode = this.settings.get(this.chatId).notifications?.mode ?? "all";
+      const loud = notificationShouldBeLoud(mode, this.cfg.quietNotifications, "info");
+      await sendMarkdownDoc(this.api, this.chatId, body, { loud, silent: !loud });
+    }
   }
 }
 
