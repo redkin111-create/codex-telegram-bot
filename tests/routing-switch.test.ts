@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Context, InlineKeyboard } from "grammy";
 import type { AppConfig } from "../src/config.js";
 import type { PromptInput } from "../src/app/types.js";
-import { defaultSettings } from "../src/app/types.js";
+import { defaultSettings, textPrompt } from "../src/app/types.js";
 import { ChatController } from "../src/bot/chat-controller.js";
 import { registerDocuments } from "../src/bot/handlers/document.js";
 import { registerPhotos } from "../src/bot/handlers/photo.js";
@@ -53,14 +53,16 @@ function createController(
   dir: string,
   chatId: number,
   settingsPatch: Record<string, unknown> = {},
-  loadSession: () => Promise<void> = async () => { throw new Error("thread already active in another process"); },
+  loadSession: (sessionId: string) => Promise<void> = async () => { throw new Error("thread already active in another process"); },
 ) {
   const outgoing: OutgoingMessage[] = [];
   const api = telegramApi(outgoing);
   let starts = 0;
+  let prompts = 0;
   const acp = Object.assign(new EventEmitter(), {
     loadSession,
     newSession: async () => { starts++; return `unexpected-${starts}`; },
+    prompt: async () => { prompts++; return { stopReason: "end_turn" }; },
   }) as unknown as AcpClient;
   Object.defineProperty(acp, "supportsLoadSession", { value: true });
   let currentSettings = { ...defaultSettings(), ...settingsPatch };
@@ -95,7 +97,7 @@ function createController(
     () => {},
     () => {},
   );
-  return { controller, api, acp, outgoing, get starts() { return starts; } };
+  return { controller, api, acp, outgoing, get starts() { return starts; }, get prompts() { return prompts; } };
 }
 
 function documentContext(api: ReturnType<typeof telegramApi>, fileId: string, replies: string[], messageId: number): Context {
@@ -258,6 +260,146 @@ test("switchTo and addResume expose Desktop conflicts without changing IDs or st
     assert.equal(resumeFixture.starts, 0);
   } finally {
     resumeFixture.controller.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("reselecting the watched Desktop session preserves pending input, attachment, and its watcher", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-tg-same-handoff-"));
+  const incoming = join(dir, "telegram-incoming");
+  mkdirSync(incoming);
+  const attachment = join(incoming, "private-note.txt");
+  writeFileSync(attachment, "private attachment", "utf8");
+  const fixture = createController(dir, CHAT_ID, { sessionId: DESKTOP_ID, projectPath: dir, projectName: "project" });
+  const replies: Array<{ text: string; extra?: Record<string, unknown> }> = [];
+  try {
+    const input = textPrompt("private pending prompt");
+    input.attachmentPaths = [attachment];
+    const routed = await fixture.controller.submitPrompt(input);
+    assert.equal(routed.kind, "held");
+    const pending = fixture.controller.pendingHandoffFor(DESKTOP_ID);
+    assert(pending?.token);
+    assert.equal(existsSync(attachment), true);
+
+    const runtime = fixture.controller.runtimeForSession(DESKTOP_ID)!;
+    assert.equal(runtime.isWatching, true);
+    const originalStart = runtime.startWatch.bind(runtime);
+    const originalStop = runtime.stopWatch.bind(runtime);
+    let starts = 0;
+    let stops = 0;
+    runtime.startWatch = ((path: string, follow?: boolean) => { starts++; originalStart(path, follow); }) as typeof runtime.startWatch;
+    runtime.stopWatch = (() => { stops++; return originalStop(); }) as typeof runtime.stopWatch;
+
+    const switched = await fixture.controller.switchTo(DESKTOP_ID);
+    assert.equal(switched?.handoff, "live-conflict");
+    assert.equal(switched?.pendingHandoffToken, pending.token);
+    assert.equal(fixture.controller.pendingHandoffFor(DESKTOP_ID)?.token, pending.token);
+    assert.equal(fixture.controller.watchTarget(DESKTOP_ID)?.cwd, dir);
+    assert.equal(runtime.isWatching, true);
+    assert.equal(existsSync(attachment), true);
+    assert.equal(starts, 0);
+    assert.equal(stops, 0);
+    assert.equal(fixture.starts, 0);
+
+    await switchAndShow(
+      { chat: { id: CHAT_ID }, reply: async (text: string, extra?: Record<string, unknown>) => { replies.push({ text, extra }); } } as unknown as Context,
+      {
+        registry: { controller: () => fixture.controller },
+        store: { get: () => ({ title: "Desktop session" }) },
+        settings: { get: () => defaultSettings() },
+        cfg: { quietNotifications: false },
+      } as never,
+      DESKTOP_ID,
+    );
+    assert(replies[0]?.text.includes("Есть сохранённое сообщение"));
+    assert.equal(replies[0]?.text.includes("private pending prompt"), false);
+    const keyboard = replies[0]?.extra?.reply_markup as InlineKeyboard;
+    const actions = keyboard.inline_keyboard.flatMap((row) => row.flatMap((button) => "callback_data" in button ? [button.callback_data] : []));
+    assert(actions.includes(`handoff:watch:${DESKTOP_ID}`));
+    assert(actions.includes(`handoff:send:${pending.token}`));
+    assert(actions.includes(`handoff:cancel:${pending.token}`));
+    assert.equal(actions.includes(`handoff:fork:${DESKTOP_ID}`), false);
+    assert.equal(runtime.isWatching, true);
+    assert.equal(starts, 0);
+    assert.equal(stops, 0);
+    assert.equal(fixture.prompts, 0);
+  } finally {
+    fixture.controller.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("switching from a watched session to a different session cancels its pending prompt", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-tg-other-handoff-"));
+  const incoming = join(dir, "telegram-incoming");
+  mkdirSync(incoming);
+  const attachment = join(incoming, "pending.txt");
+  writeFileSync(attachment, "pending", "utf8");
+  const otherId = "00000000-0000-4000-8000-000000000734";
+  const fixture = createController(dir, CHAT_ID, {
+    controlledSessions: [
+      { sessionId: DESKTOP_ID, projectPath: dir, projectName: "A" },
+      { sessionId: otherId, projectPath: dir, projectName: "B" },
+    ],
+    foregroundSessionId: DESKTOP_ID,
+  }, async (sessionId) => {
+    if (sessionId === DESKTOP_ID) throw new Error("thread already active in another process");
+  });
+  try {
+    const input = textPrompt("do not send to B");
+    input.attachmentPaths = [attachment];
+    assert.equal((await fixture.controller.submitPrompt(input)).kind, "held");
+    const runtimeA = fixture.controller.runtimeForSession(DESKTOP_ID)!;
+    assert.equal(runtimeA.isWatching, true);
+    assert(fixture.controller.pendingHandoffFor(DESKTOP_ID));
+
+    const switched = await fixture.controller.switchTo(otherId);
+    assert.equal(switched?.handoff, undefined);
+    assert.equal(fixture.controller.pendingHandoffFor(DESKTOP_ID), undefined);
+    assert.equal(fixture.controller.watchTarget(DESKTOP_ID), undefined);
+    assert.equal(runtimeA.isWatching, false);
+    assert.equal(fixture.controller.list().find((session) => session.sessionId === otherId)?.foreground, true);
+    assert.equal(fixture.prompts, 0);
+    assert.equal(fixture.starts, 0);
+    for (let i = 0; i < 50 && existsSync(attachment); i++) await new Promise((resolve) => setTimeout(resolve, 2));
+    assert.equal(existsSync(attachment), false);
+  } finally {
+    fixture.controller.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("if the same watched session becomes available, pending input is cancelled with notice and never auto-sent", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-tg-released-handoff-"));
+  const incoming = join(dir, "telegram-incoming");
+  mkdirSync(incoming);
+  const attachment = join(incoming, "pending.txt");
+  writeFileSync(attachment, "pending", "utf8");
+  let loads = 0;
+  const fixture = createController(dir, CHAT_ID, { sessionId: DESKTOP_ID, projectPath: dir, projectName: "project" }, async () => {
+    loads++;
+    if (loads === 1) throw new Error("thread already active in another process");
+  });
+  try {
+    const input = textPrompt("do not silently send");
+    input.attachmentPaths = [attachment];
+    assert.equal((await fixture.controller.submitPrompt(input)).kind, "held");
+    const runtime = fixture.controller.runtimeForSession(DESKTOP_ID)!;
+    assert.equal(runtime.isWatching, true);
+    assert(fixture.controller.pendingHandoffFor(DESKTOP_ID));
+
+    const switched = await fixture.controller.switchTo(DESKTOP_ID);
+    assert.equal(switched?.handoff, undefined);
+    assert.equal(fixture.controller.pendingHandoffFor(DESKTOP_ID), undefined);
+    assert.equal(runtime.isWatching, false);
+    assert.equal(runtime.sessionId, DESKTOP_ID);
+    assert.equal(fixture.outgoing.some(({ text }) => text.toLowerCase().includes("ожидающее сообщение отменено — отправьте его повторно")), true);
+    assert.equal(fixture.prompts, 0);
+    assert.equal(fixture.starts, 0);
+    for (let i = 0; i < 50 && existsSync(attachment); i++) await new Promise((resolve) => setTimeout(resolve, 2));
+    assert.equal(existsSync(attachment), false);
+  } finally {
+    fixture.controller.dispose();
     rmSync(dir, { recursive: true, force: true });
   }
 });

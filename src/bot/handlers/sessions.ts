@@ -308,9 +308,10 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
       await refreshMenu(ctx, deps, `📂 ${meta.title}`);
     } catch (err) {
       if (err instanceof LiveSessionConflictError) {
+        const pending = deps.registry.controller(ctx.chat!.id).pendingHandoffFor(meta.sessionId);
         await ctx.reply(
-          `Этот сеанс уже открыт в Codex Desktop: ${meta.title}\n\nМожно только наблюдать за ним или создать отдельное продолжение.`,
-          { ...notificationExtra(deps, ctx.chat!.id, "error"), reply_markup: handoffKeyboard(meta.sessionId) },
+          `Этот сеанс уже открыт в Codex Desktop: ${meta.title}${pending ? "\n\nЕсть сохранённое сообщение, которое ещё не отправлено." : ""}\n\nМожно выбрать действие ниже.`,
+          { ...notificationExtra(deps, ctx.chat!.id, "error"), reply_markup: handoffKeyboard(meta.sessionId, pending?.token) },
         );
         return;
       }
@@ -388,10 +389,13 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
   });
 }
 
-function handoffKeyboard(sessionId: string): InlineKeyboard {
-  return new InlineKeyboard()
-    .text("👁 Наблюдать", `handoff:watch:${sessionId}`)
-    .text("🌿 Создать продолжение", `handoff:fork:${sessionId}`);
+function handoffKeyboard(sessionId: string, pendingToken?: string): InlineKeyboard {
+  const keyboard = new InlineKeyboard().text("👁 Наблюдать", `handoff:watch:${sessionId}`);
+  if (pendingToken) {
+    return keyboard.row().text("🌿 Создать продолжение и отправить", `handoff:send:${pendingToken}`)
+      .row().text("✖ Отменить сообщение", `handoff:cancel:${pendingToken}`);
+  }
+  return keyboard.text("🌿 Создать продолжение", `handoff:fork:${sessionId}`);
 }
 
 function notificationExtra(deps: BotDeps, chatId: number, event: NotificationEvent): { disable_notification: boolean } {

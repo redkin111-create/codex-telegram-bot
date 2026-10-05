@@ -183,11 +183,18 @@ async function deliverSwitch(ctx: Context, deps: BotDeps, res: SwitchResult): Pr
   if (res.handoff === "live-conflict" && res.sessionId) {
     const title = deps.store.get(res.sessionId)?.title ?? proj;
     const mode = deps.settings.get(ctx.chat!.id).notifications?.mode ?? "all";
+    const keyboard = new InlineKeyboard().text("👁 Наблюдать", `handoff:watch:${res.sessionId}`);
+    const pendingHandoffToken = res.pendingHandoffToken;
+    if (pendingHandoffToken) {
+      keyboard.row().text("🌿 Создать продолжение и отправить", `handoff:send:${pendingHandoffToken}`)
+        .row().text("✖ Отменить сообщение", `handoff:cancel:${pendingHandoffToken}`);
+    } else {
+      keyboard.row().text("🌿 Создать продолжение", `handoff:fork:${res.sessionId}`);
+    }
+    const pendingNotice = pendingHandoffToken ? "\n\nЕсть сохранённое сообщение, которое ещё не отправлено." : "";
     await ctx.reply(
-      `⚠️ Сеанс «${title}» сейчас открыт в Codex Desktop.\nВыберите, что делать:`,
-      { disable_notification: !notificationShouldBeLoud(mode, deps.cfg.quietNotifications, "error"), reply_markup: new InlineKeyboard()
-        .text("👁 Наблюдать", `handoff:watch:${res.sessionId}`)
-        .row().text("🌿 Создать продолжение", `handoff:fork:${res.sessionId}`) },
+      `⚠️ Сеанс «${title}» сейчас открыт в Codex Desktop.${pendingNotice}\nВыберите, что делать:`,
+      { disable_notification: !notificationShouldBeLoud(mode, deps.cfg.quietNotifications, "error"), reply_markup: keyboard },
     );
     return;
   }

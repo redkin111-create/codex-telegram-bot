@@ -44,11 +44,14 @@ export interface SwitchResult {
   firstView: boolean;
   alreadyForeground: boolean;
   handoff?: "live-conflict";
+  pendingHandoffToken?: string;
 }
 
 type RoutedPrompt =
   | { kind: "submitted"; runtime: SessionRuntime; outcome: "ran" | "queued" }
   | { kind: "held" | "blocked" };
+
+type ForegroundPreparation = "ready" | "live-conflict" | "failed";
 
 export class ChatController {
   private readonly runtimes: SessionRuntime[] = [];
@@ -214,6 +217,11 @@ export class ChatController {
     return { cwd: this.watchOnly.cwd, projectName: this.watchOnly.projectName };
   }
 
+  pendingHandoffFor(sessionId: string): { token: string } | undefined {
+    if (this.watchOnly?.sessionId !== sessionId || !this.pendingPrompt) return undefined;
+    return { token: this.pendingPrompt.token };
+  }
+
   isContinuationInProgress(token?: string): boolean {
     return this.continuationInFlight !== undefined && (token === undefined || this.continuationInFlight === token);
   }
@@ -271,18 +279,29 @@ export class ChatController {
     if (this.runtimes.some((r) => r.sessionId === sessionId)) {
       return (await this.switchTo(sessionId))!;
     }
+    const sameWatchTarget = this.watchOnly?.sessionId === sessionId;
     const prevFg = this.fg;
     const rt = this.create({ cwd, projectName, sessionId });
     this.runtimes.push(rt);
     this.fg = rt;
     await this.background(prevFg);
-    const handoff = await this.prepareForForeground(rt);
+    const preparation = await this.prepareForForeground(rt);
     const path = this.store.jsonlPath(sessionId);
     const unread = readConversationHistory(path, 12);
     this.lastRead.set(sessionId, jsonlSize(path));
     this.persist();
-    this.exitWatchOnly();
-    return { rt, sessionId, projectName, busy: rt.isBusy, unread, firstView: true, alreadyForeground: false, ...(handoff ? { handoff } : {}) };
+    if (sameWatchTarget) {
+      if (preparation === "ready") await this.finishSameWatchTarget(sessionId);
+      else this.keepWatchOnlyOn(rt, sessionId);
+    } else {
+      this.exitWatchOnly();
+    }
+    const handoff = preparation === "live-conflict" ? preparation : undefined;
+    const pendingHandoffToken = handoff ? this.pendingHandoffFor(sessionId)?.token : undefined;
+    return {
+      rt, sessionId, projectName, busy: rt.isBusy, unread, firstView: true, alreadyForeground: false,
+      ...(handoff ? { handoff } : {}), ...(pendingHandoffToken ? { pendingHandoffToken } : {}),
+    };
   }
 
   /** Switch the foreground to an already-controlled session. */
@@ -291,15 +310,29 @@ export class ChatController {
     if (this.continuationInFlight) throw new Error("Уже создаётся продолжение. Дождитесь результата.");
     const rt = this.runtimes.find((r) => r.sessionId === sessionId);
     if (!rt) return undefined;
-    this.exitWatchOnly();
+    const sameWatchTarget = this.watchOnly?.sessionId === sessionId;
+    if (!sameWatchTarget) this.exitWatchOnly();
     if (rt === this.fg) {
-      const handoff = await this.prepareForForeground(rt);
-      return { rt, sessionId, projectName: rt.projectName, busy: rt.isBusy, unread: [], firstView: false, alreadyForeground: true, ...(handoff ? { handoff } : {}) };
+      const preparation = await this.prepareForForeground(rt);
+      if (sameWatchTarget) {
+        if (preparation === "ready") await this.finishSameWatchTarget(sessionId);
+        else this.keepWatchOnlyOn(rt, sessionId);
+      }
+      const handoff = preparation === "live-conflict" ? preparation : undefined;
+      const pendingHandoffToken = handoff ? this.pendingHandoffFor(sessionId)?.token : undefined;
+      return {
+        rt, sessionId, projectName: rt.projectName, busy: rt.isBusy, unread: [], firstView: false, alreadyForeground: true,
+        ...(handoff ? { handoff } : {}), ...(pendingHandoffToken ? { pendingHandoffToken } : {}),
+      };
     }
     await this.background(this.fg);
     this.fg = rt;
     await rt.setForeground(true);
-    const handoff = await this.prepareForForeground(rt);
+    const preparation = await this.prepareForForeground(rt);
+    if (sameWatchTarget) {
+      if (preparation === "ready") await this.finishSameWatchTarget(sessionId);
+      else this.keepWatchOnlyOn(rt, sessionId);
+    }
 
     const path = this.store.jsonlPath(sessionId);
     const seen = this.lastRead.get(sessionId);
@@ -316,17 +349,40 @@ export class ChatController {
     // streaming for the in-flight turn via the agent's own session/update
     // events. Tailing the .jsonl too would double-render every update.
     this.persist();
-    return { rt, sessionId, projectName: rt.projectName, busy: rt.isBusy, unread, firstView, alreadyForeground: false, ...(handoff ? { handoff } : {}) };
+    const handoff = preparation === "live-conflict" ? preparation : undefined;
+    const pendingHandoffToken = handoff ? this.pendingHandoffFor(sessionId)?.token : undefined;
+    return {
+      rt, sessionId, projectName: rt.projectName, busy: rt.isBusy, unread, firstView, alreadyForeground: false,
+      ...(handoff ? { handoff } : {}), ...(pendingHandoffToken ? { pendingHandoffToken } : {}),
+    };
   }
 
-  private async prepareForForeground(rt: SessionRuntime): Promise<SwitchResult["handoff"]> {
+  private async prepareForForeground(rt: SessionRuntime): Promise<ForegroundPreparation> {
     try {
       await rt.prepare();
+      return "ready";
     } catch (error) {
       if (error instanceof LiveSessionConflictError) return "live-conflict";
       // Preserve the existing best-effort behavior for temporary prepare errors.
+      return "failed";
     }
-    return undefined;
+  }
+
+  private async finishSameWatchTarget(sessionId: string): Promise<void> {
+    const pending = this.pendingHandoffFor(sessionId);
+    if (pending) this.cancelPendingPrompt(pending.token);
+    this.exitWatchOnly({ keepPending: true, notifyCancelled: false });
+    if (pending) {
+      await this.sendNotice("Сеанс снова доступен. Ожидающее сообщение отменено — отправьте его повторно.", "info");
+    }
+  }
+
+  private keepWatchOnlyOn(runtime: SessionRuntime, sessionId: string): void {
+    if (this.watchOnly?.sessionId !== sessionId) return;
+    if (this.watchRuntime === runtime && runtime.isWatching) return;
+    this.watchRuntime?.stopWatch();
+    runtime.startWatch(this.store.jsonlPath(sessionId));
+    this.watchRuntime = runtime;
   }
 
   /** Stop controlling a session (does not kill it). */
