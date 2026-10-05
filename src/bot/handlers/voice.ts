@@ -34,7 +34,8 @@ export function registerVoice(bot: Bot, deps: BotDeps): void {
       await ctx.reply(`\u{1F399} \u201C${text}\u201D`);
       const quoted = extractReplyContext(ctx);
       const result = await deps.registry.submitPrompt(chatId, textPrompt(text, ctx.message?.message_id, quoted));
-      if (result.kind === "submitted" && result.outcome === "queued") {
+      if (result.kind !== "submitted") return;
+      if (result.outcome === "queued") {
         await ctx.reply(`📥 Добавлено в очередь · позиция ${result.runtime.queueLength}`);
       }
     } catch (e) {

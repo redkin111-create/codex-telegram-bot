@@ -14,6 +14,7 @@ import { loadCodexProjects, safeSessionTitle } from "../catalog.js";
 import { cleanSessionPrompt } from "../../sessions/title.js";
 import { refreshMenu } from "../menu/refresh.js";
 import { sendMarkdownDoc } from "../telegram-io.js";
+import { notificationShouldBeLoud } from "../../app/notifications.js";
 
 const UUID = "([0-9a-fA-F-]{36})";
 const ROLE_ICON: Record<string, string> = {
@@ -54,7 +55,7 @@ export function runningSessionTitle(projectName: string, prompt: string, storedT
 
 /** Build a rich card (plain text, no MarkdownV2) + buttons for one controlled
  *  session: Switch / History / Close. */
-function buildRunningCard(s: RunningSession, deps: BotDeps, now: number): { text: string; kb: InlineKeyboard } {
+export function buildRunningCard(s: RunningSession, deps: BotDeps, now: number): { text: string; kb: InlineKeyboard } {
   const dot = s.foreground ? "\u25B6\uFE0F" : s.busy ? "\u{1F7E0}" : "\u26AA";
   const state = s.foreground ? "текущий" : s.busy ? "выполняется" : "ожидание";
 
@@ -85,7 +86,7 @@ function buildRunningCard(s: RunningSession, deps: BotDeps, now: number): { text
     kb.text("\u23F3 Запускается…", "run:noop");
     return { text: lines.join("\n"), kb };
   }
-  if (s.foreground) kb.text("\u25B6\uFE0F Текущий", "run:noop");
+  if (s.foreground) kb.text("\u25B6\uFE0F Текущий", `run:check:${s.sessionId}`);
   else kb.text("\u{1F500} Переключиться", `run:switch:${s.sessionId}`);
   kb.text("\u{1F4DC} История", `hist:${s.sessionId}`).text("\u2716 Закрыть", `run:close:${s.sessionId}`);
   if (s.queueLength > 0) kb.row().text(`📥 Очередь · ${s.queueLength}`, `q:view:${s.sessionId}`);
@@ -164,6 +165,11 @@ export function registerRunning(bot: Bot, deps: BotDeps): void {
     await switchAndShow(ctx, deps, ctx.match![1]!);
   });
 
+  bot.callbackQuery(new RegExp(`^run:check:${UUID}$`), async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await switchAndShow(ctx, deps, ctx.match![1]!);
+  });
+
   bot.callbackQuery(new RegExp(`^run:close:${UUID}$`), async (ctx) => {
     const id = ctx.match![1]!;
     await deps.registry.controller(ctx.chat!.id).close(id);
@@ -174,6 +180,17 @@ export function registerRunning(bot: Bot, deps: BotDeps): void {
 
 async function deliverSwitch(ctx: Context, deps: BotDeps, res: SwitchResult): Promise<void> {
   const proj = res.projectName ?? "сеанс";
+  if (res.handoff === "live-conflict" && res.sessionId) {
+    const title = deps.store.get(res.sessionId)?.title ?? proj;
+    const mode = deps.settings.get(ctx.chat!.id).notifications?.mode ?? "all";
+    await ctx.reply(
+      `⚠️ Сеанс «${title}» сейчас открыт в Codex Desktop.\nВыберите, что делать:`,
+      { disable_notification: !notificationShouldBeLoud(mode, deps.cfg.quietNotifications, "error"), reply_markup: new InlineKeyboard()
+        .text("👁 Наблюдать", `handoff:watch:${res.sessionId}`)
+        .row().text("🌿 Создать продолжение", `handoff:fork:${res.sessionId}`) },
+    );
+    return;
+  }
   if (res.alreadyForeground) {
     await ctx.reply(`Уже открыт проект «${proj}».`);
     return;

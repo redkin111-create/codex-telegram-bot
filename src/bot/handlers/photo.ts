@@ -106,13 +106,14 @@ async function submit(
   quoted?: string,
 ): Promise<void> {
   const result = await deps.registry.submitPrompt(chatId, { text: caption, images, replyTo, quotedText: quoted });
-  if (result.kind === "submitted" && result.outcome === "queued") {
+  if (result.kind !== "submitted") return;
+  if (result.outcome === "queued") {
     await deps.api.sendMessage(
       chatId,
       `📥 Изображение добавлено в очередь · позиция ${result.runtime.queueLength}`,
     );
   } else {
-    await deps.api.sendMessage(chatId, "🖼 Изображение добавлено к задаче.");
+    await deps.api.sendMessage(chatId, "🖼 Изображение отправлено в текущую задачу.");
   }
 }
 

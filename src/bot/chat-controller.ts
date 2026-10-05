@@ -43,6 +43,7 @@ export interface SwitchResult {
   unread: HistoryEntry[];
   firstView: boolean;
   alreadyForeground: boolean;
+  handoff?: "live-conflict";
 }
 
 type RoutedPrompt =
@@ -137,6 +138,7 @@ export class ChatController {
     if (this.continuationInFlight) throw new Error("Уже создаётся продолжение. Дождитесь результата.");
     if (this.runtimes.some((r) => r.sessionId === sessionId)) {
       const sw = await this.switchTo(sessionId);
+      if (sw?.handoff === "live-conflict") throw new LiveSessionConflictError();
       return { rt: sw!.rt, result: "resumed", alreadyControlled: true };
     }
     // Reserve the runtime synchronously (before any await) so a concurrent tap
@@ -274,13 +276,13 @@ export class ChatController {
     this.runtimes.push(rt);
     this.fg = rt;
     await this.background(prevFg);
-    await rt.prepare().catch(() => {});
+    const handoff = await this.prepareForForeground(rt);
     const path = this.store.jsonlPath(sessionId);
     const unread = readConversationHistory(path, 12);
     this.lastRead.set(sessionId, jsonlSize(path));
     this.persist();
     this.exitWatchOnly();
-    return { rt, sessionId, projectName, busy: rt.isBusy, unread, firstView: true, alreadyForeground: false };
+    return { rt, sessionId, projectName, busy: rt.isBusy, unread, firstView: true, alreadyForeground: false, ...(handoff ? { handoff } : {}) };
   }
 
   /** Switch the foreground to an already-controlled session. */
@@ -291,12 +293,13 @@ export class ChatController {
     if (!rt) return undefined;
     this.exitWatchOnly();
     if (rt === this.fg) {
-      return { rt, sessionId, projectName: rt.projectName, busy: rt.isBusy, unread: [], firstView: false, alreadyForeground: true };
+      const handoff = await this.prepareForForeground(rt);
+      return { rt, sessionId, projectName: rt.projectName, busy: rt.isBusy, unread: [], firstView: false, alreadyForeground: true, ...(handoff ? { handoff } : {}) };
     }
     await this.background(this.fg);
     this.fg = rt;
     await rt.setForeground(true);
-    await rt.prepare().catch(() => {});
+    const handoff = await this.prepareForForeground(rt);
 
     const path = this.store.jsonlPath(sessionId);
     const seen = this.lastRead.get(sessionId);
@@ -313,7 +316,17 @@ export class ChatController {
     // streaming for the in-flight turn via the agent's own session/update
     // events. Tailing the .jsonl too would double-render every update.
     this.persist();
-    return { rt, sessionId, projectName: rt.projectName, busy: rt.isBusy, unread, firstView, alreadyForeground: false };
+    return { rt, sessionId, projectName: rt.projectName, busy: rt.isBusy, unread, firstView, alreadyForeground: false, ...(handoff ? { handoff } : {}) };
+  }
+
+  private async prepareForForeground(rt: SessionRuntime): Promise<SwitchResult["handoff"]> {
+    try {
+      await rt.prepare();
+    } catch (error) {
+      if (error instanceof LiveSessionConflictError) return "live-conflict";
+      // Preserve the existing best-effort behavior for temporary prepare errors.
+    }
+    return undefined;
   }
 
   /** Stop controlling a session (does not kill it). */

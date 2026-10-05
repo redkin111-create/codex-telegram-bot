@@ -94,10 +94,11 @@ export function registerDocuments(bot: Bot, deps: BotDeps): void {
       input.displayText = caption.trim();
       if (savedPath) input.attachmentPaths = [savedPath];
       const result = await deps.registry.submitPrompt(chatId, input);
-      if (result.kind === "submitted" && result.outcome === "queued") {
+      if (result.kind !== "submitted") return;
+      if (result.outcome === "queued") {
         await ctx.reply(`📥 Файл «${name}» добавлен в очередь · позиция ${result.runtime.queueLength}`);
       } else {
-        await ctx.reply(`📎 Файл добавлен к сообщению: ${name}`);
+        await ctx.reply(`📎 Файл отправлен в текущую задачу: ${name}`);
       }
     } catch (e) {
       log.warn(`submit failed for "${name}":`, (e as Error).message);
