@@ -35,7 +35,7 @@ test("interrupted queued turn is restored paused for manual review", () => {
   const dir = mkdtempSync(join(tmpdir(), "codex-tg-queue-recover-"));
   const cfg = { dataDir: dir, workspace: dir } as AppConfig;
   const settings = { get: () => ({ reasoning: "medium" }) };
-  const acp = Object.assign(new EventEmitter(), { metadataFor: () => undefined }) as AcpClient;
+  const acp = Object.assign(new EventEmitter(), { metadataFor: () => undefined }) as unknown as AcpClient;
   const store = new DurableQueueStore(dir, 1001);
   const interrupted = { id: "started", input: textPrompt("potentially touched source files") };
   const pending = { id: "later", input: textPrompt("run later") };
