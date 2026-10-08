@@ -8,7 +8,6 @@ export const COMMANDS: { command: string; description: string }[] = [
   { command: "sessions", description: "Список и продолжение сеансов" },
   { command: "active", description: "Активные сеансы этого чата" },
   { command: "running", description: "Сеансы, которыми управляет этот чат" },
-  { command: "killall", description: "Остановить все активные сеансы" },
   { command: "mcp", description: "Серверы MCP и проверка связи" },
   { command: "models", description: "Список моделей Codex" },
   { command: "agents", description: "Режимы совместной работы Codex" },
