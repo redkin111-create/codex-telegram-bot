@@ -116,6 +116,9 @@ test("closing a busy session or one with queued work is refused", async () => {
     assert.equal(await ctrl.close(id), false);
     assert.equal(rt.queueLength, 1);
     assert.equal(rt.clearQueue(), 1);
+    Object.assign(rt as unknown as Record<string, unknown>, { sessionInitialization: new Promise<void>(() => {}) });
+    assert.equal(await ctrl.close(id), false, "cannot dispose a session during initialization");
+    Object.assign(rt as unknown as Record<string, unknown>, { sessionInitialization: undefined });
     assert.equal(await ctrl.close(id), true);
     assert.equal(ctrl.count(), 0);
   } finally {
