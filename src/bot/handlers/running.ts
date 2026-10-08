@@ -166,7 +166,14 @@ export function registerRunning(bot: Bot, deps: BotDeps): void {
 
   bot.callbackQuery(new RegExp(`^run:close:${UUID}$`), async (ctx) => {
     const id = ctx.match![1]!;
-    await deps.registry.controller(ctx.chat!.id).close(id);
+    const closed = await deps.registry.controller(ctx.chat!.id).close(id);
+    if (!closed) {
+      await ctx.answerCallbackQuery({
+        text: "Нельзя закрыть выполняющийся сеанс или сеанс с очередью.",
+        show_alert: true,
+      });
+      return;
+    }
     await ctx.answerCallbackQuery({ text: "Сеанс закрыт" });
     await ctx.deleteMessage().catch(() => {}); // remove just this card
   });
