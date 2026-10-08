@@ -228,7 +228,7 @@ test("approval prompts still show the command and resolve the selected option", 
   await Promise.resolve();
   assert(prompt.includes("git push origin feature/test"));
   assert(keyboard);
-  assert.equal(permissions.resolveChoice("1", 0), "Разрешить");
+  assert.equal(permissions.resolveChoice("1", 0, 55), "Разрешить");
   assert.deepEqual(await pending, { outcome: { outcome: "selected", optionId: "allow-once" } });
 });
 
@@ -288,7 +288,7 @@ test("Telegram permission prompts show the exact requested path and one-time cho
   assert(prompt.includes("Изменение: C:\\test\\outside"));
   assert(prompt.includes("только для этого запроса"));
   assert.deepEqual(keyboard?.inline_keyboard?.[0]?.map((button) => button.text), ["✅ Разрешить один раз", "⛔ Отклонить"]);
-  assert.equal(permissions.resolveChoice("1", 1), "Отклонить");
+  assert.equal(permissions.resolveChoice("1", 1, 55), "Отклонить");
   assert.deepEqual(await pending, { outcome: { outcome: "selected", optionId: "deny" } });
 });
 
