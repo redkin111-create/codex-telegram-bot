@@ -97,7 +97,7 @@ test("session selection opens a detail card with existing actions and safe navig
   assert(data.includes(`sess:${meta.sessionId}`));
   assert(data.includes(`hist:${meta.sessionId}`));
   assert(data.includes(`watch:${meta.sessionId}`));
-  assert(data.includes(`killsess:${meta.sessionId}`));
+  assert(!data.includes(`killsess:${meta.sessionId}`));
   assert(data.includes("sp:0123456789abcdef:1"));
   assert(data.includes("ui:home"));
   assert(detail.keyboard.inline_keyboard[0]![0]!.text.includes("Продолжить"));
@@ -769,6 +769,7 @@ test("empty authorization list denies all users", async () => {
   const middleware = createAuthMiddleware({ allowedUsers: new Set() } as never);
   const ctx = {
     from: { id: 7, is_bot: false },
+    chat: { id: 7, type: "private" },
     callbackQuery: { id: "callback" },
     answerCallbackQuery: async (options: Record<string, unknown>) => { answer = options; },
   } as unknown as Context;
