@@ -8,13 +8,13 @@
  *   • lost-session recovery (a persisted session we can't reload), and
  *   • auto-fork-on-error (a transient prompt failure with no streamed output).
  */
-import { join } from "node:path";
+import { SessionStore } from "../sessions/store.js";
 import { buildTranscript, readHistory } from "../sessions/history.js";
 
 /** Read a compact transcript of a session's recent history from disk, or "". */
 export function recentTranscript(sessionsDir: string, sessionId: string, entries = 24): string {
   try {
-    const hist = readHistory(join(sessionsDir, `${sessionId}.jsonl`), entries);
+    const hist = readHistory(new SessionStore(sessionsDir).jsonlPath(sessionId), entries);
     return hist.length > 0 ? buildTranscript(hist) : "";
   } catch {
     return "";
