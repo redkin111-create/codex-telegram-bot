@@ -33,6 +33,7 @@ import { backoffSchedule, briefErrorMessage, formatErrorSummary, formatRetryNoti
 import { sendMarkdownDoc } from "./telegram-io.js";
 import { TypingIndicator } from "./typing.js";
 import { commandOutputPaths } from "./command-artifacts.js";
+import { DurableQueueStore } from "./durable-queue.js";
 
 const log = createLogger("runtime");
 
@@ -82,7 +83,10 @@ export class SessionRuntime {
   private busy = false;
   private cancelled = false;
   private readonly queue: QueuedPrompt[] = [];
+  private readonly queueStore: DurableQueueStore | undefined;
+  private queueInFlight: QueuedPrompt | undefined;
   private queuePaused = false;
+  private queueDispatching = false;
   private queueSeriesActive = false;
   private queueCompleted = 0;
   private queuedArtifactPaths: string[] = [];
@@ -160,6 +164,15 @@ export class SessionRuntime {
       this.sessionId = s.sessionId;
     }
     if (this.sessionId) this.rebindPending = true; // lazily reload on first use
+    this.queueStore = cfg.dataDir ? new DurableQueueStore(cfg.dataDir, chatId) : undefined;
+    if (this.sessionId && this.queueStore) {
+      const saved = this.queueStore.load(this.sessionId);
+      const recovered = saved.inFlight ? [saved.inFlight, ...saved.items] : saved.items;
+      this.queue.push(...recovered);
+      // Never replay a partially completed coding task automatically.
+      this.queuePaused = recovered.length > 0;
+      if (saved.inFlight) this.queueStore.save(this.sessionId, { items: recovered, paused: true });
+    }
 
     this.typing = new TypingIndicator(api, chatId);
     this.listener = (sid, update) => this.onUpdate(sid, update);
@@ -288,7 +301,9 @@ export class SessionRuntime {
    */
   private async bindNewSession(cwd: string, projectName?: string): Promise<void> {
     this.stopWatch();
-    this.sessionId = await this.acp.newSession(cwd);
+    const newSessionId = await this.acp.newSession(cwd);
+    if (this.sessionId && this.queueStore) this.queueStore.move(this.sessionId, newSessionId);
+    this.sessionId = newSessionId;
     this.sessionLive = true;
     this.rebindPending = false;
     this.cwd = cwd;
@@ -442,23 +457,37 @@ export class SessionRuntime {
   }
 
   clearQueue(): number {
-    const removed = this.queue.splice(0);
-    const n = removed.length;
-    for (const item of removed) this.cleanupAttachments(item.input);
+    const removed = [...this.queue];
+    this.queue.length = 0;
     this.queuePaused = false;
+    try {
+      this.persistQueue();
+    } catch (error) {
+      this.queue.push(...removed);
+      this.queuePaused = true;
+      throw error;
+    }
+    for (const item of removed) this.cleanupAttachments(item.input);
     this.queueSeriesActive = false;
     this.queueCompleted = 0;
     this.queuedArtifactPaths = [];
     this.changed();
-    return n;
+    return removed.length;
   }
 
   removeQueued(id: string): boolean {
     const index = this.queue.findIndex((item) => item.id === id);
     if (index < 0) return false;
     const [removed] = this.queue.splice(index, 1);
-    if (removed) this.cleanupAttachments(removed.input);
     if (this.queue.length === 0 && !this.busy) this.queuePaused = false;
+    try {
+      this.persistQueue();
+    } catch (error) {
+      this.queue.splice(index, 0, removed!);
+      this.queuePaused = true;
+      throw error;
+    }
+    if (removed) this.cleanupAttachments(removed.input);
     this.changed();
     return true;
   }
@@ -468,11 +497,18 @@ export class SessionRuntime {
     if (!item) return false;
     const caption = text.trim();
     if (!caption) return false;
+    const originalInput = item.input;
     item.input = {
       ...item.input,
       text: item.input.attachmentContext ? `${caption}\n\n${item.input.attachmentContext}` : caption,
       displayText: caption,
     };
+    try {
+      this.persistQueue();
+    } catch (error) {
+      item.input = originalInput;
+      throw error;
+    }
     this.changed();
     return true;
   }
@@ -480,6 +516,7 @@ export class SessionRuntime {
   resumeQueue(): boolean {
     if (this.busy || this.queue.length === 0) return false;
     this.queuePaused = false;
+    this.persistQueue();
     void this.flushQueue();
     this.changed();
     return true;
@@ -487,12 +524,36 @@ export class SessionRuntime {
 
   drainQueueToPrompt(): PromptInput | undefined {
     if (this.queue.length === 0) return undefined;
-    return this.queue.shift()?.input;
+    const next = this.queue.shift()!;
+    try {
+      this.persistQueue();
+    } catch (error) {
+      this.queue.unshift(next);
+      throw error;
+    }
+    return next.input;
   }
 
   private enqueue(input: PromptInput): void {
-    this.queue.push({ id: `${(++this.queueSeq).toString(36)}${randomBytes(4).toString("hex")}`, input });
+    const item = { id: `${(++this.queueSeq).toString(36)}${randomBytes(4).toString("hex")}`, input };
+    this.queue.push(item);
+    try {
+      this.persistQueue();
+    } catch (error) {
+      this.queue.pop();
+      throw error;
+    }
     this.queueSeriesActive = true;
+  }
+
+  private persistQueue(): void {
+    if (this.queueStore && this.sessionId) {
+      this.queueStore.save(this.sessionId, {
+        items: this.queue,
+        inFlight: this.queueInFlight,
+        paused: this.queuePaused,
+      });
+    }
   }
 
   private async ensureSession(): Promise<void> {
@@ -566,6 +627,7 @@ export class SessionRuntime {
   }
 
   private async runTurn(input: PromptInput, fromQueue = false): Promise<void> {
+    let queueTurnSucceeded = false;
     this.busy = true;
     this.currentPromptText = input.displayText ?? input.text;
     this.cancelled = false;
@@ -613,6 +675,11 @@ export class SessionRuntime {
       const resumed = await this.maybeResumeAfterStream(final);
       if (resumed) final = resumed;
       const streamedOutput = this.streamer?.hasOutput ?? false;
+      // A failed Telegram notification must not make a successful Codex turn retry.
+      if (final.result && !this.cancelled && fromQueue) {
+        this.queueCompleted++;
+        queueTurnSucceeded = true;
+      }
       // On a successful, non-cancelled turn, top the fallback bar up to 100 (a
       // no-op when the agent reported its own progress — its value is kept).
       if (final.result && !this.cancelled) this.streamer?.completeFallback();
@@ -666,7 +733,6 @@ export class SessionRuntime {
         }
         this.queuedArtifactPaths = [];
       }
-      if (final.result && !this.cancelled && fromQueue) this.queueCompleted++;
     } catch (err) {
       // Unexpected failure outside the prompt path (e.g. while finalizing).
       await this.streamer?.finalize().catch(() => {});
@@ -685,7 +751,28 @@ export class SessionRuntime {
       }
       this.queuedArtifactPaths = [];
     } finally {
-      this.cleanupAttachments(input);
+      let cleanupInput = !fromQueue;
+      if (fromQueue && this.queueInFlight) {
+        const flight = this.queueInFlight;
+        const retry = !queueTurnSucceeded && !this.cancelled;
+        if (retry) {
+          // Manual review before replay: this turn may already have edited files.
+          this.queue.unshift(flight);
+          this.queuePaused = true;
+        }
+        this.queueInFlight = undefined;
+        try {
+          this.persistQueue();
+          cleanupInput = !retry;
+        } catch (error) {
+          // Disk state still contains inFlight, so a restart can recover it.
+          this.queueInFlight = flight;
+          if (retry) this.queue.shift();
+          this.queuePaused = true;
+          log.error("cannot persist finished queue turn:", error);
+        }
+      }
+      if (cleanupInput) this.cleanupAttachments(input);
       this.typing.stop();
       this.streamer = undefined;
       this.busy = false;
@@ -1038,11 +1125,42 @@ export class SessionRuntime {
   }
 
   private async flushQueue(): Promise<void> {
-    if (this.busy || this.queuePaused) return;
+    if (this.busy || this.queuePaused || this.queueDispatching) return;
+    this.queueDispatching = true;
+    try {
+      if (this.queue.length > 0) {
+        try {
+          // A restored queue is not necessarily bound to Codex after a reboot.
+          await this.ensureSession();
+        } catch (error) {
+          this.queuePaused = true;
+          this.persistQueue();
+          log.warn("cannot resume queued session:", error);
+          await this.notify("⚠️ Очередь приостановлена: не удалось подключиться к сеансу Codex.", { event: "error" }).catch(() => {});
+          this.changed();
+          return;
+        }
+      }
+      if (this.busy || this.queuePaused) return;
+    } finally {
+      this.queueDispatching = false;
+    }
     const next = this.queue.shift();
     if (next) {
+      this.queueInFlight = next;
+      try {
+        this.persistQueue();
+      } catch (error) {
+        this.queue.unshift(next);
+        this.queueInFlight = undefined;
+        this.queuePaused = true;
+        log.error("cannot persist queued turn before executing:", error);
+        await this.notify("⚠️ Не удалось сохранить очередь на диск. Выполнение приостановлено.", { event: "error" }).catch(() => {});
+        this.changed();
+        return;
+      }
       this.queueSeriesActive = true;
-      if (this.foreground) await this.notify("\u25B6\uFE0F Выполняю сообщение из очереди…", { event: "progress" });
+      if (this.foreground) await this.notify("\u25B6\uFE0F Выполняю сообщение из очереди…", { event: "progress" }).catch(() => {});
       void this.runTurn(next.input, true);
       this.changed();
       return;

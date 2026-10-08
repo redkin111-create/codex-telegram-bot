@@ -11,6 +11,10 @@ export function createAuthMiddleware(cfg: AppConfig) {
   if (cfg.allowedUsers.size === 0) log.error("ALLOWED_USERS is empty — denying access to all users.");
 
   return async (ctx: Context, next: NextFunction): Promise<void> => {
+    // Remote shell access is never exposed in groups, channels or inline chats.
+    // An allowed sender in a group is not sufficient: every group member can
+    // read the bot\'s messages, diffs and uploaded files.
+    if (ctx.chat?.type !== "private") return;
     const from = ctx.from;
     // Only a genuine USER action is subject to (and worth replying to) the auth
     // gate. Ignore everything else silently — most importantly the bot's OWN

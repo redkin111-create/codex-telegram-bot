@@ -97,7 +97,7 @@ test("session selection opens a detail card with existing actions and safe navig
   assert(data.includes(`sess:${meta.sessionId}`));
   assert(data.includes(`hist:${meta.sessionId}`));
   assert(data.includes(`watch:${meta.sessionId}`));
-  assert(data.includes(`killsess:${meta.sessionId}`));
+  assert(!data.includes(`killsess:${meta.sessionId}`));
   assert(data.includes("sp:0123456789abcdef:1"));
   assert(data.includes("ui:home"));
   assert(detail.keyboard.inline_keyboard[0]![0]!.text.includes("Продолжить"));
@@ -729,7 +729,7 @@ test("unauthorized callback taps are rejected without entering handlers", async 
   const middleware = createAuthMiddleware({ allowedUsers: new Set(["7"]) } as never);
   const ctx = {
     from: { id: 9, is_bot: false },
-    chat: { id: 42 },
+    chat: { id: 42, type: "private" },
     callbackQuery: { id: "callback" },
     answerCallbackQuery: async (options: Record<string, unknown>) => { answer = options; },
     reply: async () => { replied = true; },
@@ -746,10 +746,21 @@ test("authorized callback taps continue to their selected handler", async () => 
   const middleware = createAuthMiddleware({ allowedUsers: new Set(["7"]) } as never);
   const ctx = {
     from: { id: 7, is_bot: false },
+    chat: { id: 7, type: "private" },
     callbackQuery: { id: "callback" },
   } as unknown as Context;
   await middleware(ctx, async () => { entered = true; });
   assert.equal(entered, true);
+});
+
+test("authorized user in a group never receives Codex access", async () => {
+  let entered = false;
+  const middleware = createAuthMiddleware({ allowedUsers: new Set(["7"]) } as never);
+  await middleware({
+    chat: { id: -1001, type: "supergroup" },
+    from: { id: 7, is_bot: false },
+  } as unknown as Context, async () => { entered = true; });
+  assert.equal(entered, false);
 });
 
 test("empty authorization list denies all users", async () => {
@@ -758,6 +769,7 @@ test("empty authorization list denies all users", async () => {
   const middleware = createAuthMiddleware({ allowedUsers: new Set() } as never);
   const ctx = {
     from: { id: 7, is_bot: false },
+    chat: { id: 7, type: "private" },
     callbackQuery: { id: "callback" },
     answerCallbackQuery: async (options: Record<string, unknown>) => { answer = options; },
   } as unknown as Context;

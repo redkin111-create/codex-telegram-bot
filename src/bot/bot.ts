@@ -36,7 +36,6 @@ import { registerPhotos } from "./handlers/photo.js";
 import { registerProjects } from "./handlers/projects.js";
 import { registerRunning, switchAndShow } from "./handlers/running.js";
 import { registerSessions } from "./handlers/sessions.js";
-import { registerSessionKill } from "./handlers/session-kill.js";
 import { registerAccounts } from "./handlers/accounts.js";
 import { registerCapabilities } from "./handlers/capabilities.js";
 import { registerReauth } from "./handlers/auth.js";
@@ -144,7 +143,9 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
   // The bot pins/unpins the status panel, and Telegram emits a "pinned a
   // message" service message for each pin. Delete those so the chat stays clean
   // — registered BEFORE auth so these bot-authored updates never reach the gate.
-  bot.on("message:pinned_message", (ctx) => void ctx.deleteMessage().catch(() => {}));
+  bot.on("message:pinned_message", (ctx) => {
+    if (ctx.chat?.type === "private") void ctx.deleteMessage().catch(() => {});
+  });
 
   bot.use(createAuthMiddleware(cfg));
 
@@ -168,14 +169,14 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
   });
 
   bot.callbackQuery(/^perm:(\d+):(\d+)$/, async (ctx) => {
-    const label = permissions.resolveChoice(ctx.match![1]!, Number(ctx.match![2]));
+    const label = permissions.resolveChoice(ctx.match![1]!, Number(ctx.match![2]), ctx.chat!.id);
     await ctx.answerCallbackQuery({ text: label ?? "Срок действия кнопки истёк" });
     await ctx.editMessageText(label ? `\u{1F510} ${label}` : "\u{1F510} Кнопка устарела").catch(() => {});
   });
 
   bot.callbackQuery(/^permsw:(\d+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
-    const sid = permissions.sessionFor(ctx.match![1]!);
+    const sid = permissions.sessionFor(ctx.match![1]!, ctx.chat!.id);
     if (sid) await switchAndShow(ctx, deps, sid);
   });
 
@@ -184,7 +185,6 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
   registerControl(bot, deps);
   registerProjects(bot, deps);
   registerSessions(bot, deps);
-  registerSessionKill(bot, deps);
   registerRunning(bot, deps);
   registerHistory(bot, deps);
   registerSystem(bot, deps);

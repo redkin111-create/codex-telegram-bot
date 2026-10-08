@@ -110,9 +110,9 @@ export class PermissionService {
   }
 
   /** Resolve a pending request from a button tap; returns the chosen label. */
-  resolveChoice(reqId: string, index: number): string | undefined {
+  resolveChoice(reqId: string, index: number, chatId: number): string | undefined {
     const p = this.pending.get(reqId);
-    if (!p) return undefined;
+    if (!p || p.chatId !== chatId) return undefined;
     clearTimeout(p.timer);
     this.pending.delete(reqId);
     const opt = p.options[index];
@@ -125,8 +125,9 @@ export class PermissionService {
   }
 
   /** The session a pending request belongs to (for the Switch button). */
-  sessionFor(reqId: string): string | undefined {
-    return this.pending.get(reqId)?.sessionId;
+  sessionFor(reqId: string, chatId: number): string | undefined {
+    const pending = this.pending.get(reqId);
+    return pending?.chatId === chatId ? pending.sessionId : undefined;
   }
 }
 

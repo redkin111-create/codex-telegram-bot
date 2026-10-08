@@ -62,7 +62,9 @@ test("quiet permission approval is still visible and explicitly silent", async (
     assert(sent, "the approval prompt must be sent");
     assert.equal(sent.extra.disable_notification, mode === "quiet");
     assert(sent.text.includes("Codex запрашивает разрешение") || sent.text.includes("нужно разрешение"));
-    service.resolveChoice("1", 0);
+    assert.equal(service.resolveChoice("1", 0, 100500), undefined, "another chat cannot approve");
+    assert.equal(service.sessionFor("1", 100500), undefined, "another chat cannot switch using approval");
+    assert.equal(service.resolveChoice("1", 0, 82), "Разрешить");
     await pending;
   }
 });

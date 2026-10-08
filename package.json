@@ -51,11 +51,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/artickc/codex-telegram-bot.git"
+    "url": "git+https://github.com/redkin111-create/codex-telegram-bot.git"
   },
-  "homepage": "https://github.com/artickc/codex-telegram-bot#readme",
+  "homepage": "https://github.com/redkin111-create/codex-telegram-bot#readme",
   "bugs": {
-    "url": "https://github.com/artickc/codex-telegram-bot/issues"
+    "url": "https://github.com/redkin111-create/codex-telegram-bot/issues"
   },
   "license": "MIT",
   "dependencies": {

@@ -48,17 +48,19 @@ Use a **different Telegram bot token** for each bot instance.
 | 💬 **Quality markdown** | Converts agent markdown to Telegram **MarkdownV2** with safe escaping and code-fence-aware splitting. |
 | 🔁 **Self-healing** | Auto-restarts the Codex agent with backoff and re-binds your session. |
 | 🖥 **Runs 24/7** | 1-command install as a background service that starts on boot — Windows, Linux, macOS, auto-detected. |
-| 🔒 **Access control** | Restrict to specific Telegram user IDs. |
+| 🔒 **Access control** | Restrict to specific Telegram user IDs, with private-chat-only operation. |
 
 ---
 
-## ⚡ Install from npm
+## ⚡ Install the upstream npm release
 
 ```bash
 npm install -g codex-telegram-bot
 ```
 
-This installs the global **`codex-tg`** CLI (ships with the `tsx` runtime, no
+**Note:** the npm package is maintained upstream and does **not** include the changes in this fork. For this fork, clone it and follow the source setup below.
+
+This installs the upstream global **`codex-tg`** CLI (ships with the `tsx` runtime, no
 build step). Config lives in a path-independent home — `~/.codex/tg/` (its
 `.env`, `logs/`, `data/`) — so the bot loads the **same** `.env` no matter where
 you start it.
@@ -88,7 +90,7 @@ full guide and **[docs/UPGRADE.md](./docs/UPGRADE.md)** to update.
 ## 🧑‍💻 Manual setup (from source)
 
 ```bash
-git clone https://github.com/artickc/codex-telegram-bot.git
+git clone https://github.com/redkin111-create/codex-telegram-bot.git
 cd codex-telegram-bot
 npm install
 npm run setup            # auto-detects codex + project roots, writes .env
@@ -127,6 +129,16 @@ No build step — TypeScript runs directly via `tsx`.
 
 Anything that isn't a command is sent to Codex as a prompt. While a turn runs,
 your messages are queued and sent automatically when it finishes.
+
+**Queue recovery:** Queued follow-ups are saved atomically under `DATA_DIR/queues/`
+(one file per private Telegram chat). After a bot/process restart, pending items
+remain in the same session but are **paused** until you review them and select
+`/queue` → **Resume**. A turn interrupted while running is placed back at the
+front of that paused queue; it might have already changed files before the
+interruption. Inspect the workspace/history first to avoid repeating side
+effects. Removing a queued item removes its saved state too. A normal
+`/cancel` of an already-running turn does not auto-requeue that turn.
+
 
 ### Phone-friendly inline controls
 
