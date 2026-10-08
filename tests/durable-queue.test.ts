@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api } from "grammy";
@@ -11,6 +11,7 @@ import { textPrompt } from "../src/app/types.js";
 import { DEFAULT_NOTIFICATION_PREFERENCES } from "../src/app/notifications.js";
 import { DurableQueueStore } from "../src/bot/durable-queue.js";
 import { SessionRuntime } from "../src/bot/session-runtime.js";
+import { recentTranscript } from "../src/bot/session-fork.js";
 
 test("durable queues are per chat/session, survive reload and move across forks", () => {
   const dir = mkdtempSync(join(tmpdir(), "codex-tg-queue-"));
@@ -102,6 +103,27 @@ test("queued turn is checkpointed inFlight before execution and removed after su
     assert.equal(store.load(sessionId).inFlight, undefined);
   } finally {
     runtime.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Desktop handoff reads a real nested Codex rollout transcript", () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-tg-rollout-"));
+  const id = "22222222-2222-4222-8222-222222222222";
+  try {
+    const folder = join(dir, "2026", "10", "08");
+    mkdirSync(folder, { recursive: true });
+    const path = join(folder, `rollout-2026-10-08T10-00-00-${id}.jsonl`);
+    const events = [
+      { type: "session_meta", payload: { id, cwd: "C:\\\\work" } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Continue this flight project" }] } },
+      { type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "I will update the tests" }] } },
+    ];
+    writeFileSync(path, events.map((ev) => JSON.stringify(ev)).join("\n") + "\n");
+    const transcript = recentTranscript(dir, id);
+    assert(transcript.includes("User: Continue this flight project"));
+    assert(transcript.includes("Assistant: I will update the tests"));
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
