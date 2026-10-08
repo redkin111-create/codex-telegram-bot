@@ -1,6 +1,6 @@
 /** Safe storage and bounded download helpers for Telegram attachments. */
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, readdir, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Api } from "grammy";
 
@@ -80,8 +80,51 @@ export async function saveIncomingAttachment(
   return { path, name };
 }
 
-/** Remove only old ordinary files from the bot-owned incoming directory. */
+/** Read queue references before garbage collecting attachments. If a queue is
+ * unreadable or corrupt, fail closed: retain files rather than deleting data
+ * needed to resume a saved coding task. */
+async function protectedQueueAttachments(dataDir: string): Promise<Set<string> | undefined> {
+  const queueDir = join(dataDir, "queues");
+  let queueFiles;
+  try {
+    queueFiles = await readdir(queueDir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Set();
+    return undefined;
+  }
+  const protectedPaths = new Set<string>();
+  for (const entry of queueFiles) {
+    if (!entry.name.endsWith(".json")) continue;
+    if (!entry.isFile()) return undefined;
+    try {
+      const contents = JSON.parse(await readFile(join(queueDir, entry.name), "utf8")) as unknown;
+      if (!contents || typeof contents !== "object" || Array.isArray(contents)) return undefined;
+      for (const state of Object.values(contents)) {
+        if (!state || typeof state !== "object") return undefined;
+        const data = state as { items?: unknown; inFlight?: unknown };
+        if (!Array.isArray(data.items)) return undefined;
+        const pending = [...data.items, ...(data.inFlight ? [data.inFlight] : [])];
+        for (const item of pending) {
+          if (!item || typeof item !== "object") return undefined;
+          const input = (item as { input?: { attachmentPaths?: unknown } }).input;
+          if (!input || typeof input !== "object") return undefined;
+          if (input.attachmentPaths === undefined) continue;
+          if (!Array.isArray(input.attachmentPaths)
+            || !input.attachmentPaths.every((p: unknown) => typeof p === "string")) return undefined;
+          for (const path of input.attachmentPaths) protectedPaths.add(resolve(path));
+        }
+      }
+    } catch {
+      return undefined;
+    }
+  }
+  return protectedPaths;
+}
+
+/** Remove old ordinary files only when no persisted queue references them. */
 export async function cleanupIncomingAttachments(dataDir: string, now = Date.now()): Promise<number> {
+  const protectedPaths = await protectedQueueAttachments(dataDir);
+  if (!protectedPaths) return 0;
   const directory = join(dataDir, "telegram-incoming");
   let entries;
   try {
@@ -97,7 +140,7 @@ export async function cleanupIncomingAttachments(dataDir: string, now = Date.now
     const path = join(directory, entry.name);
     try {
       const info = await lstat(path);
-      if (info.isFile() && now - info.mtimeMs > RETAIN_MS) {
+      if (info.isFile() && !protectedPaths.has(resolve(path)) && now - info.mtimeMs > RETAIN_MS) {
         await unlink(path);
         removed++;
       }

@@ -87,6 +87,7 @@ export class SessionRuntime {
   private queueInFlight: QueuedPrompt | undefined;
   private queuePaused = false;
   private queueDispatching = false;
+  private sessionInitialization: Promise<void> | undefined;
   private queueSeriesActive = false;
   private queueCompleted = 0;
   private queuedArtifactPaths: string[] = [];
@@ -186,6 +187,12 @@ export class SessionRuntime {
 
   get isBusy(): boolean {
     return this.busy;
+  }
+  /** Closing is safe only when neither a turn, session attach, queued
+   * dispatch nor live watch can still produce callbacks for this runtime. */
+  get canClose(): boolean {
+    return !this.busy && !this.sessionInitialization && !this.queueDispatching
+      && !this.queueInFlight && this.queue.length === 0 && !this.isWatching;
   }
   get queueLength(): number {
     return this.queue.length;
@@ -440,7 +447,7 @@ export class SessionRuntime {
 
   async submit(input: PromptInput): Promise<"ran" | "queued"> {
     await this.ensureSession();
-    if (this.busy || this.queuePaused || this.queue.length > 0) {
+    if (this.busy || this.queueDispatching || this.queuePaused || this.queue.length > 0) {
       this.enqueue(input);
       this.changed();
       return "queued";
@@ -557,6 +564,19 @@ export class SessionRuntime {
   }
 
   private async ensureSession(): Promise<void> {
+    // Two Telegram updates can enter submit() concurrently before Codex has
+    // created / loaded a session. Share the same in-flight initialization.
+    if (this.sessionInitialization) return this.sessionInitialization;
+    const pending = this.ensureSessionOnce();
+    this.sessionInitialization = pending;
+    try {
+      await pending;
+    } finally {
+      if (this.sessionInitialization === pending) this.sessionInitialization = undefined;
+    }
+  }
+
+  private async ensureSessionOnce(): Promise<void> {
     if (this.rebindPending && this.sessionId) {
       // The ACP process is frequently mid-restart the first time we re-bind
       // (auto-restart after a crash, or a fresh bot boot), so a single attempt
@@ -1160,8 +1180,10 @@ export class SessionRuntime {
         return;
       }
       this.queueSeriesActive = true;
-      if (this.foreground) await this.notify("\u25B6\uFE0F Выполняю сообщение из очереди…", { event: "progress" }).catch(() => {});
+      // runTurn marks busy synchronously. Dispatch BEFORE any await, otherwise
+      // a new message can slip in and start a second turn on the same thread.
       void this.runTurn(next.input, true);
+      if (this.foreground) void this.notify("\u25B6\uFE0F Выполняю сообщение из очереди…", { event: "progress" }).catch(() => {});
       this.changed();
       return;
     }

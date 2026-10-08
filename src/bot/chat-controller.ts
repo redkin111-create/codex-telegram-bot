@@ -31,6 +31,7 @@ export interface RunningSession {
   unread: number;
   queueLength: number;
   queuePaused: boolean;
+  canClose: boolean;
   /** Latest task-completion % (0–100) for this session, if known. */
   progress?: number;
 }
@@ -98,6 +99,7 @@ export class ChatController {
       unread: this.unreadCount(rt),
       queueLength: rt.queueLength,
       queuePaused: rt.isQueuePaused,
+      canClose: rt.canClose,
       progress: rt.taskProgress,
     }));
   }
@@ -322,6 +324,10 @@ export class ChatController {
     const idx = this.runtimes.findIndex((r) => r.sessionId === sessionId);
     if (idx === -1) return false;
     const rt = this.runtimes[idx]!;
+    // Closing a runtime while it owns work discards the stream, callbacks
+    // and queued follow-ups. Keep ownership until the user stops the turn
+    // and explicitly clears or runs the queue.
+    if (!rt.canClose || this.watchRuntime === rt) return false;
     rt.dispose();
     this.runtimes.splice(idx, 1);
     this.lastRead.delete(sessionId);

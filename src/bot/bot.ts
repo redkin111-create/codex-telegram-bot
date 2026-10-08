@@ -28,7 +28,6 @@ import { registerQueue } from "./handlers/queue.js";
 import { registerNotifications } from "./handlers/notifications.js";
 import { registerDocuments } from "./handlers/document.js";
 import { registerHistory } from "./handlers/history.js";
-import { registerKill } from "./handlers/kill.js";
 import { registerMcp } from "./handlers/mcp.js";
 import { registerMenu } from "./handlers/menu.js";
 import { registerMessages } from "./handlers/message.js";
@@ -193,7 +192,6 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
   registerUsage(bot, deps);
   registerDiagnostics(bot, deps);
   registerCapabilities(bot, deps);
-  registerKill(bot, deps);
   registerMcp(bot, deps);
   registerTasks(bot, deps);
   registerPhotos(bot, deps); // photos & image documents

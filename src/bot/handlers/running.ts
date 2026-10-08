@@ -87,7 +87,8 @@ function buildRunningCard(s: RunningSession, deps: BotDeps, now: number): { text
   }
   if (s.foreground) kb.text("\u25B6\uFE0F Текущий", "run:noop");
   else kb.text("\u{1F500} Переключиться", `run:switch:${s.sessionId}`);
-  kb.text("\u{1F4DC} История", `hist:${s.sessionId}`).text("\u2716 Закрыть", `run:close:${s.sessionId}`);
+  kb.text("\u{1F4DC} История", `hist:${s.sessionId}`);
+  if (s.canClose) kb.text("\u2716 Закрыть", `run:close:${s.sessionId}`);
   if (s.queueLength > 0) kb.row().text(`📥 Очередь · ${s.queueLength}`, `q:view:${s.sessionId}`);
   return { text: lines.join("\n"), kb };
 }
@@ -166,7 +167,14 @@ export function registerRunning(bot: Bot, deps: BotDeps): void {
 
   bot.callbackQuery(new RegExp(`^run:close:${UUID}$`), async (ctx) => {
     const id = ctx.match![1]!;
-    await deps.registry.controller(ctx.chat!.id).close(id);
+    const closed = await deps.registry.controller(ctx.chat!.id).close(id);
+    if (!closed) {
+      await ctx.answerCallbackQuery({
+        text: "Нельзя закрыть выполняющийся сеанс или сеанс с очередью.",
+        show_alert: true,
+      });
+      return;
+    }
     await ctx.answerCallbackQuery({ text: "Сеанс закрыт" });
     await ctx.deleteMessage().catch(() => {}); // remove just this card
   });

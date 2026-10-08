@@ -49,8 +49,6 @@ export function buildSessionCard(m: SessionMeta, extra: SessionCardExtras = {}):
   // Watching the rollout is harmless even when the thread is currently idle.
   keyboard.row().text("📡 Наблюдать", `watch:${m.sessionId}`);
 
-  // Never offer process-level kill from stale rollout metadata. Use /cancel
-  // for an owned turn; an active Desktop process must be stopped in Desktop.
 
   return { text: lines.join("\n"), keyboard };
 }
