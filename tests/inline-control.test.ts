@@ -729,8 +729,7 @@ test("unauthorized callback taps are rejected without entering handlers", async 
   const middleware = createAuthMiddleware({ allowedUsers: new Set(["7"]) } as never);
   const ctx = {
     from: { id: 9, is_bot: false },
-    chat: { id: 42 },
-    chat: { id: 7, type: "private" },
+    chat: { id: 42, type: "private" },
     callbackQuery: { id: "callback" },
     answerCallbackQuery: async (options: Record<string, unknown>) => { answer = options; },
     reply: async () => { replied = true; },
