@@ -1,4 +1,7 @@
-# ⬆️ Upgrade guide\n\n**Fork note:** To stay on `redkin111-create/codex-telegram-bot`, update the Git/source checkout using **Option C**. The npm package, upstream releases, and npm auto-updater replace this fork with upstream code. Do **not** switch to npm if you need the fork-specific features.\n
+# ⬆️ Upgrade guide
+
+**Fork note:** To stay on `redkin111-create/codex-telegram-bot`, update the Git/source checkout using **Option C**. The npm package, upstream releases, and npm auto-updater replace this fork with upstream code. Do **not** switch to npm if you need the fork-specific features.
+
 
 How to update Codex Telegram Bot to the newest version — for bots installed **via
 npm** and for bots installed **without npm** (1-click zip installer or a
