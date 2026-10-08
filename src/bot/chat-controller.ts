@@ -31,6 +31,7 @@ export interface RunningSession {
   unread: number;
   queueLength: number;
   queuePaused: boolean;
+  canClose: boolean;
   /** Latest task-completion % (0–100) for this session, if known. */
   progress?: number;
 }
@@ -98,6 +99,7 @@ export class ChatController {
       unread: this.unreadCount(rt),
       queueLength: rt.queueLength,
       queuePaused: rt.isQueuePaused,
+      canClose: rt.canClose,
       progress: rt.taskProgress,
     }));
   }
