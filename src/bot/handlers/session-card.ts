@@ -45,13 +45,12 @@ export function buildSessionCard(m: SessionMeta, extra: SessionCardExtras = {}):
   const keyboard = new InlineKeyboard()
     .text(connect, `sess:${m.sessionId}`)
     .text("\u{1F4DC} История", `hist:${m.sessionId}`);
-  if (m.active) keyboard.row().text("\u{1F4E1} Следить", `watch:${m.sessionId}`);
+  // Codex no longer exposes reliable per-thread on-disk live/lock metadata.
+  // Watching the rollout is harmless even when the thread is currently idle.
+  keyboard.row().text("📡 Наблюдать", `watch:${m.sessionId}`);
 
-  // A live session running in another process can be terminated by PID. The
-  // bot's own agent (selfPid) is never offered — killing it would stop the bot.
-  if (m.active && typeof m.lockPid === "number" && m.lockPid !== extra.selfPid) {
-    keyboard.row().text("\u{1F6D1} Остановить", `killsess:${m.sessionId}`);
-  }
+  // Never offer process-level kill from stale rollout metadata. Use /cancel
+  // for an owned turn; an active Desktop process must be stopped in Desktop.
 
   return { text: lines.join("\n"), keyboard };
 }
