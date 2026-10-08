@@ -730,6 +730,7 @@ test("unauthorized callback taps are rejected without entering handlers", async 
   const ctx = {
     from: { id: 9, is_bot: false },
     chat: { id: 42 },
+    chat: { id: 7, type: "private" },
     callbackQuery: { id: "callback" },
     answerCallbackQuery: async (options: Record<string, unknown>) => { answer = options; },
     reply: async () => { replied = true; },
@@ -746,10 +747,21 @@ test("authorized callback taps continue to their selected handler", async () => 
   const middleware = createAuthMiddleware({ allowedUsers: new Set(["7"]) } as never);
   const ctx = {
     from: { id: 7, is_bot: false },
+    chat: { id: 7, type: "private" },
     callbackQuery: { id: "callback" },
   } as unknown as Context;
   await middleware(ctx, async () => { entered = true; });
   assert.equal(entered, true);
+});
+
+test("authorized user in a group never receives Codex access", async () => {
+  let entered = false;
+  const middleware = createAuthMiddleware({ allowedUsers: new Set(["7"]) } as never);
+  await middleware({
+    chat: { id: -1001, type: "supergroup" },
+    from: { id: 7, is_bot: false },
+  } as unknown as Context, async () => { entered = true; });
+  assert.equal(entered, false);
 });
 
 test("empty authorization list denies all users", async () => {
