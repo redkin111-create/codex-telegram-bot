@@ -1,6 +1,11 @@
 # 📦 Install guide
 
-Get the Codex Telegram Bot running in a few minutes. Pick one of three ways:
+This repository is the **redkin111-create fork**. To install the code in this
+repository, use **Option C (source checkout)** or the local `install.cmd` /
+`install.sh`. The `codex-telegram-bot` npm package installs the **upstream**
+project and does not contain fork-specific fixes, such as durable queues.
+
+Pick one of three ways:
 
 - **[Option A — npm (recommended)](#option-a--npm-recommended)** — one command,
   global `codex-tg` CLI, easiest to update.
@@ -19,7 +24,7 @@ Get the Codex Telegram Bot running in a few minutes. Pick one of three ways:
 
 ---
 
-## Option A — npm (recommended)
+## Option A — npm (upstream only)
 
 Install the CLI once, globally. It ships with the `tsx` runtime, so there's no
 build step.
@@ -68,14 +73,14 @@ also auto-update when idle). Full upgrade steps are in **[UPGRADE.md](./UPGRADE.
 
 ---
 
-## Option B — 1-click installer
+## Option B — local 1-click installer
 
-Every [release](https://github.com/artickc/codex-telegram-bot/releases) ships a
+Upstream [releases](https://github.com/artickc/codex-telegram-bot/releases) ship a
 clean `codex-telegram-bot-<version>.zip` (no `node_modules`, `.env`, logs or
 data) that contains the 1-click installers.
 
-1. **Download** the latest `codex-telegram-bot-<version>.zip` and unzip it (or
-   `git clone` the repo).
+1. **For this fork, clone this repository**; upstream release ZIP archives do not
+   contain these fixes. Then run the local installer.
 2. **Run the installer for your OS** from the unzipped folder. It installs
    dependencies, auto-detects `codex`, writes `.env`, asks for your bot token,
    and optionally sets up the 24/7 background service.
@@ -102,7 +107,7 @@ data) that contains the 1-click installers.
 Best for contributors (run with auto-reload, no build step).
 
 ```bash
-git clone https://github.com/artickc/codex-telegram-bot.git
+git clone https://github.com/redkin111-create/codex-telegram-bot.git
 cd codex-telegram-bot
 npm install
 npm run setup            # auto-detects codex + project roots, writes .env
