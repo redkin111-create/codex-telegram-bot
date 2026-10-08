@@ -34,7 +34,7 @@ export interface SessionCard {
 
 /** Build the card body + buttons for one session. */
 export function buildSessionCard(m: SessionMeta, extra: SessionCardExtras = {}): SessionCard {
-  const proj = m.projectName || (m.cwd ? basename(m.cwd) : "проект не указан");
+  const proj = m.projectName || (m.cwd ? basename(m.cwd.replaceAll("\\", "/")) : "проект не указан");
   const lines = [`💬 ${m.title}`, `📁 ${proj}`, `🕒 ${relTime(m.updatedAt)}`];
   lines.push(extra.origin === "telegram" || m.telegramCreated ? "📱 Сеанс Telegram" : "🖥 Сеанс Codex");
   if (m.active) lines.push("⏳ Выполняется");
