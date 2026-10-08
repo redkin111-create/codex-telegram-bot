@@ -2,8 +2,7 @@
 
 ## The security model — read this first
 
-This bot connects Telegram to **Codex CLI running on your machine**. Anyone who
-can message the bot can make Codex **read/write files and run shell commands** on
+This bot connects Telegram to **Codex CLI running on your machine**. Anyone with authorized access to the bot can make Codex **read/write files and run shell commands** on
 the host with your user's permissions. Treat the bot token and host access as
 highly sensitive.
 
@@ -27,7 +26,7 @@ highly sensitive.
 - It does not transmit your code or secrets anywhere except to Telegram (your
   messages) and to Codex CLI (which talks to its own backend).
 - It does not open any inbound network port.
-- It does not intentionally commit or log `.env` secrets. Codex still has the host user\'s effective filesystem permissions: review commands and keep secrets outside the workspace.
+- It does not intentionally commit or log `.env` secrets. Codex still has the host user's effective filesystem permissions: review commands and keep secrets outside the workspace.
 
 ## Reporting a vulnerability
 
