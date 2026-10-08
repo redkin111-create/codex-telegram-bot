@@ -188,6 +188,12 @@ export class SessionRuntime {
   get isBusy(): boolean {
     return this.busy;
   }
+  /** Closing is safe only when neither a turn, session attach, queued
+   * dispatch nor live watch can still produce callbacks for this runtime. */
+  get canClose(): boolean {
+    return !this.busy && !this.sessionInitialization && !this.queueDispatching
+      && !this.queueInFlight && this.queue.length === 0 && !this.isWatching;
+  }
   get queueLength(): number {
     return this.queue.length;
   }
