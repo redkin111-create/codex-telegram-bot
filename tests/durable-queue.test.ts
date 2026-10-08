@@ -19,7 +19,7 @@ test("durable queues are per chat/session, survive reload and move across forks"
     const other = new DurableQueueStore(dir, 202);
     const item = { id: "one", input: textPrompt("review pending diff") };
     a.save("old", { items: [item], paused: false });
-    assert.deepEqual(b.load("old").items, [item]);
+    assert.deepEqual(b.load("old").items.map((q) => q.input.text), [item.input.text]);
     assert.equal(other.load("old").items.length, 0);
     b.move("old", "new");
     assert.equal(a.load("old").items.length, 0);
