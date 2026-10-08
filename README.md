@@ -130,6 +130,16 @@ No build step — TypeScript runs directly via `tsx`.
 Anything that isn't a command is sent to Codex as a prompt. While a turn runs,
 your messages are queued and sent automatically when it finishes.
 
+**Queue recovery:** Queued follow-ups are saved atomically under `DATA_DIR/queues/`
+(one file per private Telegram chat). After a bot/process restart, pending items
+remain in the same session but are **paused** until you review them and select
+`/queue` → **Resume**. A turn interrupted while running is placed back at the
+front of that paused queue; it might have already changed files before the
+interruption. Inspect the workspace/history first to avoid repeating side
+effects. Removing a queued item removes its saved state too. A normal
+`/cancel` of an already-running turn does not auto-requeue that turn.
+
+
 ### Phone-friendly inline controls
 
 Open `/menu` or tap **☰ Menu** for a compact control panel. Conversation lists
