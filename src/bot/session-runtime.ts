@@ -86,6 +86,7 @@ export class SessionRuntime {
   private readonly queueStore: DurableQueueStore | undefined;
   private queueInFlight: QueuedPrompt | undefined;
   private queuePaused = false;
+  private queueDispatching = false;
   private queueSeriesActive = false;
   private queueCompleted = 0;
   private queuedArtifactPaths: string[] = [];
@@ -1123,7 +1124,26 @@ export class SessionRuntime {
   }
 
   private async flushQueue(): Promise<void> {
-    if (this.busy || this.queuePaused) return;
+    if (this.busy || this.queuePaused || this.queueDispatching) return;
+    this.queueDispatching = true;
+    try {
+      if (this.queue.length > 0) {
+        try {
+          // A restored queue is not necessarily bound to Codex after a reboot.
+          await this.ensureSession();
+        } catch (error) {
+          this.queuePaused = true;
+          this.persistQueue();
+          log.warn("cannot resume queued session:", error);
+          await this.notify("⚠️ Очередь приостановлена: не удалось подключиться к сеансу Codex.", { event: "error" }).catch(() => {});
+          this.changed();
+          return;
+        }
+      }
+      if (this.busy || this.queuePaused) return;
+    } finally {
+      this.queueDispatching = false;
+    }
     const next = this.queue.shift();
     if (next) {
       this.queueInFlight = next;
