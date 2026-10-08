@@ -1376,12 +1376,15 @@ export class SessionRuntime {
 /** Fork only when Codex explicitly says the thread is live or locked elsewhere. */
 export function isLiveSessionConflict(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
-  return /(?:thread|session).{0,48}(?:already\s+(?:active|running|loaded|in use)|locked|busy|in use)|(?:already\s+(?:active|running|loaded|in use)|locked|busy|in use).{0,48}(?:thread|session)/i.test(message);
+  // Codex app-server uses "thread <uuid> already has an active writer [-32600]"
+  // when Desktop, CLI or another app-server owns the same thread. This is a
+  // handoff conflict, not an unexpected failure; never force-close the writer.
+  return /(?:thread|session).{0,80}(?:already\s+has\s+an?\s+active\s+writer|already\s+(?:active|running|loaded|in use)|locked|busy|in use)|(?:already\s+has\s+an?\s+active\s+writer|already\s+(?:active|running|loaded|in use)|locked|busy|in use).{0,80}(?:thread|session)/i.test(message);
 }
 
 export class LiveSessionConflictError extends Error {
   constructor() {
-    super("Этот сеанс уже открыт в другом окне Codex.");
+    super("Сеанс уже используется другим подключением Codex.");
     this.name = "LiveSessionConflictError";
   }
 }

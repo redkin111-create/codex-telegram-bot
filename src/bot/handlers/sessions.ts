@@ -309,7 +309,7 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
     } catch (err) {
       if (err instanceof LiveSessionConflictError) {
         await ctx.reply(
-          `Этот сеанс уже открыт в Codex Desktop: ${meta.title}\n\nМожно только наблюдать за ним или создать отдельное продолжение.`,
+          `Сеанс «${meta.title}» сейчас занят другим подключением Codex (Desktop, CLI или ботом).\n\nМожно наблюдать за ним или создать отдельное продолжение. Оригинальный сеанс не будет прерван.`,
           { ...notificationExtra(deps, ctx.chat!.id, "error"), reply_markup: handoffKeyboard(meta.sessionId) },
         );
         return;

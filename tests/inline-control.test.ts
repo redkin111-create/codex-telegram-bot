@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { Context, InlineKeyboard } from "grammy";
 import { loadConfig, PROJECT_ROOT, type AppConfig } from "../src/config.js";
 import { ChatController } from "../src/bot/chat-controller.js";
-import { LiveSessionConflictError, SessionRuntime } from "../src/bot/session-runtime.js";
+import { isLiveSessionConflict, LiveSessionConflictError, SessionRuntime } from "../src/bot/session-runtime.js";
 import { createAuthMiddleware } from "../src/bot/auth.js";
 import { MenuCache, type BotDeps } from "../src/bot/deps.js";
 import { formatProbeResult, healthCheckKeyboard, mainPanel, snapshotMatches } from "../src/bot/handlers/mcp.js";
@@ -413,6 +413,42 @@ test("a live-session conflict asks for an explicit handoff and restores the prev
     assert.equal(controller.list()[0]?.sessionId, previous.sessionId);
     assert.equal(controller.list()[0]?.foreground, true);
     assert.equal(starts, 1);
+  } finally {
+    controller.dispose();
+  }
+});
+
+test("Codex app-server active writer error -32600 is treated as handoff conflict", () => {
+  const id = "01a11b43-443a-7992-9b64-a38c2dace465";
+  const message = `thread ${id} already has an active writer [-32600]`;
+  assert.equal(isLiveSessionConflict(new Error(message)), true);
+  assert.equal(isLiveSessionConflict(new Error("thread already active in another process")), true);
+  assert.equal(isLiveSessionConflict(new Error("active writer failed to write a report")), false);
+  assert.equal(isLiveSessionConflict(new Error("thread not found [-32600]")), false);
+});
+
+test("Continue button flow classifies active writer and retains the existing session", async () => {
+  const blockedId = "01a11b43-443a-7992-9b64-a38c2dace465";
+  let starts = 0;
+  const acp = Object.assign(new EventEmitter(), {
+    loadSession: async () => { throw new Error(`thread ${blockedId} already has an active writer [-32600]`); },
+    newSession: async () => `owned-${++starts}`,
+  }) as unknown as AcpClient;
+  Object.defineProperty(acp, "supportsLoadSession", { value: true });
+  let current = defaultSettings();
+  const settings = {
+    get: () => current,
+    update: (_id: number, patch: Partial<typeof current>) => { current = { ...current, ...patch }; },
+  };
+  const controller = new ChatController({} as never, 79, acp, {} as AppConfig, settings as never, {
+    jsonlPath: () => "missing.jsonl",
+  } as never, () => {}, () => {});
+  try {
+    const original = await controller.addNew("C:\\\\work", "work");
+    await assert.rejects(controller.addAttach(blockedId, "C:\\\\work", "work", []), LiveSessionConflictError);
+    assert.equal(controller.count(), 1);
+    assert.equal(controller.list()[0]?.sessionId, original.sessionId);
+    assert.equal(starts, 1, "must not fork or kill the external active writer automatically");
   } finally {
     controller.dispose();
   }
