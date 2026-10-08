@@ -8,6 +8,7 @@ import type { Api } from "grammy";
 import type { AcpClient } from "../src/acp/client.js";
 import type { AppConfig } from "../src/config.js";
 import { textPrompt } from "../src/app/types.js";
+import { DEFAULT_NOTIFICATION_PREFERENCES } from "../src/app/notifications.js";
 import { DurableQueueStore } from "../src/bot/durable-queue.js";
 import { SessionRuntime } from "../src/bot/session-runtime.js";
 
@@ -61,6 +62,46 @@ test("interrupted queued turn is restored paused for manual review", () => {
       restored.dispose();
     }
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("queued turn is checkpointed inFlight before execution and removed after success", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-tg-queue-execute-"));
+  const chatId = 2001;
+  const sessionId = "session-controlled";
+  const store = new DurableQueueStore(dir, chatId);
+  let checkpointId: string | undefined;
+  const acp = Object.assign(new EventEmitter(), {
+    metadataFor: () => undefined,
+    prompt: async () => {
+      checkpointId = store.load(sessionId).inFlight?.id;
+      return { stopReason: "end_turn" };
+    },
+  }) as unknown as AcpClient;
+  const cfg = {
+    dataDir: dir, workspace: dir, promptRetryAttempts: 0,
+    autoForkOnError: false, resumeOnStreamError: false,
+    notifyOtherSessions: false, quietNotifications: false,
+  } as AppConfig;
+  const settings = { get: () => ({ reasoning: "medium", notifications: DEFAULT_NOTIFICATION_PREFERENCES }) };
+  const runtime = new SessionRuntime({} as Api, chatId, acp, cfg, settings as never, { cwd: dir, sessionId });
+  try {
+    Object.assign(runtime as unknown as Record<string, unknown>, { busy: true, sessionLive: true, rebindPending: false, foreground: false });
+    assert.equal(await runtime.submit(textPrompt("queued work")), "queued");
+    const id = runtime.queuedPrompts[0]?.id;
+    assert(id);
+    assert.equal(store.load(sessionId).items[0]?.id, id);
+    Object.assign(runtime as unknown as Record<string, unknown>, { busy: false });
+    assert.equal(runtime.resumeQueue(), true);
+    for (let i = 0; i < 200 && (checkpointId === undefined || runtime.isBusy || store.load(sessionId).inFlight); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(checkpointId, id);
+    assert.equal(runtime.queueLength, 0);
+    assert.equal(store.load(sessionId).inFlight, undefined);
+  } finally {
+    runtime.dispose();
     rmSync(dir, { recursive: true, force: true });
   }
 });
