@@ -6,7 +6,6 @@ import type { BotDeps } from "../deps.js";
 import { BAR_LABELS, compactKeyboard, MENU_BTN, RUNNING_BTN, STOP_BTN } from "../menu/keyboard.js";
 import { openMainMenu } from "../menu/main.js";
 import { registerInlineCatalog, showModels, showReasoning, showSettings, showSkills, showStatus } from "./inline-catalog.js";
-import { showKillConfirm } from "./kill.js";
 import { showMcp } from "./mcp.js";
 import { showProjects } from "./projects.js";
 import { showRunning } from "./running.js";
@@ -122,9 +121,6 @@ async function dispatchMenu(ctx: Context, deps: BotDeps, action: string): Promis
     case "mcp":
       await ctx.answerCallbackQuery();
       return showMcp(ctx, deps);
-    case "killall":
-      await ctx.answerCallbackQuery();
-      return showKillConfirm(ctx, deps);
     case "more":
       await ctx.answerCallbackQuery();
       return showMore(ctx, deps);
@@ -151,7 +147,7 @@ async function showMore(ctx: Context, deps: BotDeps): Promise<void> {
     .row()
     .text("\u2699\uFE0F Настройки", "m:settings").text("\u{1F4CA} Статус", "m:status")
     .row()
-    .text("\u{1F6D1} Другие сеансы", "m:killall").text("\u{1F648} Панель", "m:hidebar")
+    .text("\u{1F9ED} Активные сеансы", "m:running").text("\u{1F648} Панель", "m:hidebar")
     .row()
     .text("\u{1F3E5} Диагностика", "m:diagnostics")
     .row()
