@@ -48,17 +48,19 @@ Use a **different Telegram bot token** for each bot instance.
 | 💬 **Quality markdown** | Converts agent markdown to Telegram **MarkdownV2** with safe escaping and code-fence-aware splitting. |
 | 🔁 **Self-healing** | Auto-restarts the Codex agent with backoff and re-binds your session. |
 | 🖥 **Runs 24/7** | 1-command install as a background service that starts on boot — Windows, Linux, macOS, auto-detected. |
-| 🔒 **Access control** | Restrict to specific Telegram user IDs. |
+| 🔒 **Access control** | Restrict to specific Telegram user IDs, with private-chat-only operation. |
 
 ---
 
-## ⚡ Install from npm
+## ⚡ Install the upstream npm release
 
 ```bash
 npm install -g codex-telegram-bot
 ```
 
-This installs the global **`codex-tg`** CLI (ships with the `tsx` runtime, no
+**Note:** the npm package is maintained upstream and does **not** include the changes in this fork. For this fork, clone it and follow the source setup below.
+
+This installs the upstream global **`codex-tg`** CLI (ships with the `tsx` runtime, no
 build step). Config lives in a path-independent home — `~/.codex/tg/` (its
 `.env`, `logs/`, `data/`) — so the bot loads the **same** `.env` no matter where
 you start it.
@@ -88,7 +90,7 @@ full guide and **[docs/UPGRADE.md](./docs/UPGRADE.md)** to update.
 ## 🧑‍💻 Manual setup (from source)
 
 ```bash
-git clone https://github.com/artickc/codex-telegram-bot.git
+git clone https://github.com/redkin111-create/codex-telegram-bot.git
 cd codex-telegram-bot
 npm install
 npm run setup            # auto-detects codex + project roots, writes .env
