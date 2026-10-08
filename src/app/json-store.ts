@@ -1,8 +1,10 @@
 /**
- * Minimal atomic JSON persistence. Reads on construction, writes atomically
- * (temp file + rename) on save. No external dependencies.
+ * Atomic JSON persistence for bot settings and scheduled tasks. Fail visibly
+ * on corrupt files and failed writes; never overwrite the only good copy with
+ * defaults or mutate in-memory state before a write commits successfully.
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createLogger } from "../logger.js";
 
@@ -23,32 +25,46 @@ export class JsonStore<T> {
   }
 
   set(data: T): void {
+    this.save(data);
     this.data = data;
-    this.save();
   }
 
-  /** Mutate via a callback, then persist. */
+  /** Mutate a clone; a failed save cannot leak an uncommitted change. */
   update(fn: (data: T) => void): void {
-    fn(this.data);
-    this.save();
+    const next = structuredClone(this.data);
+    fn(next);
+    this.save(next);
+    this.data = next;
   }
 
   private read(): T {
+    let contents: string;
     try {
-      return JSON.parse(readFileSync(this.path, "utf-8")) as T;
-    } catch {
-      return structuredClone(this.fallback);
+      contents = readFileSync(this.path, "utf-8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return structuredClone(this.fallback);
+      log.error(`cannot read persisted state ${this.path}:`, (error as Error).message);
+      throw error;
+    }
+    try {
+      return JSON.parse(contents) as T;
+    } catch (error) {
+      log.error(`invalid JSON in persisted state ${this.path}; refusing to reset it:`, (error as Error).message);
+      throw error;
     }
   }
 
-  private save(): void {
+  private save(data: T): void {
+    const tempPath = `${this.path}.${randomBytes(8).toString("hex")}.tmp`;
     try {
-      mkdirSync(dirname(this.path), { recursive: true });
-      const tmp = `${this.path}.tmp`;
-      writeFileSync(tmp, JSON.stringify(this.data, null, 2), "utf-8");
-      renameSync(tmp, this.path);
-    } catch (e) {
-      log.error(`failed to save ${this.path}:`, (e as Error).message);
+      mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
+      writeFileSync(tempPath, JSON.stringify(data, null, 2), { encoding: "utf-8", mode: 0o600 });
+      renameSync(tempPath, this.path);
+    } catch (error) {
+      log.error(`failed to save ${this.path}:`, (error as Error).message);
+      throw error;
+    } finally {
+      try { unlinkSync(tempPath); } catch { /* temp already renamed or never written */ }
     }
   }
 }
