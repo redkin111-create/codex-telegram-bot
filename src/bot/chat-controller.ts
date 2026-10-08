@@ -325,7 +325,7 @@ export class ChatController {
     // Closing a runtime while it owns work discards the stream, callbacks
     // and queued follow-ups. Keep ownership until the user stops the turn
     // and explicitly clears or runs the queue.
-    if (rt.isBusy || rt.queueLength > 0) return false;
+    if (!rt.canClose || this.watchRuntime === rt) return false;
     rt.dispose();
     this.runtimes.splice(idx, 1);
     this.lastRead.delete(sessionId);
