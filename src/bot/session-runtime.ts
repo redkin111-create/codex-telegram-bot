@@ -675,6 +675,11 @@ export class SessionRuntime {
       const resumed = await this.maybeResumeAfterStream(final);
       if (resumed) final = resumed;
       const streamedOutput = this.streamer?.hasOutput ?? false;
+      // A failed Telegram notification must not make a successful Codex turn retry.
+      if (final.result && !this.cancelled && fromQueue) {
+        this.queueCompleted++;
+        queueTurnSucceeded = true;
+      }
       // On a successful, non-cancelled turn, top the fallback bar up to 100 (a
       // no-op when the agent reported its own progress — its value is kept).
       if (final.result && !this.cancelled) this.streamer?.completeFallback();
@@ -727,10 +732,6 @@ export class SessionRuntime {
           });
         }
         this.queuedArtifactPaths = [];
-      }
-      if (final.result && !this.cancelled && fromQueue) {
-        this.queueCompleted++;
-        queueTurnSucceeded = true;
       }
     } catch (err) {
       // Unexpected failure outside the prompt path (e.g. while finalizing).
@@ -1159,7 +1160,7 @@ export class SessionRuntime {
         return;
       }
       this.queueSeriesActive = true;
-      if (this.foreground) await this.notify("\u25B6\uFE0F Выполняю сообщение из очереди…", { event: "progress" });
+      if (this.foreground) await this.notify("\u25B6\uFE0F Выполняю сообщение из очереди…", { event: "progress" }).catch(() => {});
       void this.runTurn(next.input, true);
       this.changed();
       return;
