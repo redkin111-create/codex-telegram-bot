@@ -73,7 +73,14 @@
       try{
         var data=await api("image",{sessionId:id,path:paths[i]});
         var img=node("img");img.src="data:"+data.mime+";base64,"+data.data;img.alt=data.name||"Скриншот Codex";
-        img.onclick=function(){if(tg&&tg.openLink)tg.openLink(this.src);else window.open(this.src,"_blank");};
+        img.onclick=function(){
+          var overlay=node("div","lightbox");
+          var close=node("button","lightbox-close","✕");
+          var full=node("img");full.src=this.src;full.alt=this.alt;
+          function dismiss(){overlay.remove();}
+          close.onclick=dismiss;overlay.onclick=function(event){if(event.target===overlay)dismiss();};
+          overlay.append(close,full);document.body.append(overlay);
+        };
         panel.appendChild(img);
         panel.classList.remove("hidden");
       }catch(_){/* Missing screenshot is non-fatal. */}
@@ -147,8 +154,8 @@
     var cwd=el("project").value;if(!cwd){note("Сначала выберите проект в списке");tab("sessions");return;}
     await runAction("create",{cwd:cwd},async function(data){
       state.selected=data.sessionId;
-      state.selected=data.sessionId;
-      tab("chat");note("Создан новый сеанс");
+      state.sessions.unshift({id:data.sessionId,title:"Новый сеанс",cwd:cwd,updatedAt:Date.now()/1000,source:"appServer",busy:false,queue:0});
+      renderSessions();renderHeader();tab("chat");await loadHistory();note("Создан новый сеанс");
     });
   }
   async function removeQueued(id){
