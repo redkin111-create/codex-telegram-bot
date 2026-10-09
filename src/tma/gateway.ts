@@ -170,7 +170,7 @@ async function route(req:IncomingMessage,res:ServerResponse,cfg:GatewayConfig,lo
     // reauthorization instead of leaving an indefinitely authorized stream.
     const authTime=Number(new URLSearchParams(String(req.headers["x-telegram-init-data"]??"")).get("auth_date"));
     const remaining=Math.max(1000,Math.min(50*60*1000,(authTime+3600)*1000-Date.now()-1000));
-    const expiry=setTimeout(()=>{res.write("event: reauth\\ndata: {}\\n\\n");res.end();},remaining);
+    const expiry=setTimeout(()=>{res.write("event: reauth\ndata: {}\n\n");res.end();},remaining);
     const close=()=>{
       if(stopped)return;
       stopped=true;clearInterval(heartbeat);clearTimeout(expiry);unsubscribe();
