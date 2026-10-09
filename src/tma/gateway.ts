@@ -76,7 +76,9 @@ async function serveStatic(pathname:string,res:ServerResponse):Promise<void> {
     "/app.js":["app.js","text/javascript; charset=utf-8"],
     "/styles.css":["styles.css","text/css; charset=utf-8"],
     "/markdown.js":["markdown.js","text/javascript; charset=utf-8"],
+    "/photo-input.js":["photo-input.js","text/javascript; charset=utf-8"],
     "/markdown.css":["markdown.css","text/css; charset=utf-8"],
+    "/photo.css":["photo.css","text/css; charset=utf-8"],
   };
   const found=files[pathname];
   if(!found){json(res,404,{error:"Not found"});return;}
@@ -181,7 +183,9 @@ async function route(req:IncomingMessage,res:ServerResponse,cfg:GatewayConfig,lo
   if(pathname==="/api/execute"&&req.method==="POST"){
     const userId=verifyTelegramInitData(
       String(req.headers["x-telegram-init-data"]??""),cfg.token,cfg.owners);
-    const payload=await body(req);
+    // Images are base64 in this authenticated request. Strict image count,
+    // byte size and file signatures are validated by the local Codex agent.
+    const payload=await body(req,7*1024*1024);
     if(!isTmaOperation(payload.op)){json(res,400,{error:"Unknown operation"});return;}
     if(!payload.args||typeof payload.args!=="object"||Array.isArray(payload.args)){
       json(res,400,{error:"Invalid arguments"});return;

@@ -1,0 +1,11 @@
+/* Small mobile photo picker and independent Codex health states. */
+.attachments{display:flex;align-items:center;gap:9px;overflow:auto;max-width:100%;padding:2px 0 10px;min-height:0}
+.attachment-chip{border:1px solid #385467;background:#263749;color:#e2eff8;border-radius:10px;position:relative;display:flex;align-items:center;gap:7px;padding:5px 22px 5px 5px;flex:0 0 auto;max-width:200px}
+.attachment-chip img{width:43px;height:43px;border-radius:7px;object-fit:cover}
+.attachment-chip span{font-size:11px;max-width:106px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.attachment-remove{position:absolute;right:3px;top:3px;width:19px;height:19px;border:0;background:#465b6c;color:white;border-radius:6px;line-height:19px;text-align:center;font-size:14px;padding:0}
+.composer-tools{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:6px;min-height:30px}
+.attach-photo{display:flex;align-items:center;justify-content:center;gap:6px;height:30px;min-width:82px;font-size:11px;border-radius:8px}
+.activity-meta{font-size:10px;color:#94b8aa;flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;text-align:right}
+.sync-state{display:block;color:#6e8c9d;font-size:10px;margin-top:3px}
+@media(max-width:700px){.activity-meta{font-size:10px}.composer{padding-bottom:12px}.attachment-chip img{width:38px;height:38px}}

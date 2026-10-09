@@ -10,13 +10,16 @@
   var pendingSend=null,liveStatus=new Map();
   var streamCtrl=null,streamSession="",streamDelay=1000,streamTimer=null,streamDisabled=false;
   var cursors=new Map(),liveDraft=new Map(),liveTools=new Map();
+  var photos=[],photoBusy=false,activityRequests=new Map(),lastActivityStamp=0,lastHistoryAt=0;
+  var snapshotErrors=0,lastActivityAt=0;
   function node(tag,klass,text){var n=document.createElement(tag);if(klass)n.className=klass;if(text!==undefined)n.textContent=String(text);return n;}
   function note(text){var n=el("toast");n.textContent=text;n.classList.remove("hidden");clearTimeout(timer);timer=setTimeout(function(){n.classList.add("hidden");},3600);}
   function warn(text){el("warning").textContent=text;el("warning").classList.toggle("hidden",!text);}
   function tab(which){state.tab=which;app.dataset.tab=which;document.querySelectorAll(".bottom-nav button").forEach(function(b){b.classList.toggle("active",b.dataset.tab===which);});if(which==="queue")void loadQueue();}
   async function api(op,args){
     if(!initData)throw Error("Откройте приложение через кнопку Mini App в Telegram-боте.");
-    var controller=new AbortController(),timeout=setTimeout(function(){controller.abort();},25000);
+    var controller=new AbortController(),duration=op==="activity"?7000:op==="snapshot"?14000:op==="history"?18000:op==="send"?45000:25000;
+    var timeout=setTimeout(function(){controller.abort();},duration);
     var resp,data;
     try{
       resp=await fetch("/api/execute",{method:"POST",cache:"no-store",signal:controller.signal,
@@ -24,7 +27,9 @@
         body:JSON.stringify({op:op,args:args||{}})});
       data=await resp.json().catch(function(){return{};});
     }catch(error){
-      if(error.name==="AbortError")throw Error("Сервер долго не отвечает. Проверь соединение и обнови чат.");
+      if(error.name==="AbortError")throw Error(op==="snapshot"?"Список сеансов Codex обновляется медленно":
+        op==="history"?"История долго загружается, повторю автоматически":
+        op==="activity"?"Данные о работе Codex задерживаются":"Сервер долго не отвечает. Проверь соединение.");
       throw error;
     }finally{clearTimeout(timeout);}
     if(resp.status===401)throw Error("Telegram авторизация истекла. Закрой Mini App и открой снова через /app.");
@@ -51,7 +56,7 @@
       var info=node("div","session-info"),title=node("strong","",titleOf(s));
       var ls=liveStatus.get(s.id)||s.liveStatus||"observing";
       var captions={working:"● Работает",approval:"⏳ Ждёт разрешения",completed:"✓ Завершён",
-        failed:"⚠ Ошибка",cancelled:"■ Остановлен",desktop_busy:"🔒 Занят Desktop",observing:"◉ Наблюдение"};
+        failed:"⚠ Ошибка",cancelled:"■ Остановлен",desktop_busy:"🔒 Занят Desktop",external_activity:"● Есть активность",observing:"◉ Наблюдение"};
       var isActive=s.busy||ls==="working"||ls==="approval";
       var sub=node("span","sub"+(isActive?" busy":""),(captions[ls]||"◉ Наблюдение")+" · "+(s.cwd.split(/[\\/]/).pop()||"Проект")+" · "+fmtTime(s.updatedAt));
       info.append(title,sub);btn.append(icon,info);btn.onclick=function(){void pick(s.id);};list.append(btn);
@@ -64,14 +69,16 @@
     var labels={working:"● Codex работает",approval:"⏳ Ждёт разрешения в Telegram",
       completed:"✓ Задание завершено",failed:"⚠ Ошибка выполнения",cancelled:"■ Остановлено",
       desktop_busy:"🔒 Сеанс занят Codex Desktop",
-      observing:"◉ Наблюдение — статус Desktop неизвестен"};
+      observing:"◉ Наблюдение — статус Desktop неизвестен",external_activity:"● Codex записывает события в журнал"};
     el("chat-state").textContent=s?(!state.online?"Ноутбук не подключён":labels[ls]||"◉ Статус не подтверждён"):"Здесь появится полная история Codex";
     el("prompt").disabled=!s||!state.online;
-    el("send").disabled=!s||!state.online||actionInFlight;
+    el("send").disabled=!s||!state.online||actionInFlight||photoBusy;
+    el("attach-photo").disabled=!s||!state.online||photoBusy;
     el("stop").disabled=!s||!s.busy;
     el("compose-hint").textContent=!s?"Сначала выберите переписку":s.busy?"Сообщение попадёт в очередь":"Enter — отправить, Shift+Enter — новая строка";
     el("detail-title").textContent=s?titleOf(s):"Не выбран";
     el("detail-status").textContent=s?(labels[ls]||"Ожидание"):"Выберите переписку слева";
+    renderActivityClock();
     el("progress-bar").style.width=s&&Number.isFinite(s.progress)?Math.max(0,Math.min(100,s.progress))+"%":"0%";
   }
   function renderMessages(){
@@ -126,6 +133,73 @@
     }
     if(imageCache.size>18)imageCache.clear();
   }
+  function renderActivityClock(){
+    var label=el("activity-meta"),sync=el("sync-state");
+    if(!state.selected){
+      label.textContent="Сначала выберите переписку";sync.textContent="Ожидание синхронизации";return;
+    }
+    var time=Date.now();
+    if(lastHistoryAt)sync.textContent="История проверена "+Math.max(0,Math.round((time-lastHistoryAt)/1000))+" с назад";
+    else sync.textContent="Ожидание истории…";
+    if(!state.online){label.textContent="Нет соединения с ноутбуком";return;}
+    if(lastActivityAt){
+      var elapsed=Math.max(0,Math.round((time-lastActivityAt)/1000));
+      label.textContent=elapsed<20?"Журнал Codex обновляется · "+elapsed+" с назад":
+        "Последняя активность Codex "+elapsed+" с назад";
+    }else label.textContent="Нет данных о последних действиях Codex";
+  }
+  function renderAttachments(){
+    var container=el("attachments");container.replaceChildren();
+    container.classList.toggle("hidden",photos.length===0);
+    photos.forEach(function(photo,index){
+      var item=node("div","attachment-chip"),img=node("img");
+      img.src=photo.preview;img.alt=photo.name;
+      var text=node("span","",photo.name);
+      var remove=node("button","attachment-remove","×");remove.type="button";remove.title="Убрать фото";
+      remove.onclick=function(){photos.splice(index,1);pendingSend=null;renderAttachments();};
+      item.append(img,text,remove);container.appendChild(item);
+    });
+  }
+  async function addPhotos(list){
+    if(!window.CodexPhotos){note("Подготовка фотографий недоступна");return;}
+    if(photoBusy)return;
+    photoBusy=true;renderHeader();
+    try{
+      for(var file of Array.from(list)){
+        if(photos.length>=3){note("Можно прикрепить не более трёх фото");break;}
+        try{photos.push(await window.CodexPhotos.prepare(file));pendingSend=null;}
+        catch(error){note(error.message);}
+      }
+    }finally{photoBusy=false;el("photo-picker").value="";renderAttachments();renderHeader();}
+  }
+  async function loadActivity(){
+    var id=state.selected;
+    if(!id||!state.online||activityRequests.has(id))return;
+    var promise=(async function(){
+      try{
+        var data=await api("activity",{sessionId:id});
+        if(state.selected!==id)return;
+        var changed=data.mtimeMs!==lastActivityStamp;
+        lastActivityStamp=data.mtimeMs;
+        lastActivityAt=data.mtimeMs||0;
+        if(data.busy){
+          liveStatus.set(id,"working");
+        }else if(data.mtimeMs&&Date.now()-data.mtimeMs<18000&&
+          ["observing","external_activity"].includes(liveStatus.get(id)||"observing")){
+          liveStatus.set(id,"external_activity");
+        }else if(liveStatus.get(id)==="external_activity"){
+          liveStatus.set(id,"observing");
+        }
+        renderHeader();renderSessions();
+        if(changed&&data.mtimeMs)void loadHistory(false);
+      }catch(_){
+        // A temporarily slow Codex read does not mean the tunnel is offline.
+        el("activity-meta").textContent="Проверка активности задерживается — связь с ПК есть";
+      }
+    })();
+    activityRequests.set(id,promise);
+    try{await promise;}finally{activityRequests.delete(id);}
+  }
   function renderQueue(){
     var box=el("queue");box.replaceChildren();
     if(!state.queue.length){box.appendChild(node("p","muted","Очередь пуста"));}else{
@@ -155,17 +229,20 @@
   async function pick(id){
     if(state.selected!==id){
       state.selected=id;state.loaded=null;state.history=[];state.images=[];
+      lastActivityAt=0;lastActivityStamp=0;lastHistoryAt=0;
       galleryId="";galleryKey="";renderMessages();void renderImages();
     }
     renderSessions();renderHeader();tab("chat");stopStream();startStream();renderActivity();
-    await loadHistory();void loadQueue();
+    await loadHistory();void loadQueue();void loadActivity();
   }
   async function loadHistory(manual){
     if(!state.selected)return;
     var id=state.selected;
     if(historyRequests.has(id)){
-      // Reuse the in-flight update instead of piling up duplicate requests.
-      return historyRequests.get(id);
+      // Manual refresh must actually trigger a fresh read after the existing
+      // background request, not merely await its potentially stale result.
+      await historyRequests.get(id);
+      return manual?loadHistory(false):undefined;
     }
     var button=el("refresh");
     if(manual){button.disabled=true;button.textContent="…";}
@@ -173,6 +250,8 @@
       try{
         var data=await api("history",{sessionId:id});
         if(state.selected!==id)return;
+        lastHistoryAt=Date.now();
+        renderActivityClock();
         var digest=JSON.stringify([data.entries||[],data.images||[]]);
         if(digest!==state.loaded){
           if(["completed","failed","cancelled"].includes(liveStatus.get(id)))liveDraft.delete(id);
@@ -200,6 +279,7 @@
       status.querySelector("span").textContent=state.online?"ПК подключён":"ПК не в сети";
       if(!state.online){renderHeader();return;}
       var data=await api("snapshot");
+      snapshotErrors=0;
       state.projects=data.projects||[];state.sessions=data.sessions||[];
       state.sessions.forEach(function(s){
       if(s.liveStatus&&(!liveStatus.has(s.id)||liveStatus.get(s.id)==="observing"))liveStatus.set(s.id,s.liveStatus);
@@ -209,7 +289,13 @@
       if(state.selected&&state.tab==="chat")void loadHistory();
       if(state.selected&&state.tab==="queue")void loadQueue();
       warn("");
-    }catch(err){warn(err.message);}
+    }catch(err){
+      snapshotErrors++;
+      // Health can be green while Codex's catalogue RPC is slow. Avoid the
+      // large warning strip on one transient timeout if chat still works.
+      if(snapshotErrors>=3&&!state.sessions.length)warn(err.message);
+      else if(state.online)el("activity-meta").textContent="Каталог Codex отвечает медленно; история работает отдельно";
+    }
     finally{snapshotInFlight=false;renderHeader();}
   }
   async function runAction(op,args,onSuccess){
@@ -224,19 +310,22 @@
     finally{actionInFlight=false;renderHeader();}
   }
   async function send(ev){
-    ev.preventDefault();var text=el("prompt").value.trim();if(!text||!state.selected)return;
+    ev.preventDefault();var text=el("prompt").value.trim();
+    if((!text&&!photos.length)||!state.selected||photoBusy)return;
     var id=state.selected;
-    if(!pendingSend||pendingSend.sessionId!==id||pendingSend.text!==text){
-      pendingSend={sessionId:id,text:text,requestId:String(Date.now())+"_"+Math.random().toString(36).slice(2,16)};
+    var fingerprint=JSON.stringify([text,photos.map(function(p){return[p.mimeType,p.data.length,p.data.slice(0,60)];})]);
+    if(!pendingSend||pendingSend.sessionId!==id||pendingSend.fingerprint!==fingerprint){
+      pendingSend={sessionId:id,fingerprint:fingerprint,requestId:String(Date.now())+"_"+Math.random().toString(36).slice(2,16)};
     }
-    var result=await runAction("send",{sessionId:id,text:text,requestId:pendingSend.requestId},async function(data){
-      el("prompt").value="";pendingSend=null;
+    var images=photos.map(function(p){return{mimeType:p.mimeType,data:p.data};});
+    var result=await runAction("send",{sessionId:id,text:text,images:images,requestId:pendingSend.requestId},async function(data){
+      el("prompt").value="";photos=[];renderAttachments();pendingSend=null;
       if(data.result==="held"){
         liveStatus.set(id,"desktop_busy");renderHeader();renderSessions();
       }
       note(data.result==="queued"?"Добавлено в очередь":data.result==="held"?
         "Сеанс занят. Сообщение сохранено в боте; для продолжения открой Telegram-чат.":"Задание отправлено Codex");
-      await loadHistory();await loadQueue();
+      await loadHistory();await loadQueue();void loadActivity();
     });
     if(!result){
       el("prompt").value=text;
@@ -327,13 +416,15 @@
     })();
   }
   function on(id,event,fn){el(id).addEventListener(event,fn);}
+  on("attach-photo","click",function(){if(!photoBusy&&state.selected)el("photo-picker").click();});
+  on("photo-picker","change",function(e){void addPhotos(e.target.files||[]);});
   on("project","change",function(e){state.project=e.target.value;renderSessions();});
   on("search","input",renderSessions);
   on("composer","submit",function(e){void send(e);});
   on("prompt","keydown",function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();el("composer").requestSubmit();}});
   on("prompt","input",function(){if(pendingSend&&pendingSend.text!==el("prompt").value.trim())pendingSend=null;});
   on("new-chat","click",function(){void createSession();});
-  on("refresh","click",function(){void loadHistory(true);});
+  on("refresh","click",function(){void loadHistory(true);void loadActivity();});
   on("stop","click",function(){if(!state.selected)return;if(!window.confirm("Остановить текущую задачу Codex?"))return;void runAction("cancel",{sessionId:state.selected},function(){note("Команда остановки отправлена");});});
   on("queue-reload","click",function(){void loadQueue();});
   on("resume","click",function(){void runAction("queueResume",{sessionId:state.selected},function(){note("Очередь возобновлена");return loadQueue();});});
@@ -358,7 +449,8 @@
       if(state.selected&&state.tab==="chat")void loadHistory(false);
       if(state.tab==="queue")void loadQueue();
     },5000);
-    setInterval(function(){if(!document.hidden)void refresh();},15000);
+    setInterval(function(){if(!document.hidden)void refresh();},30000);
+    setInterval(function(){if(!document.hidden){void loadActivity();renderActivityClock();}},4000);
     document.addEventListener("visibilitychange",function(){
       if(!document.hidden){void refresh();if(state.selected){void loadHistory(false);startStream();}}
       else stopStream();

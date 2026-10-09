@@ -73,13 +73,16 @@ test("TMA manual refresh and automatic history updates work while snapshot is bu
       if(op==="history")return{ok:true,json:async()=>({ok:true,data:{
         entries:[{role:"assistant",text:answer,timestamp:Date.now()}],images:[],
       }})};
+      if(op==="activity")return{ok:true,json:async()=>({ok:true,data:{
+        mtimeMs:Date.now(),size:128,busy:true,queue:0,checkedAt:Date.now(),
+      }})};
       if(op==="queue")return{ok:true,json:async()=>({ok:true,data:{items:[],paused:false}})};
       throw new Error("Unexpected operation: "+op);
     },
   };
   runInNewContext(ui,context,{filename:"app.js"});
   await tick();
-  assert.equal(intervals.length,2);
+  assert.equal(intervals.length,3);
   const button=el("session-list").children.find(c=>c.className.includes("session-item"));
   assert(button?.onclick,"session list loaded");
   button.onclick();
@@ -94,7 +97,7 @@ test("TMA manual refresh and automatic history updates work while snapshot is bu
 
   // A stuck catalogue request must not freeze chat history polling.
   waitForSnapshot=true;
-  intervals[1]!(); // 15s snapshot poll, artificially blocked
+  intervals[1]!(); // 30s snapshot poll, artificially blocked
   await tick();
   assert(snapshots>=2);
   answer="Fresh report while snapshot is hung";
@@ -103,4 +106,5 @@ test("TMA manual refresh and automatic history updates work while snapshot is bu
   assert.equal(el("messages").children[0]?.children[1]?.textContent,answer);
   finishSnapshot?.();
   await tick();
+  assert.match(el("activity-meta").textContent,/Codex|активност/);
 });
