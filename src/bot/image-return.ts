@@ -12,7 +12,7 @@ const log = createLogger("image-return");
 
 const PATH_RE = /[^\s"'`<>|()*\[\]]+\.(?:png|jpe?g|gif|webp|bmp)/gi;
 const QUOTED_PATH_RE = /["'`]([^"'`\r\n]+\.(?:png|jpe?g|gif|webp|bmp))["'`]/gi;
-const ABSOLUTE_PATH_RE = /(?:[a-z]:\\|\\\\|\/)[^"'`<>|\r\n]*?\.(?:png|jpe?g|gif|webp|bmp)(?=$|[\s"'`<>|.,;:!?)}\]])/gi;
+const ABSOLUTE_PATH_RE = /(?<![A-Za-z0-9_.-])(?:[a-z]:\\|\\\\|\/)[^"'`<>|\r\n]*?\.(?:png|jpe?g|gif|webp|bmp)(?=$|[\s"'`<>|.,;:!?)}\]])/gi;
 const PHOTO_EXT = new Set(["png", "jpg", "jpeg", "webp"]);
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 const MAX_FILE_BYTES = 45 * 1024 * 1024;
