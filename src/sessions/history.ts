@@ -113,9 +113,23 @@ export function conversationEntries(entries: HistoryEntry[]): HistoryEntry[] {
   return entries.filter((entry) => entry.role === "user" || entry.role === "assistant");
 }
 
-/** Read a full tail window before filtering so many tool events don't crowd out chat messages. */
+/** Read conversation messages through long stretches of tool output.
+ * Previously the final 4 MiB might contain only function-call logs: the UI
+ * falsely showed an empty or frozen chat even when the file kept growing.
+ * Increase the window only if needed, up to a bounded 32 MiB to avoid OOM. */
 export function readConversationHistory(jsonlPath: string, maxEntries = 20): HistoryEntry[] {
-  return conversationEntries(parseTail(jsonlPath, TAIL_WINDOWS.at(-1)!, Number.MAX_SAFE_INTEGER)).slice(-maxEntries);
+  if (maxEntries <= 0) return [];
+  const size = jsonlSize(jsonlPath);
+  if (!size) return [];
+  const maxWindow = Math.min(size, 32 * 1024 * 1024);
+  let window = Math.min(maxWindow, TAIL_WINDOWS.at(-1)!);
+  let found: HistoryEntry[] = [];
+  while (true) {
+    found = conversationEntries(parseTail(jsonlPath, window, Number.MAX_SAFE_INTEGER));
+    if (found.length >= maxEntries || window >= maxWindow) break;
+    window = Math.min(maxWindow, window * 2);
+  }
+  return found.slice(-maxEntries);
 }
 
 function parseTail(jsonlPath: string, window: number, maxEntries: number): HistoryEntry[] {
