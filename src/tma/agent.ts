@@ -233,16 +233,21 @@ export class MiniAppAgent {
           if(existing.text!==message)throw new Error("Нельзя переиспользовать ID для другого текста");
           return existing.promise;
         }
+        let dispatched=false;
         const pending=(async()=>{
           const t=await this.thread(id,chatId);
           if(!t.cwd)throw new Error("Неизвестная рабочая папка");
           if(!controller.runtimeForSession(id))await controller.addAttach(id,t.cwd,basename(t.cwd),[]);
           else if(controller.foreground().sessionId!==id)await controller.switchTo(id);
           this.selected.set(chatId,id);
+          dispatched=true;
           const result=await registry.submitPrompt(chatId,textPrompt(message));
           return {result:result.kind==="submitted"?result.outcome:result.kind};
         })();
         this.sends.set(key,{text:message,promise:pending,at:Date.now()});
+        // A rejected attach/lock check cannot have sent the prompt; permit
+        // retrying the same request after the Desktop writer releases it.
+        void pending.catch(()=>{if(!dispatched)this.sends.delete(key);});
         // Cache both successes and failures briefly: never silently repeat an
         // accepted prompt when the browser lost its HTTP response.
         if(this.sends.size>180){
