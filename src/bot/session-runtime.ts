@@ -1379,7 +1379,12 @@ export class SessionRuntime {
       if (generation !== this.watchGeneration) return;
       const mode = this.settings.get(this.chatId).notifications?.mode ?? "all";
       const silent = !notificationShouldBeLoud(mode, this.cfg.quietNotifications, "info");
-      await deliverWatchReport(this.api, this.chatId, entries, silent);
+      try {
+        await deliverWatchReport(this.api, this.chatId, entries, silent);
+      } catch (error) {
+        // Image delivery is independent of Telegram text upload failures.
+        log.warn(`chat ${this.chatId} watch text failed: ${(error as Error).message}`);
+      }
 
       if (!this.cfg.sendAgentImages) return;
       const fromMessages = entries.flatMap((entry) => extractImagePaths(entry.text, projectRoot));
