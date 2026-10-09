@@ -4,8 +4,8 @@
  * back to Telegram. Only fresh files (modified during the turn) are sent.
  */
 import { type Api, InputFile } from "grammy";
-import { existsSync, statSync } from "node:fs";
-import { basename, isAbsolute, join } from "node:path";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createLogger } from "../logger.js";
 
 const log = createLogger("image-return");
@@ -45,6 +45,8 @@ export interface SendImagesOptions {
   max: number;
   /** User prompt to thread the image under. */
   replyTo?: number;
+  /** Optional trusted root (required for passive watch screenshots). */
+  root?: string;
 }
 
 /** Send the valid, fresh, not-yet-sent images. Returns how many were sent. */
@@ -58,6 +60,16 @@ export async function sendImages(
   for (const path of paths) {
     if (sent >= opts.max) break;
     if (opts.already.has(path)) continue;
+    if (opts.root) {
+      try {
+        const root = realpathSync(opts.root);
+        const actual = realpathSync(path);
+        const rel = relative(root, actual);
+        if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) continue;
+      } catch {
+        continue;
+      }
+    }
     let st: ReturnType<typeof statSync>;
     try {
       st = statSync(path);
@@ -66,7 +78,6 @@ export async function sendImages(
     }
     if (!st.isFile() || st.size === 0 || st.size > MAX_FILE_BYTES) continue;
     if (st.mtimeMs < opts.since - 2000) continue; // skip pre-existing files
-    opts.already.add(path);
     try {
       const ext = path.toLowerCase().split(".").pop() ?? "";
       const asPhoto = PHOTO_EXT.has(ext) && st.size <= MAX_PHOTO_BYTES;
@@ -76,6 +87,7 @@ export async function sendImages(
       };
       if (asPhoto) await api.sendPhoto(chatId, file, { caption: basename(path), ...reply });
       else await api.sendDocument(chatId, file, { caption: basename(path), ...reply });
+      opts.already.add(path);
       sent++;
     } catch (e) {
       log.debug(`failed to send ${path}:`, (e as Error).message);
