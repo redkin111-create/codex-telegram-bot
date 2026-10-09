@@ -260,7 +260,7 @@ function readText(path: string): string | undefined {
  *  A zero exit (e.g. existing instance won the lock) also ends the wrapper.
  */
 export function vbsLauncher(spec: LaunchSpec): string {
-  const cmd = "\\"\\"" + spec.nodePath + "\\"\\" " + spec.args.map(a=>"\\"\\"" + a + "\\"\\"").join(" ");
+  const cmd = `""${spec.nodePath}"" ${spec.args.map((a) => `""${a}""`).join(" ")}`;
   const codexPath = spec.codexCliPath.replace(/"/g, '""');
   const pause = servicePausePath(spec).replace(/"/g,'""');
   const watchdogLog = join(spec.logsDir,"watchdog-events.log").replace(/"/g,'""');
