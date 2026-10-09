@@ -78,7 +78,8 @@ export async function startLocalTma(
       return {...s,liveStatus:event?.status??(s.busy?"working":"observing"),
         liveLabel:event?.label??(s.busy?"Codex работает":"Статус Desktop не определён")};
     })};
-  }, {feed:live,authorize:(userId,sessionId)=>agent.canReadSession(sessionId,userId)});
+  }, {feed:live,authorize:(userId,sessionId)=>agent.canReadSession(sessionId,userId),
+    connected:()=>acp.isConnected});
   try {
     if (!gateway.listening) {
       await new Promise<void>((done, reject) => {

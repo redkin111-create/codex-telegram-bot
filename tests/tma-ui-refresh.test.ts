@@ -82,7 +82,7 @@ test("TMA manual refresh and automatic history updates work while snapshot is bu
   };
   runInNewContext(ui,context,{filename:"app.js"});
   await tick();
-  assert.equal(intervals.length,3);
+  assert.equal(intervals.length,4);
   const button=el("session-list").children.find(c=>c.className.includes("session-item"));
   assert(button?.onclick,"session list loaded");
   button.onclick();

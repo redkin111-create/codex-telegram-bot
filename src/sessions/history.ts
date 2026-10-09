@@ -3,6 +3,8 @@
  * Reads only the tail of large logs to stay fast.
  */
 import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { createReadStream } from "node:fs";
+import { createInterface } from "node:readline";
 import { extractProgress } from "../render/progress.js";
 import type { HistoryEntry, HistoryRole } from "./types.js";
 
@@ -130,6 +132,46 @@ export function readConversationHistory(jsonlPath: string, maxEntries = 20): His
     window = Math.min(maxWindow, window * 2);
   }
   return found.slice(-maxEntries);
+}
+
+/**
+ * Event-loop-friendly transcript reader for the Mini App.
+ * Sequential asynchronous IO and lightweight prefiltering avoid repeatedly
+ * loading/parsing tens of MiB of tool output on Node's HTTP event loop.
+ */
+export async function readConversationHistoryAsync(
+  jsonlPath: string,
+  maxEntries = 40,
+  maxBytes = 32 * 1024 * 1024,
+): Promise<HistoryEntry[]> {
+  if (maxEntries <= 0 || maxBytes <= 0) return [];
+  const size = jsonlSize(jsonlPath);
+  if (!size) return [];
+  const start = Math.max(0, size - maxBytes);
+  const input = createReadStream(jsonlPath, { start, end: size - 1, highWaterMark: 64 * 1024 });
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  const entries: HistoryEntry[] = [];
+  let first = true;
+  try {
+    for await (const line of lines) {
+      if (first) {
+        first = false;
+        if (start > 0) continue; // discard partial first JSONL line
+      }
+      // The majority of a Codex rollout is tooling/reasoning; do not parse
+      // giant outputs only to discard them. Retain the exact existing parser
+      // for response_item records.
+      if (!/"type"\s*:\s*"response_item"/.test(line) || !/"role"\s*:/.test(line)) continue;
+      const entry = parseEventLine(line);
+      if (!entry || (entry.role !== "assistant" && entry.role !== "user")) continue;
+      entries.push(entry);
+      if (entries.length > maxEntries) entries.shift();
+    }
+    return entries;
+  } finally {
+    lines.close();
+    input.destroy();
+  }
 }
 
 function parseTail(jsonlPath: string, window: number, maxEntries: number): HistoryEntry[] {

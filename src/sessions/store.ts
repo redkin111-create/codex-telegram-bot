@@ -32,6 +32,10 @@ interface Indexed {
 export class SessionStore {
   /** Cache: sessionId -> rollout file path (rebuilt on scan). */
   private index = new Map<string, string>();
+  /** Codex can report threads for which the local rollout file is absent.
+   * Cache negative lookups briefly: otherwise every TMA heartbeat scans the
+   * entire CODEX_HOME tree synchronously and stalls the whole Node process. */
+  private readonly missingUntil = new Map<string, number>();
 
   constructor(private readonly dir: string) {}
 
@@ -97,9 +101,22 @@ export class SessionStore {
 
   private resolvePath(sessionId: string): string | undefined {
     const cached = this.index.get(sessionId);
-    if (cached) return cached;
+    if (cached) {
+      try {
+        if (statSync(cached).isFile()) return cached;
+      } catch { /* Missing or rotated rollout: refresh index below. */ }
+      this.index.delete(sessionId);
+    }
+    if ((this.missingUntil.get(sessionId) ?? 0) > Date.now()) return undefined;
     this.scan();
-    return this.index.get(sessionId);
+    const found = this.index.get(sessionId);
+    if (found) {
+      this.missingUntil.delete(sessionId);
+      return found;
+    }
+    this.missingUntil.set(sessionId, Date.now() + 15_000);
+    if (this.missingUntil.size > 512) this.missingUntil.delete(this.missingUntil.keys().next().value!);
+    return undefined;
   }
 
   private readMeta(f: Indexed): SessionMeta | undefined {
