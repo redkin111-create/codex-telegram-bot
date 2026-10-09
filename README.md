@@ -57,8 +57,9 @@ Use a **different Telegram bot token** for each bot instance.
 A lightweight Codex Remote Mini App is available in `apps/mini-app/public`.
 **No VPS required:** set `TMA_LOCAL=true` in the existing Windows bot's `.env`.
 The bot's current logon service will start the local Mini App gateway and Codex
-bridge automatically. A named Cloudflare Tunnel (`TMA_TUNNEL_CONFIG`) can also
-start and reconnect with the bot to provide a permanent public HTTPS URL.
+bridge automatically. Install Tailscale once and set `TMA_TAILSCALE_AUTO=true`
+to publish the authenticated Mini App via a **free, persistent `*.ts.net` HTTPS URL**.
+The `/app` command discovers the URL automatically; no domain or VPS needed.
 Use `/app` in Telegram to open projects, chats, full reports and queue management.
 See [Mini App setup](docs/TMA.md) for the one-time laptop and tunnel setup.
 
