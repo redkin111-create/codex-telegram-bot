@@ -101,7 +101,7 @@
     tab("chat");await loadHistory();void loadQueue();
   }
   async function loadHistory(){
-    if(!state.selected||inFlight)return;
+    if(!state.selected)return;
     var id=state.selected;try{
       var data=await api("history",{sessionId:id});
       if(state.selected!==id)return;
@@ -147,7 +147,8 @@
     var cwd=el("project").value;if(!cwd){note("Сначала выберите проект в списке");tab("sessions");return;}
     await runAction("create",{cwd:cwd},async function(data){
       state.selected=data.sessionId;
-      await refresh();await pick(data.sessionId);note("Создан новый сеанс");
+      state.selected=data.sessionId;
+      tab("chat");note("Создан новый сеанс");
     });
   }
   async function removeQueued(id){
