@@ -12,7 +12,9 @@ import { DEFAULT_NOTIFICATION_PREFERENCES } from "../src/app/notifications.js";
 import { chunkPlainText } from "../src/bot/telegram-io.js";
 import { deliverWatchReport } from "../src/bot/watch-report.js";
 import { recentWatchImagePaths, watchImagePathsFromEvents } from "../src/bot/watch-images.js";
-import { sendImages } from "../src/bot/image-return.js";
+import { extractImagePaths, sendImages } from "../src/bot/image-return.js";
+import { showHistory } from "../src/bot/handlers/history.js";
+import type { BotDeps } from "../src/bot/deps.js";
 
 test("long watched reports are sent losslessly as ordered Telegram chunks and a full document", async () => {
   const report = "Работа завершена.\n" + "Проверил страницы и сделал исправления.\n".repeat(370) + "✅ Готово";
@@ -149,6 +151,44 @@ test("Watch backfills a complete previous Codex answer and its screenshot", asyn
   } finally {
     runtime.stopWatch();
     runtime.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Markdown screenshot paths stay relative to the watched project", () => {
+  const root = join(tmpdir(), "watch-relative");
+  const image = join(root, "screenshots", "visual.png");
+  const refs = extractImagePaths("Evidence: ![visual](screenshots/visual.png)", root);
+  assert(refs.includes(image));
+  assert(!refs.includes(join("/","visual.png")));
+});
+
+test("/history preserves an assistant report longer than Telegram's message limit", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-history-full-"));
+  try {
+    const file = join(dir, "rollout.jsonl");
+    const answer = "FULL-START\n" + "Detailed work completed.\n".repeat(400) + "FULL-END";
+    writeFileSync(file, JSON.stringify({
+      type: "response_item",
+      payload: { type: "message", role: "assistant",
+        content: [{ type: "output_text", text: answer }] },
+    }) + "\n");
+    const sent: string[] = [];
+    let docs = 0;
+    const deps = {
+      store: { jsonlPath: () => file },
+      api: {
+        sendMessage: async (_id: number, text: string) => { sent.push(text); return { message_id: sent.length }; },
+        sendDocument: async () => { docs++; return { message_id: 999 }; },
+      },
+    } as unknown as BotDeps;
+    await showHistory(deps, 100, "history-session");
+    assert(sent.length > 1);
+    assert(sent.every((part) => part.length <= 4096));
+    assert(sent.join("").includes("FULL-START"));
+    assert(sent.join("").includes("FULL-END"));
+    assert.equal(docs, 1);
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
