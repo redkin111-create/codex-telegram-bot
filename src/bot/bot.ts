@@ -3,7 +3,7 @@
  * status panel, and the task scheduler. Handler registration order matters:
  *   auth -> menu buttons -> wizard input -> commands -> photos -> text prompt.
  */
-import { Bot } from "grammy";
+import { Bot, InlineKeyboard } from "grammy";
 import type { AcpClient } from "../acp/client.js";
 import { AccountManager } from "../app/accounts.js";
 import { AccountRotatorImpl } from "./account-rotator.js";
@@ -147,6 +147,17 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
   });
 
   bot.use(createAuthMiddleware(cfg));
+
+  bot.command("app", async (ctx) => {
+    const url = (process.env.TMA_GATEWAY_URL || "").trim();
+    if (!/^https:\/\/[^\s]+$/i.test(url)) {
+      await ctx.reply("Mini App пока не подключена. Настройте HTTPS шлюз по docs/TMA.md.");
+      return;
+    }
+    await ctx.reply("📱 Codex Remote — проекты, чаты, отчёты и очередь в одном окне.", {
+      reply_markup: new InlineKeyboard().webApp("🚀 Открыть Codex Remote", url),
+    });
+  });
 
   registerQueue(bot, deps);
   registerNotifications(bot, deps);
