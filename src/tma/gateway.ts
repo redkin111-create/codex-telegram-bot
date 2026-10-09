@@ -75,6 +75,8 @@ async function serveStatic(pathname:string,res:ServerResponse):Promise<void> {
     "/":["index.html","text/html; charset=utf-8"],
     "/app.js":["app.js","text/javascript; charset=utf-8"],
     "/styles.css":["styles.css","text/css; charset=utf-8"],
+    "/markdown.js":["markdown.js","text/javascript; charset=utf-8"],
+    "/markdown.css":["markdown.css","text/css; charset=utf-8"],
   };
   const found=files[pathname];
   if(!found){json(res,404,{error:"Not found"});return;}
