@@ -17,7 +17,7 @@ export class TailWatcher {
 
   constructor(
     private readonly path: string,
-    private readonly onEntries: (entries: HistoryEntry[]) => void,
+    private readonly onEntries: (entries: HistoryEntry[], rawLines: string[]) => void,
     private readonly intervalMs = 1500,
   ) {}
 
@@ -81,6 +81,10 @@ export class TailWatcher {
       const entry = parseEventLine(line);
       if (entry) entries.push(entry);
     }
-    if (entries.length > 0) this.onEntries(entries);
+    // A tool result can contain a screenshot path without a visible chat
+    // message. Pass raw records to the watch delivery layer for image lookup.
+    if (entries.length > 0 || lines.some((line) => /\\.(?:png|jpe?g|webp|gif|bmp)/i.test(line))) {
+      this.onEntries(entries, lines);
+    }
   }
 }
