@@ -5,15 +5,25 @@
   if(tg){tg.ready();tg.expand();}
   var el=function(id){return document.getElementById(id);};
   var app=el("app"),state={projects:[],sessions:[],selected:null,project:"",history:[],images:[],queue:[],online:false,busy:false,tab:"sessions",loaded:null};
-  var initData=tg&&tg.initData||"",inFlight=false,timer=null;
+  var initData=tg&&tg.initData||"",actionInFlight=false,snapshotInFlight=false,timer=null;
+  var historyRequests=new Map(),queueRequests=new Map(),imageCache=new Map(),galleryId="",galleryKey="";
   function node(tag,klass,text){var n=document.createElement(tag);if(klass)n.className=klass;if(text!==undefined)n.textContent=String(text);return n;}
   function note(text){var n=el("toast");n.textContent=text;n.classList.remove("hidden");clearTimeout(timer);timer=setTimeout(function(){n.classList.add("hidden");},3600);}
   function warn(text){el("warning").textContent=text;el("warning").classList.toggle("hidden",!text);}
   function tab(which){state.tab=which;app.dataset.tab=which;document.querySelectorAll(".bottom-nav button").forEach(function(b){b.classList.toggle("active",b.dataset.tab===which);});if(which==="queue")void loadQueue();}
   async function api(op,args){
     if(!initData)throw Error("Откройте приложение через кнопку Mini App в Telegram-боте.");
-    var resp=await fetch("/api/execute",{method:"POST",headers:{"Content-Type":"application/json","X-Telegram-Init-Data":initData},body:JSON.stringify({op:op,args:args||{}})});
-    var data=await resp.json().catch(function(){return{};});
+    var controller=new AbortController(),timeout=setTimeout(function(){controller.abort();},25000);
+    var resp,data;
+    try{
+      resp=await fetch("/api/execute",{method:"POST",cache:"no-store",signal:controller.signal,
+        headers:{"Content-Type":"application/json","X-Telegram-Init-Data":initData},
+        body:JSON.stringify({op:op,args:args||{}})});
+      data=await resp.json().catch(function(){return{};});
+    }catch(error){
+      if(error.name==="AbortError")throw Error("Сервер долго не отвечает. Проверь соединение и обнови чат.");
+      throw error;
+    }finally{clearTimeout(timeout);}
     if(!resp.ok||!data.ok)throw Error(data.error||"Не удалось выполнить запрос");
     return data.data;
   }
@@ -44,7 +54,7 @@
     el("chat-project").textContent=s?(s.cwd.split(/[\\/]/).pop()||"CODEX").toUpperCase():"ВЫБЕРИТЕ СЕАНС";
     el("chat-state").textContent=s?(s.busy?"● Выполняется":state.online?"Готов к заданию · Codex Desktop может удерживать сеанс":"ПК отключён"):"Здесь появится полная история Codex";
     el("prompt").disabled=!s||!state.online;
-    el("send").disabled=!s||!state.online||inFlight;
+    el("send").disabled=!s||!state.online||actionInFlight;
     el("stop").disabled=!s||!s.busy;
     el("compose-hint").textContent=!s?"Сначала выберите переписку":s.busy?"Сообщение попадёт в очередь":"Enter — отправить, Shift+Enter — новая строка";
     el("detail-title").textContent=s?titleOf(s):"Не выбран";
@@ -64,14 +74,19 @@
     });
     if(previousNearBottom)box.scrollTop=box.scrollHeight;
   }
-  async function renderImages(){
-    var panel=el("images");panel.replaceChildren();panel.classList.add("hidden");
-    if(!state.selected)return;
+  async function renderImages(force){
     var id=state.selected,paths=state.images.slice(0,6);
+    var key=JSON.stringify([id,paths]);
+    if(!force&&key===galleryKey&&id===galleryId)return;
+    galleryId=id;galleryKey=key;
+    var panel=el("images");panel.replaceChildren();panel.classList.add("hidden");
+    if(!id)return;
     for(var i=0;i<paths.length;i++){
-      if(state.selected!==id)return;
+      if(state.selected!==id||galleryKey!==key)return;
       try{
-        var data=await api("image",{sessionId:id,path:paths[i]});
+        var cacheKey=id+":"+paths[i],data=imageCache.get(cacheKey);
+        if(!data){data=await api("image",{sessionId:id,path:paths[i]});imageCache.set(cacheKey,data);}
+        if(state.selected!==id||galleryKey!==key)return;
         var img=node("img");img.src="data:"+data.mime+";base64,"+data.data;img.alt=data.name||"Скриншот Codex";
         img.onclick=function(){
           var overlay=node("div","lightbox");
@@ -81,10 +96,10 @@
           close.onclick=dismiss;overlay.onclick=function(event){if(event.target===overlay)dismiss();};
           overlay.append(close,full);document.body.append(overlay);
         };
-        panel.appendChild(img);
-        panel.classList.remove("hidden");
-      }catch(_){/* Missing screenshot is non-fatal. */}
+        panel.appendChild(img);panel.classList.remove("hidden");
+      }catch(_){/* A temporarily missing screenshot must not block the chat. */}
     }
+    if(imageCache.size>18)imageCache.clear();
   }
   function renderQueue(){
     var box=el("queue");box.replaceChildren();
@@ -100,24 +115,57 @@
   }
   async function loadQueue(){
     if(!state.selected)return;
-    try{var q=await api("queue",{sessionId:state.selected});state.queue=q.items||[];state.queuePaused=q.paused;renderQueue();}
-    catch(err){note(err.message);}
+    var id=state.selected;
+    if(queueRequests.has(id))return queueRequests.get(id);
+    var request=(async function(){
+      try{
+        var q=await api("queue",{sessionId:id});
+        if(state.selected!==id)return;
+        state.queue=q.items||[];state.queuePaused=q.paused;renderQueue();
+      }catch(err){if(state.tab==="queue"&&state.selected===id)note(err.message);}
+    })();
+    queueRequests.set(id,request);
+    try{await request;}finally{queueRequests.delete(id);}
   }
   async function pick(id){
-    state.selected=id;state.loaded=null;renderSessions();renderHeader();
-    tab("chat");await loadHistory();void loadQueue();
+    if(state.selected!==id){
+      state.selected=id;state.loaded=null;state.history=[];state.images=[];
+      galleryId="";galleryKey="";renderMessages();void renderImages();
+    }
+    renderSessions();renderHeader();tab("chat");
+    await loadHistory();void loadQueue();
   }
-  async function loadHistory(){
+  async function loadHistory(manual){
     if(!state.selected)return;
-    var id=state.selected;try{
-      var data=await api("history",{sessionId:id});
-      if(state.selected!==id)return;
-      var digest=JSON.stringify([data.entries||[],data.images||[]]);
-      if(digest!==state.loaded){state.loaded=digest;state.history=data.entries||[];state.images=data.images||[];renderMessages();void renderImages();}
-    }catch(err){note(err.message);}
+    var id=state.selected;
+    if(historyRequests.has(id)){
+      // Reuse the in-flight update instead of piling up duplicate requests.
+      return historyRequests.get(id);
+    }
+    var button=el("refresh");
+    if(manual){button.disabled=true;button.textContent="…";}
+    var request=(async function(){
+      try{
+        var data=await api("history",{sessionId:id});
+        if(state.selected!==id)return;
+        var digest=JSON.stringify([data.entries||[],data.images||[]]);
+        if(digest!==state.loaded){
+          var priorImages=JSON.stringify(state.images);
+          state.loaded=digest;state.history=data.entries||[];state.images=data.images||[];
+          renderMessages();
+          if(priorImages!==JSON.stringify(state.images))void renderImages();
+        }else if(manual){note("История актуальна");}
+      }catch(err){
+        if(state.selected===id&&(manual||err.message.includes("авторизац")||err.message.includes("истёк")))warn(err.message);
+      }finally{
+        if(manual){button.disabled=false;button.textContent="⟳";}
+      }
+    })();
+    historyRequests.set(id,request);
+    try{await request;}finally{historyRequests.delete(id);}
   }
   async function refresh(){
-    if(inFlight)return;inFlight=true;
+    if(snapshotInFlight)return;snapshotInFlight=true;
     try{
       var health=await fetch("/api/health").then(function(x){return x.json();});
       state.online=Boolean(health.online);
@@ -132,13 +180,13 @@
       if(state.selected&&state.tab==="queue")void loadQueue();
       warn("");
     }catch(err){warn(err.message);}
-    finally{inFlight=false;renderHeader();}
+    finally{snapshotInFlight=false;renderHeader();}
   }
   async function runAction(op,args,onSuccess){
-    if(inFlight)return;inFlight=true;renderHeader();
+    if(actionInFlight)return;actionInFlight=true;renderHeader();
     try{var data=await api(op,args);if(onSuccess)await onSuccess(data);return data;}
     catch(err){note(err.message);return null;}
-    finally{inFlight=false;renderHeader();}
+    finally{actionInFlight=false;renderHeader();}
   }
   async function send(ev){
     ev.preventDefault();var text=el("prompt").value.trim();if(!text||!state.selected)return;
@@ -167,12 +215,25 @@
   on("composer","submit",function(e){void send(e);});
   on("prompt","keydown",function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();el("composer").requestSubmit();}});
   on("new-chat","click",function(){void createSession();});
-  on("refresh","click",function(){void loadHistory();});
+  on("refresh","click",function(){void loadHistory(true);});
   on("stop","click",function(){if(!state.selected)return;if(!window.confirm("Остановить текущую задачу Codex?"))return;void runAction("cancel",{sessionId:state.selected},function(){note("Команда остановки отправлена");});});
   on("queue-reload","click",function(){void loadQueue();});
   on("resume","click",function(){void runAction("queueResume",{sessionId:state.selected},function(){note("Очередь возобновлена");return loadQueue();});});
   document.querySelectorAll(".bottom-nav button").forEach(function(b){b.addEventListener("click",function(){tab(b.dataset.tab);});});
   tab("sessions");
   if(!initData){warn("Откройте эту страницу через Mini App своего Telegram-бота.");}
-  else{void refresh();setInterval(function(){if(!document.hidden)void refresh();},6000);}
+  else{
+    void refresh();
+    setInterval(function(){
+      if(document.hidden)return;
+      // History is independent of catalogue/status refresh; Codex messages
+      // keep updating even when the project list is slow or temporarily down.
+      if(state.selected&&state.tab==="chat")void loadHistory(false);
+      if(state.tab==="queue")void loadQueue();
+    },5000);
+    setInterval(function(){if(!document.hidden)void refresh();},15000);
+    document.addEventListener("visibilitychange",function(){
+      if(!document.hidden){void refresh();if(state.selected)void loadHistory(false);}
+    });
+  }
 })();
