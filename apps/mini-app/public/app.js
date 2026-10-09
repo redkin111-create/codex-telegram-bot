@@ -49,7 +49,11 @@
       var btn=node("button","session-item"+(state.selected===s.id?" selected":""));
       var icon=node("span","session-icon",s.source==="cli"?"⌘":"◇");
       var info=node("div","session-info"),title=node("strong","",titleOf(s));
-      var sub=node("span","sub"+(s.busy?" busy":""),(s.busy?"● Работает · ":"")+(s.cwd.split(/[\\/]/).pop()||"Проект")+" · "+fmtTime(s.updatedAt));
+      var ls=liveStatus.get(s.id)||s.liveStatus||"observing";
+      var captions={working:"● Работает",approval:"⏳ Ждёт разрешения",completed:"✓ Завершён",
+        failed:"⚠ Ошибка",cancelled:"■ Остановлен",observing:"◉ Наблюдение"};
+      var isActive=s.busy||ls==="working"||ls==="approval";
+      var sub=node("span","sub"+(isActive?" busy":""),(captions[ls]||"◉ Наблюдение")+" · "+(s.cwd.split(/[\\/]/).pop()||"Проект")+" · "+fmtTime(s.updatedAt));
       info.append(title,sub);btn.append(icon,info);btn.onclick=function(){void pick(s.id);};list.append(btn);
     });
   }
@@ -191,6 +195,7 @@
       var health=await fetch("/api/health").then(function(x){return x.json();});
       state.online=Boolean(health.online);
       var status=el("connection");status.classList.toggle("online",state.online);
+      status.classList.toggle("offline",!state.online);
       status.querySelector("span").textContent=state.online?"ПК подключён":"ПК не в сети";
       if(!state.online){renderHeader();return;}
       var data=await api("snapshot");
@@ -223,7 +228,10 @@
       note(data.result==="queued"?"Добавлено в очередь":data.result==="held"?"Сообщение ожидает свободный сеанс":"Задание отправлено Codex");
       await loadHistory();await loadQueue();
     });
-    if(!result)el("prompt").value=text;
+    if(!result){
+      el("prompt").value=text;
+      note("Если связь прервалась, проверь историю. Повторная отправка того же задания защищена от дублей.");
+    }
   }
   async function createSession(){
     var cwd=el("project").value;if(!cwd){note("Сначала выберите проект в списке");tab("sessions");return;}
@@ -321,7 +329,12 @@
   on("resume","click",function(){void runAction("queueResume",{sessionId:state.selected},function(){note("Очередь возобновлена");return loadQueue();});});
   document.querySelectorAll(".bottom-nav button").forEach(function(b){b.addEventListener("click",function(){tab(b.dataset.tab);});});
   if(window.addEventListener){
-    window.addEventListener("offline",function(){state.online=false;stopStream();renderHeader();});
+    window.addEventListener("offline",function(){
+      state.online=false;stopStream();
+      el("connection").classList.remove("online");el("connection").classList.add("offline");
+      el("connection").querySelector("span").textContent="Нет соединения";
+      renderHeader();
+    });
     window.addEventListener("online",function(){void refresh();if(state.selected){void loadHistory(false);startStream();}});
   }
   tab("sessions");
