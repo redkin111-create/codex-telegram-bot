@@ -18,6 +18,7 @@ import { SessionStore } from "../sessions/store.js";
 import { TelegramSessionRegistry } from "../sessions/telegram-registry.js";
 import { argumentString, isTmaJob, type TmaJob, type TmaResult } from "./protocol.js";
 import { parseTmaImages, tmaPromptFingerprint } from "./prompt-images.js";
+import { DurablePromptJournal } from "./prompt-journal.js";
 
 const log=createLogger("tma:agent");
 const MAX_IMG=3*1024*1024;
@@ -39,6 +40,7 @@ export class MiniAppAgent {
   private readonly abort=new AbortController();
   private readonly store:SessionStore;
   private readonly telegramSessions:TelegramSessionRegistry;
+  private readonly promptJournal:DurablePromptJournal;
   private readonly root:string;
   private readonly secret:string;
   private readonly results=new Map<string,TmaResult>();
@@ -72,6 +74,7 @@ export class MiniAppAgent {
     this.secret=secret;
     this.store=new SessionStore(deps.cfg.sessionsDir);
     this.telegramSessions=new TelegramSessionRegistry(deps.cfg.dataDir);
+    this.promptJournal=new DurablePromptJournal(deps.cfg.dataDir);
   }
   start():void{if(!this.loopPromise)this.loopPromise=this.run();}
   stop():void{this.abort.abort();}
@@ -167,6 +170,16 @@ export class MiniAppAgent {
     const {acp,registry,cfg}=this.deps;
     const chatId=job.userId,controller=registry.controller(chatId),args=job.args;
     switch(job.op){
+      case "diagnostics":{
+        const sent=this.promptJournal.summary();
+        return {
+          gateway:"online",codexConnected:acp.isConnected,
+          uptimeSeconds:Math.floor(process.uptime()),
+          pending:sent.reserved,uncertain:sent.uncertain,confirmed:sent.completed,
+          botManagedSessions:registry.controller(chatId).list().length,
+          checkedAt:Date.now(),
+        };
+      }
       case "snapshot":{
         const {projects,threads}=await this.catalogue(chatId);
         const controlled=controller.list();
@@ -222,7 +235,7 @@ export class MiniAppAgent {
           const entries=(await readConversationHistoryAsync(path,40)).map(e=>({
             role:e.role,text:e.text,timestamp:e.timestamp,
           }));
-          const refs=t.cwd?recentWatchImagePaths(path,t.cwd).slice(0,8):[];
+          const refs=t.cwd?recentWatchImagePaths(path,t.cwd).slice(-8):[];
           const result={entries,images:refs,project:t.cwd||""};
           // The agent may append to the log during this read. Don't store
           // a stale transcript under a newer file revision.
@@ -273,22 +286,37 @@ export class MiniAppAgent {
           if(existing.fingerprint!==fingerprint)throw new Error("Нельзя переиспользовать ID для другого задания");
           return existing.promise;
         }
+        const recorded=this.promptJournal.lookup(key,fingerprint);
+        if(recorded.found)return recorded.result;
+        // Must be flushed to disk before even attempting to attach/send.
+        this.promptJournal.reserve(key,fingerprint);
         let dispatched=false;
         const pending=(async()=>{
-          const t=await this.thread(id,chatId);
-          if(!t.cwd)throw new Error("Неизвестная рабочая папка");
-          if(!controller.runtimeForSession(id))await controller.addAttach(id,t.cwd,basename(t.cwd),[]);
-          else if(controller.foreground().sessionId!==id)await controller.switchTo(id);
-          this.selected.set(chatId,id);
-          dispatched=true;
-          const input=textPrompt(message||"Проанализируй прикреплённые изображения.");
-          input.images=images;
-          const result=await registry.submitPrompt(chatId,input);
-          return {result:result.kind==="submitted"?result.outcome:result.kind};
+          try{
+            const t=await this.thread(id,chatId);
+            if(!t.cwd)throw new Error("Неизвестная рабочая папка");
+            if(!controller.runtimeForSession(id))await controller.addAttach(id,t.cwd,basename(t.cwd),[]);
+            else if(controller.foreground().sessionId!==id)await controller.switchTo(id);
+            this.selected.set(chatId,id);
+            const input=textPrompt(message||"Проанализируй прикреплённые изображения.");
+            input.images=images;
+            // Once this call starts, a crash or ambiguous error may mean Codex
+            // already accepted the task; do not automatically resend.
+            dispatched=true;
+            const result=await registry.submitPrompt(chatId,input);
+            const answer={result:result.kind==="submitted"?result.outcome:result.kind};
+            this.promptJournal.complete(key,answer);
+            return answer;
+          }catch(error){
+            if(dispatched){
+              this.promptJournal.uncertain(key);
+            }else{
+              this.promptJournal.clearBeforeDispatch(key);
+            }
+            throw error;
+          }
         })();
         this.sends.set(key,{fingerprint,promise:pending,at:Date.now()});
-        // A rejected attach/lock check cannot have sent the prompt; permit
-        // retrying the same request after the Desktop writer releases it.
         void pending.catch(()=>{if(!dispatched)this.sends.delete(key);});
         // Cache both successes and failures briefly: never silently repeat an
         // accepted prompt when the browser lost its HTTP response.

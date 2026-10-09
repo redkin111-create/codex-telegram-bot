@@ -93,8 +93,14 @@ async function main(): Promise<void> {
 
   process.on("SIGINT", () => shutdown(0));
   process.on("SIGTERM", () => shutdown(0));
-  process.on("uncaughtException", (err) => log.error("uncaughtException:", err));
-  process.on("unhandledRejection", (err) => log.error("unhandledRejection:", err));
+  process.on("uncaughtException", (err) => {
+    log.error("uncaughtException — restarting supervised bot:", err);
+    shutdown(1);
+  });
+  process.on("unhandledRejection", (err) => {
+    log.error("unhandledRejection — restarting supervised bot:", err);
+    shutdown(1);
+  });
 
   await bot.start({
     onStart: (info) => {

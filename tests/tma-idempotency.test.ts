@@ -45,6 +45,13 @@ test("same prompt request ID is executed exactly once across simultaneous and re
     const c=await agent.execute(job);
     assert.deepEqual([a,b,c],[{result:"ran"},{result:"ran"},{result:"ran"}]);
     assert.equal(submits,1);
+    // Simulate a bot process restart: the new agent must replay the same
+    // acknowledgement from disk without submitting the Codex task again.
+    const restarted=new MiniAppAgent({cfg,acp,registry},"http://127.0.0.1:3301",
+      "shared-secret-more-than-thirty-two-characters");
+    assert.deepEqual(await restarted.execute(job),{result:"ran"});
+    assert.equal(submits,1,"restarting the bot must not duplicate file edits");
+    restarted.stop();
     assert.equal(submitted?.images.length,1);
     assert.equal(submitted?.images[0]?.mimeType,"image/jpeg");
     await assert.rejects(()=>agent.execute({...job,args:{...job.args,text:"Different text"}}),

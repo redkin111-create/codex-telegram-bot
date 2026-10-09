@@ -110,7 +110,7 @@
     if(previousNearBottom)box.scrollTop=box.scrollHeight;
   }
   async function renderImages(force){
-    var id=state.selected,paths=state.images.slice(0,6);
+    var id=state.selected,paths=state.images.slice(-6);
     var key=JSON.stringify([id,paths]);
     if(!force&&key===galleryKey&&id===galleryId)return;
     galleryId=id;galleryKey=key;
@@ -472,6 +472,40 @@
       }
     })();
   }
+  async function showDiagnostics(){
+    var panel=el("diagnostics-panel");
+    if(!panel.classList.contains||!panel.classList.contains("hidden")){
+      panel.classList.add("hidden");return;
+    }
+    panel.replaceChildren();
+    panel.classList.remove("hidden");
+    panel.appendChild(node("strong","","Проверка Codex Remote…"));
+    try{
+      await healthCheck();
+      var items=[];
+      items.push("Ноутбук / HTTPS: "+(state.online?"доступен":"не отвечает"));
+      items.push("Codex app-server: "+(state.codexConnected===true?"подключён":
+        state.codexConnected===false?"не подключён":"статус неизвестен"));
+      if(state.online){
+        var info=await api("diagnostics");
+        items.push("Работа бота: "+Math.floor(info.uptimeSeconds/60)+" мин");
+        items.push("Контролируемых сеансов: "+info.botManagedSessions);
+        items.push("Подтверждённых отправок: "+info.confirmed);
+        items.push("Неопределённых отправок: "+(info.uncertain+info.pending));
+        if(info.uncertain+info.pending>0)items.push("При неопределённой отправке сначала проверь историю и очередь.");
+      }else items.push("Проверь питание и сеть ноутбука, затем Tailscale Funnel.");
+      panel.replaceChildren();
+      panel.appendChild(node("strong","","Диагностика TMA"));
+      panel.appendChild(node("pre","diagnostics-text",items.join("\n")));
+      var close=node("button","small-button","Закрыть");
+      close.onclick=function(){panel.classList.add("hidden");};
+      panel.appendChild(close);
+    }catch(error){
+      panel.replaceChildren();
+      panel.appendChild(node("strong","","Диагностика недоступна"));
+      panel.appendChild(node("p","",error.message||"Не удалось получить состояние Codex"));
+    }
+  }
   function on(id,event,fn){el(id).addEventListener(event,fn);}
   on("attach-photo","click",function(){if(!photoBusy&&state.selected)el("photo-picker").click();});
   on("photo-picker","change",function(e){void addPhotos(e.target.files||[]);});
@@ -481,6 +515,7 @@
   on("prompt","keydown",function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();el("composer").requestSubmit();}});
   on("prompt","input",function(){if(pendingSend&&pendingSend.text!==el("prompt").value.trim())pendingSend=null;});
   on("new-chat","click",function(){void createSession();});
+  on("diagnostics","click",function(){void showDiagnostics();});
   on("refresh","click",function(){void loadHistory(true);void loadActivity();});
   on("stop","click",function(){if(!state.selected)return;if(!window.confirm("Остановить текущую задачу Codex?"))return;void runAction("cancel",{sessionId:state.selected},function(){note("Команда остановки отправлена");});});
   on("queue-reload","click",function(){void loadQueue();});
