@@ -52,6 +52,13 @@ Use a **different Telegram bot token** for each bot instance.
 
 ---
 
+## 📱 Telegram Mini App (optional)
+
+A lightweight Codex Remote Mini App is available in `apps/mini-app/public`.
+It runs on an HTTPS gateway and connects outbound to this bot on Windows.
+Use `/app` in Telegram to open projects, chats, full reports and queue management.
+See [Mini App setup](docs/TMA.md) for security and VPS deployment steps.
+
 ## ⚡ Install the upstream npm release
 
 ```bash

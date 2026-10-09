@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#10141e">
+  <meta name="description" content="Codex Remote — управление локальным Codex из Telegram">
+  <title>Codex Remote</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div id="app" class="app">
+    <header class="topbar">
+      <div class="brand"><div class="brand-mark">⌘</div><div><strong>Codex Remote</strong><span>Telegram Mini App</span></div></div>
+      <div id="connection" class="connection"><i class="led"></i><span>Подключение…</span></div>
+    </header>
+    <section id="warning" class="warning hidden" role="alert"></section>
+    <div class="workspace">
+      <aside class="sidebar">
+        <div class="sidebar-top">
+          <label class="caption" for="project">ПРОЕКТ</label>
+          <select id="project"><option value="">Все проекты</option></select>
+          <div class="section-head"><strong>Переписки</strong><button id="new-chat" class="small-button" title="Создать сеанс">＋</button></div>
+          <input id="search" type="search" placeholder="Поиск переписки" autocomplete="off" aria-label="Поиск переписки">
+        </div>
+        <div id="session-list" class="session-list"><div class="placeholder">Загружаю сеансы…</div></div>
+      </aside>
+      <main class="main">
+        <div class="chat-header">
+          <div class="chat-heading"><span id="chat-project" class="caption">ВЫБЕРИТЕ СЕАНС</span><strong id="chat-title">Начните с выбора переписки</strong><span id="chat-state" class="muted">Здесь появится полная история Codex</span></div>
+          <div class="header-actions">
+            <button id="refresh" class="icon-btn" title="Обновить отчёт" aria-label="Обновить">⟳</button>
+            <button id="stop" class="icon-btn danger" title="Остановить задачу" aria-label="Остановить" disabled>■</button>
+          </div>
+        </div>
+        <div id="messages" class="messages" aria-live="polite"><div class="empty-state"><div class="empty-icon">⌘</div><strong>Ваш Codex, где бы вы ни были</strong><p>Выберите проект или создайте новый сеанс, чтобы управлять задачами прямо в Telegram.</p></div></div>
+        <div id="images" class="images hidden" aria-label="Скриншоты из отчёта"></div>
+        <form id="composer" class="composer">
+          <textarea id="prompt" rows="2" maxlength="16000" placeholder="Напишите задачу Codex…" aria-label="Задание для Codex" disabled></textarea>
+          <div class="composer-row"><span id="compose-hint">Сначала выберите переписку</span><button type="submit" id="send" class="send" disabled>Отправить <span>↑</span></button></div>
+        </form>
+      </main>
+      <aside id="details" class="details">
+        <h3>Управление</h3>
+        <div class="summary-card"><span class="caption">СЕАНС</span><strong id="detail-title">Не выбран</strong><span id="detail-status" class="muted">Выберите переписку слева</span><div class="progress"><div id="progress-bar"></div></div></div>
+        <div class="section-head"><strong>Очередь задач</strong><button id="queue-reload" class="small-button">↻</button></div>
+        <div id="queue" class="queue"><p class="muted">Очередь пуста</p></div>
+        <button id="resume" class="secondary full hidden">▶ Продолжить очередь</button>
+        <div class="divider"></div>
+        <h3>Возможности</h3>
+        <div class="feature-row"><span>◎</span><div><strong>История без обрезания</strong><p>Полные ответы и отчёты</p></div></div>
+        <div class="feature-row"><span>▣</span><div><strong>Скриншоты</strong><p>Доступные файлы проекта</p></div></div>
+        <div class="feature-row"><span>✧</span><div><strong>Локальный Codex</strong><p>Исполняется на вашем ПК</p></div></div>
+      </aside>
+    </div>
+    <nav class="bottom-nav" aria-label="Навигация">
+      <button data-tab="sessions" class="active">▤<span>Чаты</span></button>
+      <button data-tab="chat">⌘<span>Переписка</span></button>
+      <button data-tab="queue">◷<span>Очередь</span></button>
+    </nav>
+    <div id="toast" class="toast hidden" role="status"></div>
+  </div>
+</body>
+</html>

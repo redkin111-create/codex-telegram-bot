@@ -4,6 +4,7 @@
  * shutdown between them.
  */
 import { AcpClient } from "./acp/client.js";
+import { startMiniAppAgent } from "./tma/agent.js";
 import { createBot } from "./bot/bot.js";
 import { CANONICAL_DIR, loadConfig } from "./config.js";
 import { InstanceLock } from "./app/instance-lock.js";
@@ -50,6 +51,7 @@ async function main(): Promise<void> {
 
   await acp.start();
   const { bot, registry, scheduler, updater } = await createBot(cfg, acp);
+  const miniApp = startMiniAppAgent({ cfg, acp, registry });
   scheduler.start();
   await updater.start();
 
@@ -60,6 +62,7 @@ async function main(): Promise<void> {
     log.info("shutting down…");
     scheduler.stop();
     updater.stop();
+    miniApp?.stop();
     registry.disposeAll();
     void bot.stop().catch(() => {});
     acp.stop();

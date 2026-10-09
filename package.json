@@ -22,6 +22,7 @@
   },
   "scripts": {
     "start": "tsx src/index.ts",
+    "tma:gateway": "tsx src/tma/gateway.ts",
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test",
