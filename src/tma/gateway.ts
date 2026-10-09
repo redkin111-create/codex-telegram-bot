@@ -4,6 +4,7 @@
  *
  * Run behind TLS reverse proxy; binds to 127.0.0.1 by default.
  */
+import "dotenv/config";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
