@@ -11,7 +11,8 @@
   var streamCtrl=null,streamSession="",streamDelay=1000,streamTimer=null,streamDisabled=false;
   var cursors=new Map(),liveDraft=new Map(),liveTools=new Map();
   var photos=[],photoBusy=false,activityRequests=new Map(),lastActivityStamp=0,lastHistoryAt=0;
-  var snapshotErrors=0,lastActivityAt=0;
+  var snapshotErrors=0,lastActivityAt=0,healthFailures=0,lastHealthAt=0;
+  var streamEpoch="",streamIdleTimer=null;
   function node(tag,klass,text){var n=document.createElement(tag);if(klass)n.className=klass;if(text!==undefined)n.textContent=String(text);return n;}
   function note(text){var n=el("toast");n.textContent=text;n.classList.remove("hidden");clearTimeout(timer);timer=setTimeout(function(){n.classList.add("hidden");},3600);}
   function warn(text){el("warning").textContent=text;el("warning").classList.toggle("hidden",!text);}
@@ -70,9 +71,11 @@
       completed:"✓ Задание завершено",failed:"⚠ Ошибка выполнения",cancelled:"■ Остановлено",
       desktop_busy:"🔒 Сеанс занят Codex Desktop",
       observing:"◉ Наблюдение — статус Desktop неизвестен",external_activity:"● Codex записывает события в журнал"};
-    el("chat-state").textContent=s?(!state.online?"Ноутбук не подключён":labels[ls]||"◉ Статус не подтверждён"):"Здесь появится полная история Codex";
-    el("prompt").disabled=!s||!state.online;
-    el("send").disabled=!s||!state.online||actionInFlight||photoBusy;
+    el("chat-state").textContent=s?(!state.online?"Нет связи с ноутбуком":
+      state.codexConnected===false?"Codex app-server переподключается":
+      labels[ls]||"◉ Статус не подтверждён"):"Здесь появится полная история Codex";
+    el("prompt").disabled=!s||!state.online||state.codexConnected===false;
+    el("send").disabled=!s||!state.online||state.codexConnected===false||actionInFlight||photoBusy;
     el("attach-photo").disabled=!s||!state.online||photoBusy;
     el("stop").disabled=!s||!s.busy;
     el("compose-hint").textContent=!s?"Сначала выберите переписку":s.busy?"Сообщение попадёт в очередь":"Enter — отправить, Shift+Enter — новая строка";
@@ -269,15 +272,37 @@
     historyRequests.set(id,request);
     try{await request;}finally{historyRequests.delete(id);}
   }
+  async function healthCheck(){
+    var ctl=new AbortController(),timer=setTimeout(function(){ctl.abort();},6000);
+    try{
+      var resp=await fetch("/api/health",{cache:"no-store",signal:ctl.signal});
+      if(!resp.ok)throw Error("HTTP "+resp.status);
+      var health=await resp.json();
+      state.online=Boolean(health.online);
+      state.codexConnected=typeof health.codexConnected==="boolean"?health.codexConnected:undefined;
+      healthFailures=0;lastHealthAt=Date.now();
+      var status=el("connection");status.classList.toggle("online",state.online);
+      status.classList.toggle("offline",!state.online);
+      status.classList.remove("reconnecting");
+      status.querySelector("span").textContent=!state.online?"ПК не в сети":
+        state.codexConnected===false?"Codex перезапускается":"ПК подключён";
+      return state.online;
+    }catch(error){
+      healthFailures++;
+      if(healthFailures>=2){
+        state.online=false;state.codexConnected=undefined;
+        var status=el("connection");status.classList.remove("online");status.classList.add("offline");
+        status.querySelector("span").textContent="Проверяю соединение…";
+      }
+      return false;
+    }finally{clearTimeout(timer);}
+  }
   async function refresh(){
     if(snapshotInFlight)return;snapshotInFlight=true;
     try{
-      var health=await fetch("/api/health").then(function(x){return x.json();});
-      state.online=Boolean(health.online);
-      var status=el("connection");status.classList.toggle("online",state.online);
-      status.classList.toggle("offline",!state.online);
-      status.querySelector("span").textContent=state.online?"ПК подключён":"ПК не в сети";
-      if(!state.online){renderHeader();return;}
+      var online=await healthCheck();
+      renderHeader();
+      if(!online)return;
       var data=await api("snapshot");
       snapshotErrors=0;
       state.projects=data.projects||[];state.sessions=data.sessions||[];
@@ -353,7 +378,8 @@
   }
   function stopStream(){
     if(streamTimer)clearTimeout(streamTimer);
-    streamTimer=null;
+    if(streamIdleTimer)clearTimeout(streamIdleTimer);
+    streamTimer=null;streamIdleTimer=null;
     if(streamCtrl)streamCtrl.abort();
     streamCtrl=null;streamSession="";
   }
@@ -381,15 +407,23 @@
       try{
         var rsp=await fetch("/api/stream",{method:"POST",signal:ctl.signal,cache:"no-store",
           headers:{"Content-Type":"application/json","X-Telegram-Init-Data":initData},
-          body:JSON.stringify({sessionId:id,after:cursors.get(id)||0})});
+          body:JSON.stringify({sessionId:id,after:cursors.get(id)||0,epoch:streamEpoch})});
         if(rsp.status===501){streamDisabled=true;return;}
         if(rsp.status===401){streamDisabled=true;warn("Срок авторизации истёк. Закрой Mini App и открой заново через /app.");return;}
         if(!rsp.ok||!rsp.body)throw Error("Stream HTTP "+rsp.status);
         streamDelay=1000;
         el("connection").classList.remove("reconnecting");
-        var reader=rsp.body.getReader(),decoder=new TextDecoder(),buffer="";
+        var reader=rsp.body.getReader(),decoder=new TextDecoder(),buffer="",stalled=false;
+        function armWatchdog(){
+          if(streamIdleTimer)clearTimeout(streamIdleTimer);
+          // Server sends a heartbeat every 15s. A stalled relay should recover
+          // even if the TCP connection never actually closes.
+          streamIdleTimer=setTimeout(function(){stalled=true;ctl.abort();},48000);
+        }
+        armWatchdog();
         while(!ctl.signal.aborted){
           var x=await reader.read();if(x.done)break;
+          armWatchdog();
           buffer+=decoder.decode(x.value,{stream:true});
           if(buffer.length>250000)buffer=buffer.slice(-120000);
           var at;
@@ -397,6 +431,21 @@
             var packet=buffer.slice(0,at);buffer=buffer.slice(at+2);
             if(packet.includes("event: reauth")){streamDisabled=true;warn("Перезапусти Mini App для продления авторизации.");return;}
             var line=packet.split("\n").find(function(l){return l.startsWith("data: ");});
+            if(packet.includes("event: hello")){
+              if(line){
+                try{
+                  var hello=JSON.parse(line.slice(6));
+                  if(typeof hello.epoch==="string"){
+                    if(streamEpoch&&streamEpoch!==hello.epoch){
+                      cursors.clear();liveDraft.clear();liveTools.clear();
+                      renderActivity();void loadHistory(false);
+                    }
+                    streamEpoch=hello.epoch;
+                  }
+                }catch(_){}
+              }
+              continue;
+            }
             if(line){try{streamEvent(JSON.parse(line.slice(6)));}catch(_){}}
           }
         }
@@ -406,9 +455,11 @@
           el("connection").querySelector("span").textContent="Переподключение…";
         }
       }finally{
+        if(streamIdleTimer)clearTimeout(streamIdleTimer);
+        streamIdleTimer=null;
         if(streamCtrl!==ctl)return;
         streamCtrl=null;streamSession="";
-        if(!ctl.signal.aborted&&state.selected===id&&!document.hidden&&!streamDisabled){
+        if((!ctl.signal.aborted||stalled)&&state.selected===id&&!document.hidden&&!streamDisabled){
           var delay=streamDelay;streamDelay=Math.min(streamDelay*2,30000);
           streamTimer=setTimeout(function(){streamTimer=null;startStream();},delay);
         }
