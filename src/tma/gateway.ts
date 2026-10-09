@@ -115,6 +115,9 @@ async function route(req:IncomingMessage,res:ServerResponse,cfg:GatewayConfig,lo
   if(pathname.startsWith("/api/agent/")){
     if(!agentAuthorized(req,cfg.secret)){json(res,401,{error:"Unauthorized agent"});return;}
     lastAgentAt=Date.now();
+    if(pathname==="/api/agent/heartbeat"&&req.method==="POST"){
+      json(res,200,{ok:true});return;
+    }
     if(pathname==="/api/agent/next"&&req.method==="GET"){
       if(poller){json(res,409,{error:"Agent already polling"});return;}
       let job:TmaJob|undefined;

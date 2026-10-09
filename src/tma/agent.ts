@@ -77,8 +77,29 @@ export class MiniAppAgent {
     this.telegramSessions=new TelegramSessionRegistry(deps.cfg.dataDir);
     this.promptJournal=new DurablePromptJournal(deps.cfg.dataDir);
   }
-  start():void{if(!this.loopPromise)this.loopPromise=this.run();}
+  start():void{
+    if(!this.loopPromise){
+      this.loopPromise=this.run();
+      void this.runHeartbeat();
+    }
+  }
   stop():void{this.abort.abort();}
+  private async runHeartbeat():Promise<void>{
+    while(!this.abort.signal.aborted){
+      try{
+        const rsp=await fetch(this.root+"/api/agent/heartbeat",{
+          method:"POST",
+          headers:{Authorization:"Bearer "+this.secret},
+          signal:this.abort.signal,
+        });
+        if(!rsp.ok)throw new Error("Gateway HTTP "+rsp.status);
+      }catch(error){
+        if(this.abort.signal.aborted)break;
+        log.warn("TMA heartbeat failed:",(error as Error).message);
+      }
+      await sleep(10_000,this.abort.signal);
+    }
+  }
   private async run():Promise<void>{
     log.info("TMA outbound agent connected to "+new URL(this.root).host);
     while(!this.abort.signal.aborted){

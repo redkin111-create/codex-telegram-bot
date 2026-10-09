@@ -31,6 +31,15 @@ test("Gateway authorizes Telegram owner and relays an RPC to a connected local a
     const headers={"Content-Type":"application/json","X-Telegram-Init-Data":telegramData(token)};
     const unknown=await fetch(base+"/api/execute",{method:"POST",headers,body:JSON.stringify({op:"shell",args:{}})});
     assert.equal(unknown.status,400);
+    const offline=await fetch(base+"/api/health").then(r=>r.json()) as {online:boolean};
+    assert.equal(offline.online,false);
+    const unauthorizedHeartbeat=await fetch(base+"/api/agent/heartbeat",{method:"POST"});
+    assert.equal(unauthorizedHeartbeat.status,401);
+    const heartbeat=await fetch(base+"/api/agent/heartbeat",{method:"POST",
+      headers:{Authorization:"Bearer "+secret}});
+    assert.equal(heartbeat.status,200);
+    const online=await fetch(base+"/api/health").then(r=>r.json()) as {online:boolean};
+    assert.equal(online.online,true);
     const agentPoll=fetch(base+"/api/agent/next",{headers:{Authorization:"Bearer "+secret}});
     for(let i=0;i<80;i++){
       const status=await fetch(base+"/api/health").then(r=>r.json()) as {online:boolean};
