@@ -117,6 +117,7 @@ export class SessionRuntime {
   private primingContext: string | undefined;
   private watcher: TailWatcher | undefined;
   private watchGeneration = 0;
+  private watchCwd: string | undefined;
   private watchDelivery: Promise<void> = Promise.resolve();
   private readonly watchImagesSent = new Set<string>();
   /** True when the active watch is a transient "follow" of this session's own
@@ -360,10 +361,11 @@ export class SessionRuntime {
     this.primingContext = context;
   }
 
-  startWatch(jsonlPath: string, follow = false): void {
+  startWatch(jsonlPath: string, follow = false, cwd = this.cwd): void {
     this.stopWatch();
     const generation = this.watchGeneration;
     this.watchImagesSent.clear();
+    this.watchCwd = cwd;
     this.watchIsFollow = follow;
     this.watcher = new TailWatcher(jsonlPath, (entries) => {
       // Polls may overlap while Telegram is delivering several pages/photos.
@@ -382,6 +384,7 @@ export class SessionRuntime {
     this.watcher.stop();
     this.watcher = undefined;
     this.watchIsFollow = false;
+    this.watchCwd = undefined;
     this.watchImagesSent.clear();
     return true;
   }
@@ -1385,7 +1388,7 @@ export class SessionRuntime {
         silent,
       });
       if (entry.role === "assistant" && generation === this.watchGeneration) {
-        await this.sendWatchImages(entry.text, this.cwd);
+        await this.sendWatchImages(entry.text, this.watchCwd ?? this.cwd);
       }
     }
   }
