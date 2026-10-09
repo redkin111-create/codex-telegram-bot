@@ -42,6 +42,8 @@ export class MiniAppAgent {
   private readonly secret:string;
   private readonly results=new Map<string,TmaResult>();
   private readonly selected=new Map<number,string>();
+  /** Keep send outcomes by client request id so timeout/retry cannot send twice. */
+  private readonly sends=new Map<string,{text:string;promise:Promise<unknown>;at:number}>();
   /** The project/thread catalogue is relatively expensive over app-server.
    * Share a short-lived snapshot between UI status and history requests.
    * Failed refreshes are retried; they are never cached forever. */
@@ -134,6 +136,11 @@ export class MiniAppAgent {
     if(!thread)throw new Error("Переписка не найдена в последних сеансах Codex");
     return thread;
   }
+  /** Validate stream access with the same catalogue/ownership rules as history. */
+  async canReadSession(id:string,userId:number):Promise<boolean>{
+    if(!/^[a-z0-9-]{8,80}$/i.test(id)||!this.deps.cfg.allowedUsers.has(String(userId)))return false;
+    try{await this.thread(id,userId);return true;}catch{return false;}
+  }
   private async project(path:string,userId:number):Promise<{name:string;cwd:string}>{
     const {projects,threads}=await this.catalogue(userId);
     // Never trust arbitrary cwd from a web request. It must have been reported
@@ -218,18 +225,31 @@ export class MiniAppAgent {
       }
       case "send":{
         const id=argumentString(args,"sessionId",80),message=argumentString(args,"text",16000);
-        const t=await this.thread(id,chatId);
-        if(!t.cwd)throw new Error("Неизвестная рабочая папка");
-        if(!controller.runtimeForSession(id)){
-          try{await controller.addAttach(id,t.cwd,basename(t.cwd),[]);}
-          catch(error){
-            if(error instanceof LiveSessionConflictError)throw error;
-            throw error;
-          }
-        }else if(controller.foreground().sessionId!==id){await controller.switchTo(id);}
-        this.selected.set(chatId,id);
-        const result=await registry.submitPrompt(chatId,textPrompt(message));
-        return {result:result.kind==="submitted"?result.outcome:result.kind};
+        const requestId=argumentString(args,"requestId",80);
+        if(!/^[a-zA-Z0-9_-]{12,80}$/.test(requestId))throw new Error("Неверный идентификатор запроса");
+        const key=chatId+":"+id+":"+requestId;
+        const existing=this.sends.get(key);
+        if(existing){
+          if(existing.text!==message)throw new Error("Нельзя переиспользовать ID для другого текста");
+          return existing.promise;
+        }
+        const pending=(async()=>{
+          const t=await this.thread(id,chatId);
+          if(!t.cwd)throw new Error("Неизвестная рабочая папка");
+          if(!controller.runtimeForSession(id))await controller.addAttach(id,t.cwd,basename(t.cwd),[]);
+          else if(controller.foreground().sessionId!==id)await controller.switchTo(id);
+          this.selected.set(chatId,id);
+          const result=await registry.submitPrompt(chatId,textPrompt(message));
+          return {result:result.kind==="submitted"?result.outcome:result.kind};
+        })();
+        this.sends.set(key,{text:message,promise:pending,at:Date.now()});
+        // Cache both successes and failures briefly: never silently repeat an
+        // accepted prompt when the browser lost its HTTP response.
+        if(this.sends.size>180){
+          for(const [k,v] of this.sends)if(Date.now()-v.at>60*60*1000)this.sends.delete(k);
+          if(this.sends.size>180)this.sends.delete(this.sends.keys().next().value!);
+        }
+        return pending;
       }
       case "cancel":{
         const id=argumentString(args,"sessionId",80);
