@@ -55,9 +55,12 @@ Use a **different Telegram bot token** for each bot instance.
 ## 📱 Telegram Mini App (optional)
 
 A lightweight Codex Remote Mini App is available in `apps/mini-app/public`.
-It runs on an HTTPS gateway and connects outbound to this bot on Windows.
+**No VPS required:** set `TMA_LOCAL=true` in the existing Windows bot's `.env`.
+The bot's current logon service will start the local Mini App gateway and Codex
+bridge automatically. A named Cloudflare Tunnel (`TMA_TUNNEL_CONFIG`) can also
+start and reconnect with the bot to provide a permanent public HTTPS URL.
 Use `/app` in Telegram to open projects, chats, full reports and queue management.
-See [Mini App setup](docs/TMA.md) for security and VPS deployment steps.
+See [Mini App setup](docs/TMA.md) for the one-time laptop and tunnel setup.
 
 ## ⚡ Install the upstream npm release
 

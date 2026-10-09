@@ -149,9 +149,9 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
   bot.use(createAuthMiddleware(cfg));
 
   bot.command("app", async (ctx) => {
-    const url = (process.env.TMA_GATEWAY_URL || "").trim();
+    const url = (process.env.TMA_PUBLIC_URL || process.env.TMA_GATEWAY_URL || "").trim();
     if (!/^https:\/\/[^\s]+$/i.test(url)) {
-      await ctx.reply("Mini App пока не подключена. Настройте HTTPS шлюз по docs/TMA.md.");
+      await ctx.reply("Mini App пока не подключена. Настройте локальный шлюз и HTTPS Tunnel по docs/TMA.md.");
       return;
     }
     await ctx.reply("📱 Codex Remote — проекты, чаты, отчёты и очередь в одном окне.", {

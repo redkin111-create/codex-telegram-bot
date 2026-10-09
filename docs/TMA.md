@@ -1,98 +1,166 @@
-# Codex Remote — Telegram Mini App (MVP)
+# Codex Remote Mini App — запуск дома без VPS
 
-This is an optional mobile client for the existing Telegram Codex bot. Codex
-and its credentials stay on your Windows machine; the VPS hosts only a gateway
-and a static user interface. Existing Telegram approval prompts and
-notifications continue working.
+Codex Remote работает **на том же Windows-ноутбуке**, что и Telegram-бот
+Codex. Отдельные серверы и открытые порты домашнего роутера не требуются.
 
-Architecture:
-  Telegram Mini App -> HTTPS gateway (VPS) -> outbound long-poll from Windows bot -> Codex app-server.
+Как это работает:
 
-## VPS setup
+```text
+Telegram Mini App на телефоне
+      | HTTPS
+Постоянный адрес: https://codex.example.com
+      | Cloudflare Tunnel (исходящее соединение с ноутбука)
+      v
+127.0.0.1:3301 — Mini App + API на ноутбуке
+      | локальная связь с внутренним одноразовым секретом
+Codex Telegram Bot -> Codex app-server -> локальные проекты
+```
 
-Clone this fork on the VPS and run npm ci. Set environment variables:
+**После единовременной настройки** всё запускается автоматически вместе
+с существующим ботом при входе в Windows. Тот же Windows Scheduled Task
+запускает бота, Mini App, локальный API и, если задан конфиг, cloudflared.
+При завершении процесса бота дочерний туннель завершается. При
+неожиданном выходе cloudflared автоматически перезапускается.
 
-- TELEGRAM_BOT_TOKEN: the existing Telegram bot token.
-- TMA_OWNER_IDS: comma-separated allowed numeric Telegram user IDs.
-- TMA_AGENT_TOKEN: a separate random shared secret of at least 32 characters.
-- TMA_PORT: 3301 (optional).
-- TMA_HOST: 127.0.0.1 (recommended; default).
+## 1. Обнови бота на домашнем ноутбуке
 
-Run: npm run tma:gateway
+В PowerShell внутри **исходного форка**:
 
-Use systemd or another service manager so it restarts automatically.
-Put nginx/Caddy in front of port 3301 to provide public HTTPS. Example nginx:
+```powershell
+git pull --ff-only origin main
+npm ci
+npm run service -- status
+```
 
-    server {
-      listen 443 ssl;
-      server_name codex.example.com;
-      ssl_certificate /etc/letsencrypt/live/codex.example.com/fullchain.pem;
-      ssl_certificate_key /etc/letsencrypt/live/codex.example.com/privkey.pem;
-      location / {
-        proxy_pass http://127.0.0.1:3301;
-        proxy_http_version 1.1;
-        proxy_read_timeout 45s;
-        proxy_set_header Host $host;
-        client_max_body_size 10m;
-      }
-    }
+Если бот уже автоматически запускается при входе в Windows, новая TMA
+будет запускаться той же службой. Переустанавливать автозапуск не нужно.
+Если бот ещё не установлен:
 
-Never expose the HTTP port directly to the public internet.
+```powershell
+npm run service -- install
+```
 
-## Windows bot setup
+В Windows запуск привязан к **входу пользователя** (Scheduled Task или
+папка автозагрузки), а не к моменту включения ноутбука до входа в систему.
 
-Add to the existing Codex Telegram bot configuration in ~/.codex/tg/.env:
+## 2. Включи локальную TMA
 
-    TMA_GATEWAY_URL=https://codex.example.com
-    TMA_AGENT_TOKEN=the-same-secret-as-on-the-vps
+Добавь в существующий конфиг бота
+`%USERPROFILE%\.codex\tg\.env` (фактическое расположение можно
+уточнить через диагностическую команду бота):
 
-Restart the installed bot normally. The agent opens an outbound connection
-to the gateway; your PC needs no port forwarding or direct external access.
+```dotenv
+TMA_LOCAL=true
+TMA_PORT=3301
+TMA_PUBLIC_URL=https://codex.example.com
+```
 
-The VPS gateway and Windows bot must both be able to see the same bot token.
-The VPS validates Telegram auth by HMAC using TELEGRAM_BOT_TOKEN, while the
-Windows bot continues receiving Telegram updates as before.
+Адрес `codex.example.com` — **пример, замени на свой HTTPS-домен**.
+Локальный шлюз слушает *только* `127.0.0.1`, не `0.0.0.0`.
+Пользователи автоматически берутся из существующего
+`ALLOWED_USERS`; для локального режима **НЕ НУЖНЫ**
+`TMA_GATEWAY_URL`, `TMA_OWNER_IDS` или `TMA_AGENT_TOKEN`.
+Секрет внутреннего транспорта генерируется заново при старте бота.
 
-## Telegram setup
+При отсутствии туннеля `http://127.0.0.1:3301` работает на самом
+ноутбуке для диагностики, но Telegram на телефоне не может открыть его
+из интернета. Telegram Mini App в обычном режиме нужен **HTTPS**.
 
-In BotFather configure the bot Menu Button / Mini App URL to:
-https://codex.example.com
+## 3. Один раз настрой Cloudflare Tunnel
 
-Open the Mini App from the private chat with the bot. Opening the URL in a
-regular browser does not provide signed Telegram initData and cannot access
-Codex. The numeric account ID must be present in both TMA_OWNER_IDS on the VPS
-and ALLOWED_USERS in the Windows bot configuration.
+Нужен домен с DNS, управляемым Cloudflare. Подойдёт собственный поддомен,
+например `codex.yourdomain.ru`. Установи `cloudflared` по официальной
+инструкции:
+https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/create-local-tunnel/
 
-## Features and limitations
+В PowerShell:
 
-MVP supports:
-- Project catalogue and session search
-- Full conversation history and screenshots referenced in Codex rollout logs
-- Sending prompts, starting a new session in a known project
-- Queue inspection, removal and resume, cancelling a bot-owned turn
-- Online indicator and responsive Telegram phone layout
+```powershell
+cloudflared tunnel login
+cloudflared tunnel create codex-remote
+cloudflared tunnel list
+cloudflared tunnel route dns codex-remote codex.example.com
+```
 
-Data refreshes roughly every 6 seconds rather than streaming every token.
-Source code, auth.json, bot tokens, and API keys are not stored on the VPS.
-The gateway retains only short-lived in-memory requests and replies.
-Images must exist within the watched project, be referenced in the rollout
-log, and be no larger than 3 MB for display inside TMA.
+После `create` Cloudflare сообщит **UUID туннеля** и путь к JSON-файлу
+учётных данных. Создай
+`%USERPROFILE%\.cloudflared\config.yml`:
 
-A session with an active writer in Codex Desktop stays read-only. To send
-commands from TMA, its current writer must release the session. The app does
-not force termination or mutate Codex lock files.
+```yaml
+tunnel: UUID-ТВОЕГО-ТУННЕЛЯ
+credentials-file: C:/Users/ТВОЙ-ПОЛЬЗОВАТЕЛЬ/.cloudflared/UUID-ТВОЕГО-ТУННЕЛЯ.json
+ingress:
+  - hostname: codex.example.com
+    service: http://127.0.0.1:3301
+  - service: http_status:404
+```
 
-This is NOT yet full Codex Desktop feature parity: advanced diff viewer, live
-WebSocket stream, drag-and-drop queue, TMA file uploads, integrated approvals,
-and MCP/Skills management will be later stages.
+Проверь конфиг:
 
-## Security
+```powershell
+cloudflared tunnel --config "$env:USERPROFILE\.cloudflared\config.yml" ingress validate
+```
 
-- The gateway checks Telegram-signed initData on EVERY authorized request.
-- Signed data expires after one hour; reopening the TMA obtains fresh initData.
-- The gateway allowlists user IDs, the Windows bot separately allowlists IDs.
-- RPC operations are allowlisted; there is no arbitrary-shell endpoint.
-- Shared agent secret is never sent to Telegram WebView.
-- Host only behind HTTPS with a strong shared token.
-- Designed for one PC and one gateway replica. Replicated multi-agent
-  deployment requires external durable state and agent ownership controls.
+Теперь добавь в `.env` бота:
+
+```dotenv
+TMA_TUNNEL_CONFIG=C:/Users/ТВОЙ-ПОЛЬЗОВАТЕЛЬ/.cloudflared/config.yml
+# Только если cloudflared не находится в PATH:
+# TMA_CLOUDFLARED_BIN=C:/Cloudflared/bin/cloudflared.exe
+```
+
+**Важно:** не устанавливай *дополнительно* `cloudflared service install`,
+если используешь автозапуск через бота: иначе два процесса туннеля будут
+стартовать одновременно. Выбирай один способ — вместе с ботом
+**или** самостоятельную службу Cloudflare. Не добавляй Cloudflare
+`cert.pem` и файлы `*.json` с учётными данными в Git.
+
+Если у тебя пока нет домена на Cloudflare, TMA уже будет работать локально,
+но постоянную кнопку Mini App с телефона настроить нельзя до появления
+доступного HTTPS-адреса.
+
+## 4. Запусти и привяжи Telegram
+
+```powershell
+npm run service -- restart
+```
+
+Проверь `https://codex.example.com/api/health` — поле `online: true`
+появится, когда ноутбук и локальный агент подключились.
+В BotFather у своего бота настрой **Menu Button** на
+`https://codex.example.com`. Также можно использовать `/app`
+в приватном чате с ботом: она показывает кнопку открытия Mini App.
+
+## 5. Поведение после перезапуска
+
+- Вход в Windows -> тот же бот запускается скрыто в фоне.
+- Внутри процесса автоматически запускается локальный HTTPS-*origin* API
+  (сам API — HTTP на loopback; внешний HTTPS обеспечивает Cloudflare).
+- Если настроен `TMA_TUNNEL_CONFIG`, cloudflared также запускается и
+  восстанавливает соединение после обрыва.
+- Когда ноутбук спит, выключен или теряет интернет, TMA и Codex недоступны
+  до восстановления подключения. Бот не может выполнять работу в спящем
+  режиме.
+- Ошибка старта TMA выводится в лог, но **не блокирует обычный Telegram-бот**.
+
+## Безопасность и ограничения
+
+- Telegram `initData` проверяется на сервере по HMAC на каждом запросе;
+  доступа по одному знанию HTTPS-адреса недостаточно.
+- Список владельцев совпадает с `ALLOWED_USERS` в локальном боте.
+- Codex и все его токены остаются на ноутбуке.
+- Не нужно пробрасывать порт 3301 на роутере.
+- Используй длинный HTTPS-домен, защищённую Cloudflare-учётную запись,
+  а главное — держи Bot API токен приватным.
+- Codex Desktop может удерживать активный writer; в таком случае TMA умеет
+  читать историю, но не перехватывает тот же поток принудительно.
+- UI пока обновляет данные каждые ~6 секунд; WebSocket, diff viewer,
+  встроенные разрешения и загрузка файлов будут отдельным этапом.
+
+## Совместимость со старой схемой VPS
+
+Старая схема не удалена. Если `TMA_LOCAL` **не задан или false**, то бот
+по-прежнему может запускать исходящий Mini App агент через
+`TMA_GATEWAY_URL` и `TMA_AGENT_TOKEN`. Отдельный gateway запускается
+командой `npm run tma:gateway` на любом сервере. Для твоей домашней
+установки этот режим не требуется.
