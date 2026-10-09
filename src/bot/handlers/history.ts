@@ -6,10 +6,9 @@ import { basename } from "node:path";
 import type { BotDeps } from "../deps.js";
 import { readConversationHistory } from "../../sessions/history.js";
 import type { SessionMeta } from "../../sessions/types.js";
-import { sendMarkdownDoc } from "../telegram-io.js";
+import { sendCompleteWatchReport } from "../watch-report.js";
 import { safeSessionTitle } from "../catalog.js";
 
-const ENTRY_MAX = 700;
 const ROLE_ICON: Record<string, string> = {
   user: "\u{1F464}",
   assistant: "\u{1F916}",
@@ -47,10 +46,9 @@ export async function showHistory(
   const body = entries
     .map((e) => {
       const icon = ROLE_ICON[e.role] ?? "\u2022";
-      let text = e.text.length > ENTRY_MAX ? e.text.slice(0, ENTRY_MAX) + " …" : e.text;
-      return `${icon} ${text}`;
+      return `${icon} ${e.text}`;
     })
     .join("\n\n");
 
-  await sendMarkdownDoc(deps.api, chatId, `${header}\n\n${body}`);
+  await sendCompleteWatchReport(deps.api, chatId, `${header}\n\n${body}`, { title: "📜 История Codex" });
 }
