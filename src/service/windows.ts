@@ -159,6 +159,8 @@ export const windowsController: ServiceController = {
       if (task.entry) runSafe("powershell", ["-NoProfile", "-Command", killScript(task.entry)]);
     }
     if (startup.entry) runSafe("powershell", ["-NoProfile", "-Command", killScript(startup.entry)]);
+    const startupLauncher=startupVbsPath();
+    if(startupLauncher)runSafe("powershell",["-NoProfile","-Command",killLauncherScript(startupLauncher)]);
     if (!task.exists) await this.stop(spec);
     runSafe("schtasks", ["/Delete", "/F", "/TN", TASK]); // best-effort (may not exist)
     rmSync(vbsPath(spec), { force: true });
@@ -201,6 +203,8 @@ export const windowsController: ServiceController = {
     // rather than starting a second bot and causing Telegram 409 conflicts.
     pauseService(spec);
     if (task.exists) runSafe("schtasks", ["/End", "/TN", TASK]); // best-effort if task-based
+    const startupLauncher=startupVbsPath();
+    if(startupLauncher)runSafe("powershell",["-NoProfile","-Command",killLauncherScript(startupLauncher)]);
     const res = runSafe("powershell", ["-NoProfile", "-Command", killScript(entryOf(spec))]);
     return ok(`Stopped. ${res.out.trim()}`);
   },
@@ -298,6 +302,17 @@ function killScript(entry: string): string {
     `$p = Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like ('*' + $entry + '*') };`,
     `$p | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue };`,
     `"killed " + (@($p).Count)`,
+  ].join(" ");
+}
+
+/** Terminate only our named WScript watchdog, not unrelated .vbs tasks.
+ * Windows Startup-folder launchers remain alive during supervised restarts
+ * otherwise, potentially racing a new launcher after service -- restart. */
+function killLauncherScript(path:string):string{
+  const encoded=Buffer.from(path,"utf8").toString("base64");
+  return [
+    `$script=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'));`,
+    `Get-CimInstance Win32_Process -Filter "Name='wscript.exe'" | Where-Object { $_.CommandLine -like ('*' + $script + '*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue };`,
   ].join(" ");
 }
 
