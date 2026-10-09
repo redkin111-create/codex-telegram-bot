@@ -332,7 +332,7 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
     const cwd = meta?.cwd || foreground.cwd;
     const projectName = meta?.projectName || basename(cwd) || "проект";
     deps.registry.controller(ctx.chat!.id).enterWatchOnly(id, cwd, projectName, deps.store.jsonlPath(id));
-    await ctx.reply(`📡 Слежу за сеансом: ${meta?.title ?? "Сеанс Codex"}\nНовые события будут появляться здесь. Чтобы остановить, отправьте /unwatch.`);
+    await ctx.reply(`📡 Слежу за сеансом: ${meta?.title ?? "Сеанс Codex"}\nПоследний полный ответ, новые отчёты и доступные скриншоты появятся здесь. Длинные отчёты придут частями и отдельным Markdown-файлом. /unwatch — остановить.`);
   });
 
   bot.callbackQuery(new RegExp(`^handoff:watch:${UUID}$`), async (ctx) => {
@@ -347,7 +347,7 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
       id, cwd, meta?.projectName || currentTarget?.projectName || basename(cwd) || "проект", deps.store.jsonlPath(id),
     );
     if (keptPending) return;
-    await ctx.editMessageText(`👁 Только наблюдение: ${meta?.title ?? "сеанс Codex"}\nСообщения не отправляются в этот сеанс. /unwatch — выйти из режима наблюдения.`).catch(() => {});
+    await ctx.editMessageText(`👁 Только наблюдение: ${meta?.title ?? "сеанс Codex"}\nСообщения не отправляются в этот сеанс. Последний ответ, новые полные отчёты и доступные скриншоты будут отправлены сюда. /unwatch — выйти.`).catch(() => {});
   });
 
   bot.callbackQuery(new RegExp(`^handoff:fork:${UUID}$`), async (ctx) => {
