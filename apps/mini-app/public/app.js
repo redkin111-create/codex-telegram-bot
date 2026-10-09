@@ -51,7 +51,7 @@
       var info=node("div","session-info"),title=node("strong","",titleOf(s));
       var ls=liveStatus.get(s.id)||s.liveStatus||"observing";
       var captions={working:"● Работает",approval:"⏳ Ждёт разрешения",completed:"✓ Завершён",
-        failed:"⚠ Ошибка",cancelled:"■ Остановлен",observing:"◉ Наблюдение"};
+        failed:"⚠ Ошибка",cancelled:"■ Остановлен",desktop_busy:"🔒 Занят Desktop",observing:"◉ Наблюдение"};
       var isActive=s.busy||ls==="working"||ls==="approval";
       var sub=node("span","sub"+(isActive?" busy":""),(captions[ls]||"◉ Наблюдение")+" · "+(s.cwd.split(/[\\/]/).pop()||"Проект")+" · "+fmtTime(s.updatedAt));
       info.append(title,sub);btn.append(icon,info);btn.onclick=function(){void pick(s.id);};list.append(btn);
@@ -63,6 +63,7 @@
     var ls=s&&(liveStatus.get(s.id)||s.liveStatus);
     var labels={working:"● Codex работает",approval:"⏳ Ждёт разрешения в Telegram",
       completed:"✓ Задание завершено",failed:"⚠ Ошибка выполнения",cancelled:"■ Остановлено",
+      desktop_busy:"🔒 Сеанс занят Codex Desktop",
       observing:"◉ Наблюдение — статус Desktop неизвестен"};
     el("chat-state").textContent=s?(!state.online?"Ноутбук не подключён":labels[ls]||"◉ Статус не подтверждён"):"Здесь появится полная история Codex";
     el("prompt").disabled=!s||!state.online;
@@ -214,7 +215,12 @@
   async function runAction(op,args,onSuccess){
     if(actionInFlight)return;actionInFlight=true;renderHeader();
     try{var data=await api(op,args);if(onSuccess)await onSuccess(data);return data;}
-    catch(err){note(err.message);return null;}
+    catch(err){
+      if(op==="send"&&/active writer|занят.*(?:desktop|codex)|another writer/i.test(err.message)){
+        liveStatus.set(args.sessionId,"desktop_busy");renderHeader();renderSessions();
+      }
+      note(err.message);return null;
+    }
     finally{actionInFlight=false;renderHeader();}
   }
   async function send(ev){
@@ -225,7 +231,11 @@
     }
     var result=await runAction("send",{sessionId:id,text:text,requestId:pendingSend.requestId},async function(data){
       el("prompt").value="";pendingSend=null;
-      note(data.result==="queued"?"Добавлено в очередь":data.result==="held"?"Сообщение ожидает свободный сеанс":"Задание отправлено Codex");
+      if(data.result==="held"){
+        liveStatus.set(id,"desktop_busy");renderHeader();renderSessions();
+      }
+      note(data.result==="queued"?"Добавлено в очередь":data.result==="held"?
+        "Сеанс занят. Сообщение сохранено в боте; для продолжения открой Telegram-чат.":"Задание отправлено Codex");
       await loadHistory();await loadQueue();
     });
     if(!result){
