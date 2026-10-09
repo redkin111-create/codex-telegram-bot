@@ -13,6 +13,7 @@ import {
   funnelUrlForPort,
   getFunnelPublicUrl,
   tailscaleDnsName,
+  tailscaleCommand,
   type TailscaleCommand,
 } from "../src/tma/tailscale.js";
 
@@ -36,6 +37,15 @@ test("Only a Funnel pointing to this exact local TMA port yields a public URL", 
   assert.equal(funnelUrlForPort(published(3200),name,3301),undefined);
   assert.equal(funnelUrlForPort(published(3301),"different.ts.net",3301),undefined);
   assert.equal(funnelUrlForPort("No serve config",name,3301),undefined);
+});
+
+test("Tailscale command failures preserve the CLI error details", async () => {
+  const command = tailscaleCommand({}, async () => {
+    throw Object.assign(new Error("Command failed"), {
+      stderr: "Funnel is not enabled on your tailnet.",
+    });
+  });
+  await assert.rejects(command(["funnel", "status"]), /Funnel is not enabled on your tailnet/);
 });
 
 test("Tailscale background Funnel enablement is idempotent and never overwrites another route",async()=>{

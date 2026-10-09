@@ -11,6 +11,17 @@ import { promisify } from "node:util";
 
 const execFile = promisify(execFileCallback);
 export type TailscaleCommand = (args: readonly string[]) => Promise<string>;
+export type TailscaleExecutor = (
+  executable: string,
+  args: readonly string[],
+) => Promise<{ stdout: string; stderr?: string }>;
+
+const defaultExecutor: TailscaleExecutor = (executable, args) =>
+  execFile(executable, [...args], {
+    windowsHide: true,
+    timeout: 12_000,
+    maxBuffer: 128 * 1024,
+  });
 
 function tailscaleExecutable(env: NodeJS.ProcessEnv = process.env): string {
   if (env.TMA_TAILSCALE_BIN?.trim()) return env.TMA_TAILSCALE_BIN.trim();
@@ -25,15 +36,22 @@ function tailscaleExecutable(env: NodeJS.ProcessEnv = process.env): string {
   return "tailscale";
 }
 
-export function tailscaleCommand(env: NodeJS.ProcessEnv = process.env): TailscaleCommand {
+export function tailscaleCommand(
+  env: NodeJS.ProcessEnv = process.env,
+  execute: TailscaleExecutor = defaultExecutor,
+): TailscaleCommand {
   const executable = tailscaleExecutable(env);
   return async (args) => {
-    const { stdout } = await execFile(executable, [...args], {
-      windowsHide: true,
-      timeout: 12_000,
-      maxBuffer: 128 * 1024,
-    });
-    return stdout;
+    try {
+      const { stdout } = await execute(executable, args);
+      return stdout;
+    } catch (error) {
+      const stderr = (error as { stderr?: unknown })?.stderr;
+      if (typeof stderr === "string" && stderr.trim()) {
+        throw new Error(stderr.trim(), { cause: error });
+      }
+      throw error;
+    }
   };
 }
 
