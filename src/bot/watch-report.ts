@@ -76,7 +76,7 @@ export async function sendCompleteWatchReport(
     log.warn("Telegram report page delivery failed:", (error as Error).message);
     if (!canAttach) throw error; // cannot promise that the full report was delivered
   }
-  if (canAttach && (pages.length > 2 || sent < pagesToSend.length)) {
+  if (canAttach && (pages.length > 1 || sent < pagesToSend.length)) {
     const note = pages.length > MAX_INLINE_PAGES
       ? "📄 Полный отчёт вложен файлом: в сообщении выше только начало."
       : "📄 Полный исходный отчёт в Markdown:";
