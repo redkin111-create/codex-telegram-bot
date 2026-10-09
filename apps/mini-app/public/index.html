@@ -31,7 +31,8 @@
       </aside>
       <main class="main">
         <div class="chat-header">
-          <div class="chat-heading"><span id="chat-project" class="caption">ВЫБЕРИТЕ СЕАНС</span><strong id="chat-title">Начните с выбора переписки</strong><span id="chat-state" class="muted">Здесь появится полная история Codex</span></div>
+          <div class="chat-heading"><span id="chat-project" class="caption">ВЫБЕРИТЕ СЕАНС</span><strong id="chat-title">Начните с выбора переписки</strong><span id="chat-state" class="muted">Здесь появится полная история Codex</span>
+            <span id="sync-state" class="sync-state">Ожидание синхронизации…</span></div>
           <div class="header-actions">
             <button id="refresh" class="icon-btn" title="Обновить отчёт" aria-label="Обновить">⟳</button>
             <button id="stop" class="icon-btn danger" title="Остановить задачу" aria-label="Остановить" disabled>■</button>
@@ -41,7 +42,10 @@
         <div id="live-activity" class="live-activity hidden" aria-live="polite"></div>
         <div id="images" class="images hidden" aria-label="Скриншоты из отчёта"></div>
         <form id="composer" class="composer">
+          <div id="attachments" class="attachments hidden" aria-live="polite"></div>
           <textarea id="prompt" rows="2" maxlength="16000" placeholder="Напишите задачу Codex…" aria-label="Задание для Codex" disabled></textarea>
+          <input id="photo-picker" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden aria-label="Добавить фото">
+          <div class="composer-tools"><button type="button" id="attach-photo" class="icon-btn attach-photo" title="Прикрепить фото" aria-label="Прикрепить фото" disabled>📎 Фото</button><span id="activity-meta" class="activity-meta">Ожидание данных Codex</span></div>
           <div class="composer-row"><span id="compose-hint">Сначала выберите переписку</span><button type="submit" id="send" class="send" disabled>Отправить <span>↑</span></button></div>
         </form>
       </main>
