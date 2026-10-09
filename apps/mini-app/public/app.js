@@ -197,9 +197,9 @@
       state.projects=data.projects||[];state.sessions=data.sessions||[];
       state.sessions.forEach(function(s){
       if(s.liveStatus&&(!liveStatus.has(s.id)||liveStatus.get(s.id)==="observing"))liveStatus.set(s.id,s.liveStatus);
-    });startStream();
+    });
       if(!state.selected&&data.selected&&state.sessions.some(function(x){return x.id===data.selected;}))state.selected=data.selected;
-      renderProjects();renderSessions();renderHeader();
+      renderProjects();renderSessions();renderHeader();startStream();
       if(state.selected&&state.tab==="chat")void loadHistory();
       if(state.selected&&state.tab==="queue")void loadQueue();
       warn("");
@@ -266,7 +266,7 @@
   }
   function startStream(){
     var id=state.selected;
-    if(!id||!state.online||document.hidden||streamDisabled||!initData)return;
+    if(!id||!state.online||document.hidden||streamDisabled||!initData||typeof TextDecoder==="undefined"||typeof ReadableStream==="undefined")return;
     if(streamCtrl&&streamSession===id)return;
     stopStream();
     var ctl=new AbortController();streamCtrl=ctl;streamSession=id;
@@ -320,8 +320,10 @@
   on("queue-reload","click",function(){void loadQueue();});
   on("resume","click",function(){void runAction("queueResume",{sessionId:state.selected},function(){note("Очередь возобновлена");return loadQueue();});});
   document.querySelectorAll(".bottom-nav button").forEach(function(b){b.addEventListener("click",function(){tab(b.dataset.tab);});});
-  window.addEventListener("offline",function(){state.online=false;stopStream();renderHeader();});
-  window.addEventListener("online",function(){void refresh();if(state.selected){void loadHistory(false);startStream();}});
+  if(window.addEventListener){
+    window.addEventListener("offline",function(){state.online=false;stopStream();renderHeader();});
+    window.addEventListener("online",function(){void refresh();if(state.selected){void loadHistory(false);startStream();}});
+  }
   tab("sessions");
   if(!initData){warn("Откройте эту страницу через Mini App своего Telegram-бота.");}
   else{
