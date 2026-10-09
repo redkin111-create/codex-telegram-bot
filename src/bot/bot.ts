@@ -50,6 +50,8 @@ import { BAR_LABELS } from "./menu/keyboard.js";
 import { PermissionService } from "./permission-service.js";
 import { RuntimeRegistry } from "./registry.js";
 import { cleanupIncomingAttachments } from "./incoming-files.js";
+import { enabledLocalTma } from "../tma/local.js";
+import { getFunnelPublicUrl } from "../tma/tailscale.js";
 import { TaskWizard } from "./wizard/task-wizard.js";
 
 const log = createLogger("bot");
@@ -149,9 +151,16 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
   bot.use(createAuthMiddleware(cfg));
 
   bot.command("app", async (ctx) => {
-    const url = (process.env.TMA_PUBLIC_URL || process.env.TMA_GATEWAY_URL || "").trim();
-    if (!/^https:\/\/[^\s]+$/i.test(url)) {
-      await ctx.reply("Mini App пока не подключена. Настройте локальный шлюз и HTTPS Tunnel по docs/TMA.md.");
+    // In local mode, resolve the actual public HTTPS Funnel route at click
+    // time. Never show an old Cloudflare hostname or a Tailscale device that
+    // is logged out or exposing another service.
+    const url = enabledLocalTma()
+      ? await getFunnelPublicUrl(Number(process.env.TMA_PORT || "3301"))
+      : (process.env.TMA_PUBLIC_URL || process.env.TMA_GATEWAY_URL || "").trim();
+    if (!url || !/^https:\/\/[^\s]+$/i.test(url)) {
+      await ctx.reply(enabledLocalTma()
+        ? "Mini App работает на ноутбуке, но Tailscale Funnel ещё не готов. Проверь Tailscale и настройку TMA_TAILSCALE_AUTO=true (docs/TMA.md)."
+        : "Mini App пока не подключена. Проверь TMA_GATEWAY_URL и docs/TMA.md.");
       return;
     }
     await ctx.reply("📱 Codex Remote — проекты, чаты, отчёты и очередь в одном окне.", {
