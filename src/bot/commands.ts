@@ -4,6 +4,7 @@
 export const COMMANDS: { command: string; description: string }[] = [
   { command: "start", description: "Начало работы, меню и статус" },
   { command: "menu", description: "Открыть меню" },
+  { command: "app", description: "Открыть Codex Remote Mini App" },
   { command: "projects", description: "Недавние проекты Codex и разрешённые папки" },
   { command: "sessions", description: "Список и продолжение сеансов" },
   { command: "active", description: "Активные сеансы этого чата" },
