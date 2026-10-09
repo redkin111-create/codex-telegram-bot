@@ -87,7 +87,7 @@
         table.appendChild(body);var scroll=el("div","md-table-scroll");scroll.appendChild(table);root.appendChild(scroll);continue;
       }
       var paragraph=[];
-      while(i<lines.length&&lines[i].trim()&&(paragraph.length===0||!/^(\s*#{1,6}\s|\s*[-*+]\s|\s*\d+\.\s|\s*>|\s*`{3}|\s*~{3})/.test(lines[i]))){
+      while(i<lines.length&&lines[i].trim()&&(paragraph.length===0||!(lines[i].includes("|")&&i+1<lines.length&&/^\s*\|?[\s:|-]+\|[\s:|-]*\|?\s*$/.test(lines[i+1])))&&(paragraph.length===0||!/^(\s*#{1,6}\s|\s*[-*+]\s|\s*\d+\.\s|\s*>|\s*`{3}|\s*~{3})/.test(lines[i]))){
         paragraph.push(lines[i]);i++;
       }
       if(!paragraph.length){paragraph.push(lines[i]);i++;}
