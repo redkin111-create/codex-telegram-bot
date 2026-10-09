@@ -83,20 +83,20 @@ test("TMA survives health timeout, distinguishes Codex crash from PC offline and
 
   // Native Codex reconnects but the existing catalogue need not be refreshed.
   connected=true;
-  intervals[3]!();
+  intervals[2]!();
   await pause();
   assert.equal(element("prompt").disabled,false);
 
   // Telegram's background webview may lose the TCP session; stop after two
   // failed bounded health probes, recover automatically with no manual refresh.
   down=true;
-  intervals[3]!();
+  intervals[2]!();
   await pause();
-  intervals[3]!();
+  intervals[2]!();
   await pause();
   assert.match(element("chat-state").textContent,/Нет связи с ноутбуком/);
   down=false;
-  intervals[3]!();
+  intervals[2]!();
   await pause();
   assert.equal(element("prompt").disabled,false);
 
