@@ -276,7 +276,7 @@
     var ctl=new AbortController(),timer=setTimeout(function(){ctl.abort();},6000);
     try{
       var resp=await fetch("/api/health",{cache:"no-store",signal:ctl.signal});
-      if(!resp.ok)throw Error("HTTP "+resp.status);
+      if(resp.ok===false)throw Error("HTTP "+resp.status);
       var health=await resp.json();
       state.online=Boolean(health.online);
       state.codexConnected=typeof health.codexConnected==="boolean"?health.codexConnected:undefined;
@@ -455,9 +455,9 @@
           el("connection").querySelector("span").textContent="Переподключение…";
         }
       }finally{
+        if(streamCtrl!==ctl)return;
         if(streamIdleTimer)clearTimeout(streamIdleTimer);
         streamIdleTimer=null;
-        if(streamCtrl!==ctl)return;
         streamCtrl=null;streamSession="";
         if((!ctl.signal.aborted||stalled)&&state.selected===id&&!document.hidden&&!streamDisabled){
           var delay=streamDelay;streamDelay=Math.min(streamDelay*2,30000);
