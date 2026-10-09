@@ -7,6 +7,7 @@
   var app=el("app"),state={projects:[],sessions:[],selected:null,project:"",history:[],images:[],queue:[],online:false,busy:false,tab:"sessions",loaded:null};
   var initData=tg&&tg.initData||"",actionInFlight=false,snapshotInFlight=false,timer=null;
   var historyRequests=new Map(),queueRequests=new Map(),imageCache=new Map(),galleryId="",galleryKey="";
+  var pendingSend=null,liveStatus=new Map();
   function node(tag,klass,text){var n=document.createElement(tag);if(klass)n.className=klass;if(text!==undefined)n.textContent=String(text);return n;}
   function note(text){var n=el("toast");n.textContent=text;n.classList.remove("hidden");clearTimeout(timer);timer=setTimeout(function(){n.classList.add("hidden");},3600);}
   function warn(text){el("warning").textContent=text;el("warning").classList.toggle("hidden",!text);}
@@ -24,6 +25,7 @@
       if(error.name==="AbortError")throw Error("Сервер долго не отвечает. Проверь соединение и обнови чат.");
       throw error;
     }finally{clearTimeout(timeout);}
+    if(resp.status===401)throw Error("Telegram авторизация истекла. Закрой Mini App и открой снова через /app.");
     if(!resp.ok||!data.ok)throw Error(data.error||"Не удалось выполнить запрос");
     return data.data;
   }
@@ -52,13 +54,17 @@
   function renderHeader(){
     var s=selected();el("chat-title").textContent=s?titleOf(s):"Начните с выбора переписки";
     el("chat-project").textContent=s?(s.cwd.split(/[\\/]/).pop()||"CODEX").toUpperCase():"ВЫБЕРИТЕ СЕАНС";
-    el("chat-state").textContent=s?(s.busy?"● Выполняется":state.online?"Готов к заданию · Codex Desktop может удерживать сеанс":"ПК отключён"):"Здесь появится полная история Codex";
+    var ls=s&&(liveStatus.get(s.id)||s.liveStatus);
+    var labels={working:"● Codex работает",approval:"⏳ Ждёт разрешения в Telegram",
+      completed:"✓ Задание завершено",failed:"⚠ Ошибка выполнения",cancelled:"■ Остановлено",
+      observing:"◉ Наблюдение — статус Desktop неизвестен"};
+    el("chat-state").textContent=s?(!state.online?"Ноутбук не подключён":labels[ls]||"◉ Статус не подтверждён"):"Здесь появится полная история Codex";
     el("prompt").disabled=!s||!state.online;
     el("send").disabled=!s||!state.online||actionInFlight;
     el("stop").disabled=!s||!s.busy;
     el("compose-hint").textContent=!s?"Сначала выберите переписку":s.busy?"Сообщение попадёт в очередь":"Enter — отправить, Shift+Enter — новая строка";
     el("detail-title").textContent=s?titleOf(s):"Не выбран";
-    el("detail-status").textContent=s?(s.busy?"Codex выполняет задачу":"Ожидание"):"Выберите переписку слева";
+    el("detail-status").textContent=s?(labels[ls]||"Ожидание"):"Выберите переписку слева";
     el("progress-bar").style.width=s&&Number.isFinite(s.progress)?Math.max(0,Math.min(100,s.progress))+"%":"0%";
   }
   function renderMessages(){
@@ -69,9 +75,21 @@
     state.history.forEach(function(e){
       var outer=node("article","message "+(e.role==="user"?"user":"assistant"));
       outer.appendChild(node("span","message-head",e.role==="user"?"Вы":"Codex"));
-      outer.appendChild(node("div","bubble",e.text||""));
+      var bubble=node("div","bubble");
+      if(window.CodexMarkdown)window.CodexMarkdown.render(bubble,e.text||"");
+      else bubble.textContent=e.text||"";
+      outer.appendChild(bubble);
       box.appendChild(outer);
     });
+    var images=el("images"),last=null;
+    for(var i=box.children.length-1;i>=0;i--){
+      var item=box.children[i];
+      if(item.className==="message assistant"){last=item;break;}
+    }
+    if(last){
+      if(state.images.length)last.appendChild(node("div","screenshot-caption","Скриншоты из последних инструментов Codex"));
+      last.appendChild(images);
+    }else box.appendChild(images);
     if(previousNearBottom)box.scrollTop=box.scrollHeight;
   }
   async function renderImages(force){
@@ -174,6 +192,7 @@
       if(!state.online){renderHeader();return;}
       var data=await api("snapshot");
       state.projects=data.projects||[];state.sessions=data.sessions||[];
+      state.sessions.forEach(function(s){if(s.liveStatus)liveStatus.set(s.id,s.liveStatus);});
       if(!state.selected&&data.selected&&state.sessions.some(function(x){return x.id===data.selected;}))state.selected=data.selected;
       renderProjects();renderSessions();renderHeader();
       if(state.selected&&state.tab==="chat")void loadHistory();
@@ -191,8 +210,11 @@
   async function send(ev){
     ev.preventDefault();var text=el("prompt").value.trim();if(!text||!state.selected)return;
     var id=state.selected;
-    var result=await runAction("send",{sessionId:id,text:text},async function(data){
-      el("prompt").value="";
+    if(!pendingSend||pendingSend.sessionId!==id||pendingSend.text!==text){
+      pendingSend={sessionId:id,text:text,requestId:String(Date.now())+"_"+Math.random().toString(36).slice(2,16)};
+    }
+    var result=await runAction("send",{sessionId:id,text:text,requestId:pendingSend.requestId},async function(data){
+      el("prompt").value="";pendingSend=null;
       note(data.result==="queued"?"Добавлено в очередь":data.result==="held"?"Сообщение ожидает свободный сеанс":"Задание отправлено Codex");
       await loadHistory();await loadQueue();
     });
@@ -214,6 +236,7 @@
   on("search","input",renderSessions);
   on("composer","submit",function(e){void send(e);});
   on("prompt","keydown",function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();el("composer").requestSubmit();}});
+  on("prompt","input",function(){if(pendingSend&&pendingSend.text!==el("prompt").value.trim())pendingSend=null;});
   on("new-chat","click",function(){void createSession();});
   on("refresh","click",function(){void loadHistory(true);});
   on("stop","click",function(){if(!state.selected)return;if(!window.confirm("Остановить текущую задачу Codex?"))return;void runAction("cancel",{sessionId:state.selected},function(){note("Команда остановки отправлена");});});
