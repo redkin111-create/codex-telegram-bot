@@ -110,7 +110,7 @@
     if(previousNearBottom)box.scrollTop=box.scrollHeight;
   }
   async function renderImages(force){
-    var id=state.selected,paths=state.images.slice(0,6);
+    var id=state.selected,paths=state.images.slice(-6);
     var key=JSON.stringify([id,paths]);
     if(!force&&key===galleryKey&&id===galleryId)return;
     galleryId=id;galleryKey=key;
