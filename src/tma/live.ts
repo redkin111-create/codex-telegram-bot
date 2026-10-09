@@ -4,6 +4,7 @@
  * environment variables, internal RPC params, or file contents.
  * Subscriber authorization is performed by the gateway before connecting.
  */
+import { randomBytes } from "node:crypto";
 import type { AcpClient } from "../acp/client.js";
 import type { SessionUpdate } from "../acp/types.js";
 
@@ -22,6 +23,8 @@ const MAX_THREADS=200;
 const str=(v:unknown,max=250)=>typeof v==="string"?v.slice(0,max):"";
 
 export class TmaLiveFeed {
+  /** A fresh generation on every bot restart; cursors are only valid within it. */
+  readonly epoch=randomBytes(12).toString("hex");
   private next=0;
   private readonly recent=new Map<string,LiveEvent[]>();
   private readonly states=new Map<string,{status:LiveStatus;at:number;label?:string}>();
