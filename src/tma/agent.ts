@@ -17,6 +17,7 @@ import { readConversationHistory } from "../sessions/history.js";
 import { SessionStore } from "../sessions/store.js";
 import { TelegramSessionRegistry } from "../sessions/telegram-registry.js";
 import { argumentString, isTmaJob, type TmaJob, type TmaResult } from "./protocol.js";
+import { parseTmaImages, tmaPromptFingerprint } from "./prompt-images.js";
 
 const log=createLogger("tma:agent");
 const MAX_IMG=3*1024*1024;
@@ -43,7 +44,7 @@ export class MiniAppAgent {
   private readonly results=new Map<string,TmaResult>();
   private readonly selected=new Map<number,string>();
   /** Keep send outcomes by client request id so timeout/retry cannot send twice. */
-  private readonly sends=new Map<string,{text:string;promise:Promise<unknown>;at:number}>();
+  private readonly sends=new Map<string,{fingerprint:string;promise:Promise<unknown>;at:number}>();
   /** The project/thread catalogue is relatively expensive over app-server.
    * Share a short-lived snapshot between UI status and history requests.
    * Failed refreshes are retried; they are never cached forever. */
@@ -52,6 +53,9 @@ export class MiniAppAgent {
     value: Promise<{projects:CodexProjectSummary[];threads:CodexThreadSummary[]}>;
   }>();
   private readonly ownThreads = new Map<string,CodexThreadSummary>();
+  /** Stable last-known authorized session references, eliminating an ACP
+   * catalogue round-trip for every frequent history/activity poll. */
+  private readonly knownThreads = new Map<number,Map<string,CodexThreadSummary>>();
   private readonly historyCache = new Map<string, {
     size: number; mtimeMs: number; result: unknown;
   }>();
@@ -124,6 +128,7 @@ export class MiniAppAgent {
       for(const t of this.ownThreads.values()){
         if(this.telegramSessions.get(t.id)?.chatId===userId&&!visible.some(x=>x.id===t.id))visible.unshift(t);
       }
+      this.knownThreads.set(userId,new Map(visible.map(t=>[t.id,t])));
       return {projects,threads:visible};
     })();
     this.catalogues.set(userId,{expiresAt:Date.now()+12000,value});
@@ -131,6 +136,10 @@ export class MiniAppAgent {
     catch(error){this.catalogues.delete(userId);throw error;}
   }
   private async thread(id:string,userId:number):Promise<CodexThreadSummary>{
+    const registered=this.telegramSessions.get(id);
+    if(registered && registered.chatId!==userId)throw new Error("Доступ к переписке запрещён");
+    const known=this.knownThreads.get(userId)?.get(id);
+    if(known)return known;
     const {threads}=await this.catalogue(userId);
     const thread=threads.find(t=>t.id===id);
     if(!thread)throw new Error("Переписка не найдена в последних сеансах Codex");
@@ -187,6 +196,14 @@ export class MiniAppAgent {
           online:true,
         };
       }
+      case "activity":{
+        const id=argumentString(args,"sessionId",80);
+        await this.thread(id,chatId);
+        const file=statSyncSafe(this.store.jsonlPath(id));
+        const rt=registry.runtimeForSession(chatId,id);
+        return {mtimeMs:file.mtimeMs,size:file.size,busy:Boolean(rt?.isBusy),queue:rt?.queueLength??0,
+          checkedAt:Date.now()};
+      }
       case "history":{
         const id=argumentString(args,"sessionId",80);
         const t=await this.thread(id,chatId);
@@ -210,6 +227,7 @@ export class MiniAppAgent {
         const rt=await controller.addNew(target.cwd,target.name);
         if(!rt.sessionId)throw new Error("Новый сеанс не создан");
         this.ownThreads.set(rt.sessionId,{id:rt.sessionId,name:"Новый сеанс",cwd:target.cwd,source:"appServer",createdAt:Date.now()/1000,updatedAt:Date.now()/1000,recencyAt:Date.now()/1000});
+        this.knownThreads.get(chatId)?.set(rt.sessionId,this.ownThreads.get(rt.sessionId)!);
         this.catalogues.delete(chatId);
         this.selected.set(chatId,rt.sessionId);
         return {sessionId:rt.sessionId};
@@ -224,13 +242,17 @@ export class MiniAppAgent {
         return {sessionId:id};
       }
       case "send":{
-        const id=argumentString(args,"sessionId",80),message=argumentString(args,"text",16000);
+        const id=argumentString(args,"sessionId",80);
+        const message=typeof args.text==="string"&&args.text.length<=16000?args.text.trim():"";
+        const images=parseTmaImages(args.images);
+        if(!message&&!images.length)throw new Error("Напиши задачу или прикрепи фото");
         const requestId=argumentString(args,"requestId",80);
+        const fingerprint=tmaPromptFingerprint(message,images);
         if(!/^[a-zA-Z0-9_-]{12,80}$/.test(requestId))throw new Error("Неверный идентификатор запроса");
         const key=chatId+":"+id+":"+requestId;
         const existing=this.sends.get(key);
         if(existing){
-          if(existing.text!==message)throw new Error("Нельзя переиспользовать ID для другого текста");
+          if(existing.fingerprint!==fingerprint)throw new Error("Нельзя переиспользовать ID для другого задания");
           return existing.promise;
         }
         let dispatched=false;
@@ -241,10 +263,12 @@ export class MiniAppAgent {
           else if(controller.foreground().sessionId!==id)await controller.switchTo(id);
           this.selected.set(chatId,id);
           dispatched=true;
-          const result=await registry.submitPrompt(chatId,textPrompt(message));
+          const input=textPrompt(message||"Проанализируй прикреплённые изображения.");
+          input.images=images;
+          const result=await registry.submitPrompt(chatId,input);
           return {result:result.kind==="submitted"?result.outcome:result.kind};
         })();
-        this.sends.set(key,{text:message,promise:pending,at:Date.now()});
+        this.sends.set(key,{fingerprint,promise:pending,at:Date.now()});
         // A rejected attach/lock check cannot have sent the prompt; permit
         // retrying the same request after the Desktop writer releases it.
         void pending.catch(()=>{if(!dispatched)this.sends.delete(key);});
