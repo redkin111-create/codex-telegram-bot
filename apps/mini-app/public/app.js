@@ -12,7 +12,7 @@
   var cursors=new Map(),liveDraft=new Map(),liveTools=new Map();
   var photos=[],photoBusy=false,activityRequests=new Map(),lastActivityStamp=0,lastHistoryAt=0;
   var snapshotErrors=0,lastActivityAt=0,healthFailures=0,lastHealthAt=0;
-  var streamEpoch="",streamIdleTimer=null;
+  var streamEpoch="",streamIdleTimer=null,healthInFlight=null;
   function node(tag,klass,text){var n=document.createElement(tag);if(klass)n.className=klass;if(text!==undefined)n.textContent=String(text);return n;}
   function note(text){var n=el("toast");n.textContent=text;n.classList.remove("hidden");clearTimeout(timer);timer=setTimeout(function(){n.classList.add("hidden");},3600);}
   function warn(text){el("warning").textContent=text;el("warning").classList.toggle("hidden",!text);}
@@ -273,6 +273,12 @@
     try{await request;}finally{historyRequests.delete(id);}
   }
   async function healthCheck(){
+    if(healthInFlight)return healthInFlight;
+    healthInFlight=checkHealthOnce();
+    try{return await healthInFlight;}
+    finally{healthInFlight=null;}
+  }
+  async function checkHealthOnce(){
     var ctl=new AbortController(),timer=setTimeout(function(){ctl.abort();},6000);
     try{
       var resp=await fetch("/api/health",{cache:"no-store",signal:ctl.signal});
@@ -501,6 +507,12 @@
       if(state.tab==="queue")void loadQueue();
     },5000);
     setInterval(function(){if(!document.hidden)void refresh();},30000);
+    setInterval(function(){
+      if(!document.hidden)void healthCheck().then(function(){
+        renderHeader();
+        if(state.online)startStream();
+      });
+    },10000);
     setInterval(function(){if(!document.hidden){void loadActivity();renderActivityClock();}},4000);
     document.addEventListener("visibilitychange",function(){
       if(!document.hidden){void refresh();if(state.selected){void loadHistory(false);startStream();}}
