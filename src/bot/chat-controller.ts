@@ -204,7 +204,7 @@ export class ChatController {
     if (!sameTarget) this.exitWatchOnly();
     this.watchOnly = { sessionId, cwd, projectName };
     const runtime = this.fg ?? this.foreground();
-    if (this.watchRuntime !== runtime || !runtime.isWatching) runtime.startWatch(jsonlPath);
+    if (this.watchRuntime !== runtime || !runtime.isWatching) runtime.startWatch(jsonlPath, false, cwd);
     this.watchRuntime = runtime;
     return sameTarget && this.pendingPrompt !== undefined;
   }
@@ -469,7 +469,7 @@ export class ChatController {
     const token = this.storePendingPrompt(input);
     this.watchOnly = { sessionId, cwd: runtime.cwd, projectName };
     this.watchRuntime = runtime;
-    runtime.startWatch(this.store.jsonlPath(sessionId));
+    runtime.startWatch(this.store.jsonlPath(sessionId), false, runtime.cwd);
     await this.sendNotice(
       "⚠️ Этот сеанс сейчас открыт в Codex Desktop.\n\nСообщение сохранено и не отправлено.",
       "error",
@@ -502,7 +502,7 @@ export class ChatController {
     if (!target || !runtime) return;
     this.watchOnly = target;
     this.watchRuntime = runtime;
-    if (!runtime.isWatching) runtime.startWatch(this.store.jsonlPath(target.sessionId));
+    if (!runtime.isWatching) runtime.startWatch(this.store.jsonlPath(target.sessionId), false, target.cwd);
   }
 
   private async rollbackAddedRuntime(runtime: SessionRuntime, previousForeground: SessionRuntime | undefined): Promise<void> {

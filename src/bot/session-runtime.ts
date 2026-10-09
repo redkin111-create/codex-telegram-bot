@@ -17,7 +17,7 @@ import { notificationCompletionEnabled, notificationShouldBeLoud, type Notificat
 import type { SettingsStore } from "../app/settings-store.js";
 import { type PromptInput, type ReasoningEffort, textPrompt } from "../app/types.js";
 import { createLogger } from "../logger.js";
-import { buildTranscript, conversationEntries } from "../sessions/history.js";
+import { buildTranscript, readConversationHistory } from "../sessions/history.js";
 import { buildPriming, recentTranscript } from "./session-fork.js";
 import { TailWatcher } from "../sessions/tail.js";
 import type { HistoryEntry } from "../sessions/types.js";
@@ -34,16 +34,10 @@ import { sendMarkdownDoc } from "./telegram-io.js";
 import { TypingIndicator } from "./typing.js";
 import { commandOutputPaths } from "./command-artifacts.js";
 import { DurableQueueStore } from "./durable-queue.js";
+import { deliverWatchReport } from "./watch-report.js";
+import { recentWatchImagePaths, watchImagePathsFromEvents } from "./watch-images.js";
 
 const log = createLogger("runtime");
-
-const WATCH_ENTRY_MAX = 700;
-const WATCH_ICON: Record<string, string> = {
-  user: "\u{1F464}",
-  assistant: "\u{1F916}",
-  tool: "\u{1F527}",
-  system: "\u2139\uFE0F",
-};
 
 export type AttachResult = "resumed" | "forked";
 
@@ -127,6 +121,9 @@ export class SessionRuntime {
    *  in-flight turn (started on switch) rather than an explicit /watch of
    *  another session — follow-watches are auto-stopped when a new turn streams. */
   private watchIsFollow = false;
+  private watchGeneration = 0;
+  private watchDelivery: Promise<void> = Promise.resolve();
+  private watchImages = new Set<string>();
   private rebindPending = false;
   private sessionLive = false;
   /** Only the foreground runtime streams to Telegram; background ones stay quiet
@@ -364,14 +361,27 @@ export class SessionRuntime {
     this.primingContext = context;
   }
 
-  startWatch(jsonlPath: string, follow = false): void {
+  startWatch(jsonlPath: string, follow = false, projectRoot = this.cwd): void {
     this.stopWatch();
     this.watchIsFollow = follow;
-    this.watcher = new TailWatcher(jsonlPath, (entries) => void this.onWatchEntries(entries));
+    const generation = ++this.watchGeneration;
+    const since = Date.now() - 24 * 60 * 60 * 1000;
+    this.watchImages = new Set();
+    this.watchDelivery = Promise.resolve();
+    this.watcher = new TailWatcher(jsonlPath, (entries, rawLines) =>
+      this.queueWatchDelivery(entries, rawLines, generation, projectRoot, since));
+    // Watch only future records: the snapshot below backfills the last full
+    // answer, including a completed turn from before the user tapped Watch.
     this.watcher.start(true);
+    if (!follow) {
+      const latest = readConversationHistory(jsonlPath, 16).filter((entry) => entry.role === "assistant").slice(-1);
+      const oldImages = recentWatchImagePaths(jsonlPath, projectRoot);
+      this.queueWatchDelivery(latest, [], generation, projectRoot, since, oldImages);
+    }
   }
 
   stopWatch(): boolean {
+    ++this.watchGeneration;
     if (!this.watcher) return false;
     this.watcher.stop();
     this.watcher = undefined;
@@ -1355,21 +1365,39 @@ export class SessionRuntime {
     }
   }
 
-  private async onWatchEntries(entries: HistoryEntry[]): Promise<void> {
-    const body = conversationEntries(entries)
-      .map((e) => {
-        const icon = WATCH_ICON[e.role] ?? "\u2022";
-        if (e.role === "tool") return `${icon} ${e.tool ? `\`${e.tool}\`` : "tool"}`;
-        const text = e.text.length > WATCH_ENTRY_MAX ? e.text.slice(0, WATCH_ENTRY_MAX) + " …" : e.text;
-        return `${icon} ${text}`;
-      })
-      .filter(Boolean)
-      .join("\n\n");
-    if (body.trim()) {
+  private queueWatchDelivery(
+    entries: HistoryEntry[],
+    rawLines: string[],
+    generation: number,
+    projectRoot: string,
+    since: number,
+    initialImagePaths: string[] = [],
+  ): void {
+    // Serialize Telegram sends across polling ticks, preserving report order.
+    // A new watch invalidates queued sends from a previous session.
+    this.watchDelivery = this.watchDelivery.then(async () => {
+      if (generation !== this.watchGeneration) return;
       const mode = this.settings.get(this.chatId).notifications?.mode ?? "all";
-      const loud = notificationShouldBeLoud(mode, this.cfg.quietNotifications, "info");
-      await sendMarkdownDoc(this.api, this.chatId, body, { loud, silent: !loud });
-    }
+      const silent = !notificationShouldBeLoud(mode, this.cfg.quietNotifications, "info");
+      try {
+        await deliverWatchReport(this.api, this.chatId, entries, silent);
+      } catch (error) {
+        // Image delivery is independent of Telegram text upload failures.
+        log.warn(`chat ${this.chatId} watch text failed: ${(error as Error).message}`);
+      }
+
+      if (!this.cfg.sendAgentImages) return;
+      const fromMessages = entries.flatMap((entry) => extractImagePaths(entry.text, projectRoot));
+      const paths = [...new Set([...initialImagePaths, ...fromMessages, ...watchImagePathsFromEvents(rawLines, projectRoot)])];
+      await sendImages(this.api, this.chatId, paths, {
+        already: this.watchImages,
+        max: Math.max(0, this.cfg.agentImagesMax - this.watchImages.size),
+        since,
+        root: projectRoot,
+      });
+    }).catch((error) => {
+      log.warn(`chat ${this.chatId} cannot deliver complete watch output: ${(error as Error).message}`);
+    });
   }
 }
 
