@@ -130,6 +130,18 @@ No build step — TypeScript runs directly via `tsx`.
 Anything that isn't a command is sent to Codex as a prompt. While a turn runs,
 your messages are queued and sent automatically when it finishes.
 
+**Watch full Codex Desktop reports:** When a Desktop/CLI session is busy,
+choose **👁 Наблюдать**. Newly recorded assistant responses are delivered
+without a 700-character cut: split into numbered Telegram messages, with a
+`codex-full-report.md` attachment for long responses. The watch card also
+offers **📄 Последний полный отчёт** to replay the latest saved assistant
+response (including one completed before you started watching). Image and
+screenshot files explicitly referenced by the response are sent separately
+when they exist under the **watched project's workspace**; images stored
+outside that workspace cannot be accessed automatically. Watch does not
+transfer write control over a thread already used by Desktop.
+
+
 **Queue recovery:** Queued follow-ups are saved atomically under `DATA_DIR/queues/`
 (one file per private Telegram chat). After a bot/process restart, pending items
 remain in the same session but are **paused** until you review them and select
