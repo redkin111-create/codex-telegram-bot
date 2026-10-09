@@ -9,7 +9,7 @@ import type { AcpClient } from "../src/acp/client.js";
 import type { AppConfig } from "../src/config.js";
 import { SessionRuntime } from "../src/bot/session-runtime.js";
 import { splitReportText, sendCompleteWatchReport } from "../src/bot/watch-report.js";
-import { sendImages } from "../src/bot/image-return.js";
+import { extractImagePaths, sendImages } from "../src/bot/image-return.js";
 import { DEFAULT_NOTIFICATION_PREFERENCES } from "../src/app/notifications.js";
 
 test("page splitter preserves every character, even long lines, Markdown and emoji", () => {
@@ -95,6 +95,13 @@ test("watcher replay sends an untruncated assistant report and screenshots from 
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
+});
+
+test("Markdown image link stays relative to the watched project's directory", () => {
+  const cwd = join(tmpdir(), "a-project");
+  const paths = extractImagePaths("![screen](output/screen.png)", cwd);
+  assert(paths.includes(join(cwd, "output", "screen.png")));
+  assert(!paths.includes(join("/","screen.png")));
 });
 
 test("watcher rejects a referenced screenshot outside the watched project", async () => {
