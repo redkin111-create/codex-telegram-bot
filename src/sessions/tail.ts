@@ -83,7 +83,7 @@ export class TailWatcher {
     }
     // A tool result can contain a screenshot path without a visible chat
     // message. Pass raw records to the watch delivery layer for image lookup.
-    if (entries.length > 0 || lines.some((line) => /\\.(?:png|jpe?g|webp|gif|bmp)/i.test(line))) {
+    if (entries.length > 0 || lines.some((line) => /\.(?:png|jpe?g|webp|gif|bmp)/i.test(line))) {
       this.onEntries(entries, lines);
     }
   }
