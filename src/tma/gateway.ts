@@ -168,7 +168,9 @@ async function route(req:IncomingMessage,res:ServerResponse,cfg:GatewayConfig,lo
     const heartbeat=setInterval(()=>{if(!res.destroyed)res.write(": heartbeat\n\n");},15000);
     // Auth dates expire after an hour, so force a reconnect and explicit
     // reauthorization instead of leaving an indefinitely authorized stream.
-    const expiry=setTimeout(()=>{res.write("event: reauth\ndata: {}\n\n");res.end();},50*60*1000);
+    const authTime=Number(new URLSearchParams(String(req.headers["x-telegram-init-data"]??"")).get("auth_date"));
+    const remaining=Math.max(1000,Math.min(50*60*1000,(authTime+3600)*1000-Date.now()-1000));
+    const expiry=setTimeout(()=>{res.write("event: reauth\\ndata: {}\\n\\n");res.end();},remaining);
     const close=()=>{
       if(stopped)return;
       stopped=true;clearInterval(heartbeat);clearTimeout(expiry);unsubscribe();
