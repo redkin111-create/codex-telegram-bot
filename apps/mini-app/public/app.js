@@ -112,7 +112,7 @@
     var id=state.selected;try{
       var data=await api("history",{sessionId:id});
       if(state.selected!==id)return;
-      var digest=JSON.stringify((data.entries||[]).map(function(x){return[x.role,x.text&&x.text.length,x.timestamp];}));
+      var digest=JSON.stringify([data.entries||[],data.images||[]]);
       if(digest!==state.loaded){state.loaded=digest;state.history=data.entries||[];state.images=data.images||[];renderMessages();void renderImages();}
     }catch(err){note(err.message);}
   }
