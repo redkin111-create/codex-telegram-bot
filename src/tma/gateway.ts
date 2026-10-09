@@ -76,6 +76,7 @@ async function serveStatic(pathname:string,res:ServerResponse):Promise<void> {
     "/app.js":["app.js","text/javascript; charset=utf-8"],
     "/styles.css":["styles.css","text/css; charset=utf-8"],
     "/markdown.js":["markdown.js","text/javascript; charset=utf-8"],
+    "/photo-input.js":["photo-input.js","text/javascript; charset=utf-8"],
     "/markdown.css":["markdown.css","text/css; charset=utf-8"],
   };
   const found=files[pathname];
