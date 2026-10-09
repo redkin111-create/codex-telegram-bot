@@ -94,11 +94,12 @@ function enqueue(job:TmaJob):Promise<TmaResult> {
     else waiting.push(job);
   });
 }
-async function route(req:IncomingMessage,res:ServerResponse,cfg:GatewayConfig):Promise<void> {
+export type LocalTmaExecutor=(job:TmaJob)=>Promise<unknown>;
+async function route(req:IncomingMessage,res:ServerResponse,cfg:GatewayConfig,localExecute?:LocalTmaExecutor):Promise<void> {
   headers(res);
   const pathname=new URL(req.url||"/","http://localhost").pathname;
   if(pathname==="/api/health"&&req.method==="GET"){
-    json(res,200,{online:Date.now()-lastAgentAt<25000});return;
+    json(res,200,{online:!!localExecute||Date.now()-lastAgentAt<25000});return;
   }
   if(pathname.startsWith("/api/agent/")){
     if(!agentAuthorized(req,cfg.secret)){json(res,401,{error:"Unauthorized agent"});return;}
@@ -141,16 +142,28 @@ async function route(req:IncomingMessage,res:ServerResponse,cfg:GatewayConfig):P
     if(pending.size>=32||[...pending.values()].filter(x=>x.userId===userId).length>=4){
       json(res,429,{error:"Слишком много запросов. Подождите завершения предыдущих."});return;
     }
-    if(Date.now()-lastAgentAt>25000){json(res,503,{error:"Windows-ПК не подключён"});return;}
+    if(!localExecute&&Date.now()-lastAgentAt>25000){json(res,503,{error:"Windows-ПК не подключён"});return;}
     const job:TmaJob={id:randomBytes(12).toString("hex"),op:payload.op,userId,args:payload.args as Record<string,unknown>};
+    if(localExecute){
+      // The local Windows mode already runs Codex in THIS process. Do not
+      // bounce through the single-consumer, 28s RPC queue: concurrent chat
+      // refreshes otherwise starve behind screenshots and slow catalogues.
+      try{
+        const data=await localExecute(job);
+        json(res,200,{ok:true,data});
+      }catch(error){
+        json(res,400,{ok:false,error:(error as Error).message||"Ошибка Codex"});
+      }
+      return;
+    }
     const result=await enqueue(job);
     json(res,result.ok?200:400,{ok:result.ok,data:result.data,error:result.error});return;
   }
   if(req.method==="GET"&&!pathname.startsWith("/api/")){await serveStatic(pathname,res);return;}
   json(res,404,{error:"Not found"});
 }
-export function startGateway(cfg=gatewayConfig()){
-  const server=createServer((req,res)=>{void route(req,res,cfg).catch(error=>{
+export function startGateway(cfg=gatewayConfig(),localExecute?:LocalTmaExecutor){
+  const server=createServer((req,res)=>{void route(req,res,cfg,localExecute).catch(error=>{
     json(res,error?.name==="TmaAuthError"?401:400,{error:(error as Error).message||"Request failed"});
   });});
   server.listen(cfg.port,cfg.host,()=>console.log("Codex TMA gateway listening on "+cfg.host+":"+cfg.port));

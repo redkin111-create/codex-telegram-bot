@@ -20,6 +20,12 @@ import { argumentString, isTmaJob, type TmaJob, type TmaResult } from "./protoco
 
 const log=createLogger("tma:agent");
 const MAX_IMG=3*1024*1024;
+function statSyncSafe(path:string):{size:number;mtimeMs:number}{
+  try{
+    const s=statSync(path);
+    return {size:s.size,mtimeMs:s.mtimeMs};
+  }catch{return {size:0,mtimeMs:0};}
+}
 const sleep=(ms:number,signal:AbortSignal)=>new Promise<void>(resolve=>{
   if(signal.aborted)return resolve();
   const t=setTimeout(done,ms);
@@ -36,7 +42,17 @@ export class MiniAppAgent {
   private readonly secret:string;
   private readonly results=new Map<string,TmaResult>();
   private readonly selected=new Map<number,string>();
-  private readonly statusAt=new Map<number,number>();
+  /** The project/thread catalogue is relatively expensive over app-server.
+   * Share a short-lived snapshot between UI status and history requests.
+   * Failed refreshes are retried; they are never cached forever. */
+  private readonly catalogues = new Map<number, {
+    expiresAt: number;
+    value: Promise<{projects:CodexProjectSummary[];threads:CodexThreadSummary[]}>;
+  }>();
+  private readonly ownThreads = new Map<string,CodexThreadSummary>();
+  private readonly historyCache = new Map<string, {
+    size: number; mtimeMs: number; result: unknown;
+  }>();
   private loopPromise:Promise<void>|undefined;
   constructor(private readonly deps:AgentDeps,gatewayUrl:string,secret:string){
     const url=new URL(gatewayUrl);
@@ -90,21 +106,32 @@ export class MiniAppAgent {
     }
   }
   private async catalogue(userId:number):Promise<{projects:CodexProjectSummary[];threads:CodexThreadSummary[]}>{
-    const [projects,threads]=await Promise.all([
-      this.deps.acp.listProjects().catch(()=>[] as CodexProjectSummary[]),
-      this.deps.acp.listThreads({
-        limit:100,sortKey:"recency_at",sortDirection:"desc",
-        sourceKinds:["cli","vscode","appServer"],
-      }).catch(()=>[] as CodexThreadSummary[]),
-    ]);
-    return {projects,threads:threads.filter(t=>!t.ephemeral&&
-      (!this.telegramSessions.get(t.id)||this.telegramSessions.get(t.id)?.chatId===userId)&&
-      ["cli","vscode","appServer"].includes(threadSourceKind(t)??""))};
+    const cached=this.catalogues.get(userId);
+    if(cached&&cached.expiresAt>Date.now())return cached.value;
+    const value=(async()=>{
+      const [projects,threads]=await Promise.all([
+        this.deps.acp.listProjects().catch(()=>[] as CodexProjectSummary[]),
+        this.deps.acp.listThreads({
+          limit:100,sortKey:"recency_at",sortDirection:"desc",
+          sourceKinds:["cli","vscode","appServer"],
+        }),
+      ]);
+      const visible=threads.filter(t=>!t.ephemeral&&
+        (!this.telegramSessions.get(t.id)||this.telegramSessions.get(t.id)?.chatId===userId)&&
+        ["cli","vscode","appServer"].includes(threadSourceKind(t)??""));
+      for(const t of this.ownThreads.values()){
+        if(this.telegramSessions.get(t.id)?.chatId===userId&&!visible.some(x=>x.id===t.id))visible.unshift(t);
+      }
+      return {projects,threads:visible};
+    })();
+    this.catalogues.set(userId,{expiresAt:Date.now()+12000,value});
+    try{return await value;}
+    catch(error){this.catalogues.delete(userId);throw error;}
   }
   private async thread(id:string,userId:number):Promise<CodexThreadSummary>{
     const {threads}=await this.catalogue(userId);
     const thread=threads.find(t=>t.id===id);
-    if(!thread)throw new Error("Переписка не найдена в Codex");
+    if(!thread)throw new Error("Переписка не найдена в последних сеансах Codex");
     return thread;
   }
   private async project(path:string,userId:number):Promise<{name:string;cwd:string}>{
@@ -157,16 +184,26 @@ export class MiniAppAgent {
         const id=argumentString(args,"sessionId",80);
         const t=await this.thread(id,chatId);
         const path=this.store.jsonlPath(id);
+        // Avoid re-reading multi-megabyte rollout logs every six seconds.
+        // A manual refresh still checks the file's current size/mtime first.
+        const stat=statSyncSafe(path);
+        const cached=this.historyCache.get(id);
+        if(cached&&cached.size===stat.size&&cached.mtimeMs===stat.mtimeMs)return cached.result;
         const entries=readConversationHistory(path,40).map(e=>({
           role:e.role,text:e.text,timestamp:e.timestamp,
         }));
         const refs=t.cwd?recentWatchImagePaths(path,t.cwd).slice(0,8):[];
-        return {entries,images:refs,project:t.cwd||""};
+        const result={entries,images:refs,project:t.cwd||""};
+        this.historyCache.set(id,{...stat,result});
+        if(this.historyCache.size>30)this.historyCache.delete(this.historyCache.keys().next().value!);
+        return result;
       }
       case "create":{
         const target=await this.project(argumentString(args,"cwd",700),chatId);
         const rt=await controller.addNew(target.cwd,target.name);
         if(!rt.sessionId)throw new Error("Новый сеанс не создан");
+        this.ownThreads.set(rt.sessionId,{id:rt.sessionId,name:"Новый сеанс",cwd:target.cwd,source:"appServer",createdAt:Date.now()/1000,updatedAt:Date.now()/1000,recencyAt:Date.now()/1000});
+        this.catalogues.delete(chatId);
         this.selected.set(chatId,rt.sessionId);
         return {sessionId:rt.sessionId};
       }

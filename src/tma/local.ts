@@ -50,9 +50,16 @@ export async function startLocalTma(
   // The internal bearer token is ephemeral and never sent over the public
   // tunnel. Telegram HMAC checks and ALLOWED_USERS protect all Codex actions.
   const secret = randomBytes(32).toString("hex");
+  // The Mini App and Codex live on the same Windows machine. Serve validated
+  // requests directly; do not route them through a second HTTP long-poll,
+  // which serialized history/screenshots and caused 28-second timeouts.
+  const agent = new MiniAppAgent({ cfg, acp, registry }, "http://127.0.0.1:3301", secret);
   const gateway: Server = startGateway({
     token: cfg.token, secret, owners: new Set(cfg.allowedUsers),
     host: "127.0.0.1", port,
+  }, async job => {
+    if (!cfg.allowedUsers.has(String(job.userId))) throw new Error("Доступ запрещён");
+    return agent.execute(job);
   });
   try {
     if (!gateway.listening) {
@@ -72,8 +79,6 @@ export async function startLocalTma(
     throw new Error("Local TMA gateway did not bind TCP");
   }
   const origin = "http://127.0.0.1:" + addr.port;
-  const agent = new MiniAppAgent({ cfg, acp, registry }, origin, secret);
-  agent.start();
   log.info("Local Mini App and Codex agent listening on " + origin);
 
   const shouldPublish = options.startFunnel ?? autoTailscaleFunnel();
