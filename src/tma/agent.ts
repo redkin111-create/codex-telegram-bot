@@ -13,7 +13,7 @@ import { LiveSessionConflictError } from "../bot/session-runtime.js";
 import { recentWatchImagePaths } from "../bot/watch-images.js";
 import type { AppConfig } from "../config.js";
 import { createLogger } from "../logger.js";
-import { readConversationHistory } from "../sessions/history.js";
+import { readConversationHistoryAsync } from "../sessions/history.js";
 import { SessionStore } from "../sessions/store.js";
 import { TelegramSessionRegistry } from "../sessions/telegram-registry.js";
 import { argumentString, isTmaJob, type TmaJob, type TmaResult } from "./protocol.js";
@@ -59,6 +59,8 @@ export class MiniAppAgent {
   private readonly historyCache = new Map<string, {
     size: number; mtimeMs: number; result: unknown;
   }>();
+  /** Never launch duplicate deep scans for the same JSONL revision. */
+  private readonly historyInflight = new Map<string, Promise<unknown>>();
   private loopPromise:Promise<void>|undefined;
   constructor(private readonly deps:AgentDeps,gatewayUrl:string,secret:string){
     const url=new URL(gatewayUrl);
@@ -213,14 +215,30 @@ export class MiniAppAgent {
         const stat=statSyncSafe(path);
         const cached=this.historyCache.get(id);
         if(cached&&cached.size===stat.size&&cached.mtimeMs===stat.mtimeMs)return cached.result;
-        const entries=readConversationHistory(path,40).map(e=>({
-          role:e.role,text:e.text,timestamp:e.timestamp,
-        }));
-        const refs=t.cwd?recentWatchImagePaths(path,t.cwd).slice(0,8):[];
-        const result={entries,images:refs,project:t.cwd||""};
-        this.historyCache.set(id,{...stat,result});
-        if(this.historyCache.size>30)this.historyCache.delete(this.historyCache.keys().next().value!);
-        return result;
+        const key=id+":"+stat.size+":"+stat.mtimeMs;
+        const existing=this.historyInflight.get(key);
+        if(existing)return existing;
+        const pending=(async()=>{
+          const entries=(await readConversationHistoryAsync(path,40)).map(e=>({
+            role:e.role,text:e.text,timestamp:e.timestamp,
+          }));
+          const refs=t.cwd?recentWatchImagePaths(path,t.cwd).slice(0,8):[];
+          const result={entries,images:refs,project:t.cwd||""};
+          // The agent may append to the log during this read. Don't store
+          // a stale transcript under a newer file revision.
+          const after=statSyncSafe(path);
+          if(after.size===stat.size&&after.mtimeMs===stat.mtimeMs){
+            this.historyCache.set(id,{...stat,result});
+            if(this.historyCache.size>30)this.historyCache.delete(this.historyCache.keys().next().value!);
+          }
+          return result;
+        })();
+        this.historyInflight.set(key,pending);
+        void pending.then(
+          ()=>{this.historyInflight.delete(key);},
+          ()=>{this.historyInflight.delete(key);},
+        );
+        return pending;
       }
       case "create":{
         const target=await this.project(argumentString(args,"cwd",700),chatId);
