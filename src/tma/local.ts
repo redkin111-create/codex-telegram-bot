@@ -12,6 +12,7 @@ import type { RuntimeRegistry } from "../bot/registry.js";
 import { createLogger } from "../logger.js";
 import { MiniAppAgent } from "./agent.js";
 import { startGateway } from "./gateway.js";
+import { TmaLiveFeed } from "./live.js";
 import { ensureTailscaleFunnel, type TailscaleCommand } from "./tailscale.js";
 
 const log = createLogger("tma:local");
@@ -54,13 +55,30 @@ export async function startLocalTma(
   // requests directly; do not route them through a second HTTP long-poll,
   // which serialized history/screenshots and caused 28-second timeouts.
   const agent = new MiniAppAgent({ cfg, acp, registry }, "http://127.0.0.1:3301", secret);
+  const live = new TmaLiveFeed(acp);
+  // Permission prompts still use the Telegram bot's secure approval UI.
+  // The Mini App reflects their pending state without granting permissions.
+  const oldApproval=acp.permissionHandler;
+  const approval=oldApproval&&((async (request:Parameters<NonNullable<typeof oldApproval>>[0])=>{
+    live.status(request.sessionId,"approval","Ожидается разрешение в Telegram");
+    try{return await oldApproval(request);}
+    finally{live.status(request.sessionId,"working","Codex продолжает выполнение");}
+  }) satisfies NonNullable<typeof oldApproval>);
+  if(approval)acp.permissionHandler=approval;
   const gateway: Server = startGateway({
     token: cfg.token, secret, owners: new Set(cfg.allowedUsers),
     host: "127.0.0.1", port,
   }, async job => {
     if (!cfg.allowedUsers.has(String(job.userId))) throw new Error("Доступ запрещён");
-    return agent.execute(job);
-  });
+    const result=await agent.execute(job);
+    if(job.op!=="snapshot")return result;
+    const snap=result as {sessions?:Array<Record<string,unknown>>};
+    return {...snap,sessions:snap.sessions?.map(s=>{
+      const event=live.getStatus(String(s.id??""));
+      return {...s,liveStatus:event?.status??(s.busy?"working":"observing"),
+        liveLabel:event?.label??(s.busy?"Codex работает":"Статус Desktop не определён")};
+    })};
+  }, {feed:live,authorize:(userId,sessionId)=>agent.canReadSession(sessionId,userId)});
   try {
     if (!gateway.listening) {
       await new Promise<void>((done, reject) => {
@@ -127,6 +145,8 @@ export async function startLocalTma(
       endRetry = undefined;
       retryTimer = undefined;
       agent.stop();
+      live.dispose();
+      if(approval&&acp.permissionHandler===approval)acp.permissionHandler=oldApproval;
       // A persisted --bg Tailscale route belongs to the Tailscale daemon and
       // survives a bot restart. Removing the bot must not wipe that route.
       gateway.closeAllConnections();

@@ -7,6 +7,9 @@
   var app=el("app"),state={projects:[],sessions:[],selected:null,project:"",history:[],images:[],queue:[],online:false,busy:false,tab:"sessions",loaded:null};
   var initData=tg&&tg.initData||"",actionInFlight=false,snapshotInFlight=false,timer=null;
   var historyRequests=new Map(),queueRequests=new Map(),imageCache=new Map(),galleryId="",galleryKey="";
+  var pendingSend=null,liveStatus=new Map();
+  var streamCtrl=null,streamSession="",streamDelay=1000,streamTimer=null,streamDisabled=false;
+  var cursors=new Map(),liveDraft=new Map(),liveTools=new Map();
   function node(tag,klass,text){var n=document.createElement(tag);if(klass)n.className=klass;if(text!==undefined)n.textContent=String(text);return n;}
   function note(text){var n=el("toast");n.textContent=text;n.classList.remove("hidden");clearTimeout(timer);timer=setTimeout(function(){n.classList.add("hidden");},3600);}
   function warn(text){el("warning").textContent=text;el("warning").classList.toggle("hidden",!text);}
@@ -24,6 +27,7 @@
       if(error.name==="AbortError")throw Error("Сервер долго не отвечает. Проверь соединение и обнови чат.");
       throw error;
     }finally{clearTimeout(timeout);}
+    if(resp.status===401)throw Error("Telegram авторизация истекла. Закрой Mini App и открой снова через /app.");
     if(!resp.ok||!data.ok)throw Error(data.error||"Не удалось выполнить запрос");
     return data.data;
   }
@@ -45,20 +49,29 @@
       var btn=node("button","session-item"+(state.selected===s.id?" selected":""));
       var icon=node("span","session-icon",s.source==="cli"?"⌘":"◇");
       var info=node("div","session-info"),title=node("strong","",titleOf(s));
-      var sub=node("span","sub"+(s.busy?" busy":""),(s.busy?"● Работает · ":"")+(s.cwd.split(/[\\/]/).pop()||"Проект")+" · "+fmtTime(s.updatedAt));
+      var ls=liveStatus.get(s.id)||s.liveStatus||"observing";
+      var captions={working:"● Работает",approval:"⏳ Ждёт разрешения",completed:"✓ Завершён",
+        failed:"⚠ Ошибка",cancelled:"■ Остановлен",desktop_busy:"🔒 Занят Desktop",observing:"◉ Наблюдение"};
+      var isActive=s.busy||ls==="working"||ls==="approval";
+      var sub=node("span","sub"+(isActive?" busy":""),(captions[ls]||"◉ Наблюдение")+" · "+(s.cwd.split(/[\\/]/).pop()||"Проект")+" · "+fmtTime(s.updatedAt));
       info.append(title,sub);btn.append(icon,info);btn.onclick=function(){void pick(s.id);};list.append(btn);
     });
   }
   function renderHeader(){
     var s=selected();el("chat-title").textContent=s?titleOf(s):"Начните с выбора переписки";
     el("chat-project").textContent=s?(s.cwd.split(/[\\/]/).pop()||"CODEX").toUpperCase():"ВЫБЕРИТЕ СЕАНС";
-    el("chat-state").textContent=s?(s.busy?"● Выполняется":state.online?"Готов к заданию · Codex Desktop может удерживать сеанс":"ПК отключён"):"Здесь появится полная история Codex";
+    var ls=s&&(liveStatus.get(s.id)||s.liveStatus);
+    var labels={working:"● Codex работает",approval:"⏳ Ждёт разрешения в Telegram",
+      completed:"✓ Задание завершено",failed:"⚠ Ошибка выполнения",cancelled:"■ Остановлено",
+      desktop_busy:"🔒 Сеанс занят Codex Desktop",
+      observing:"◉ Наблюдение — статус Desktop неизвестен"};
+    el("chat-state").textContent=s?(!state.online?"Ноутбук не подключён":labels[ls]||"◉ Статус не подтверждён"):"Здесь появится полная история Codex";
     el("prompt").disabled=!s||!state.online;
     el("send").disabled=!s||!state.online||actionInFlight;
     el("stop").disabled=!s||!s.busy;
     el("compose-hint").textContent=!s?"Сначала выберите переписку":s.busy?"Сообщение попадёт в очередь":"Enter — отправить, Shift+Enter — новая строка";
     el("detail-title").textContent=s?titleOf(s):"Не выбран";
-    el("detail-status").textContent=s?(s.busy?"Codex выполняет задачу":"Ожидание"):"Выберите переписку слева";
+    el("detail-status").textContent=s?(labels[ls]||"Ожидание"):"Выберите переписку слева";
     el("progress-bar").style.width=s&&Number.isFinite(s.progress)?Math.max(0,Math.min(100,s.progress))+"%":"0%";
   }
   function renderMessages(){
@@ -69,9 +82,21 @@
     state.history.forEach(function(e){
       var outer=node("article","message "+(e.role==="user"?"user":"assistant"));
       outer.appendChild(node("span","message-head",e.role==="user"?"Вы":"Codex"));
-      outer.appendChild(node("div","bubble",e.text||""));
+      var bubble=node("div","bubble");
+      if(window.CodexMarkdown)window.CodexMarkdown.render(bubble,e.text||"");
+      else bubble.textContent=e.text||"";
+      outer.appendChild(bubble);
       box.appendChild(outer);
     });
+    var images=el("images"),last=null;
+    for(var i=box.children.length-1;i>=0;i--){
+      var item=box.children[i];
+      if(item.className==="message assistant"){last=item;break;}
+    }
+    if(last){
+      if(state.images.length)last.appendChild(node("div","screenshot-caption","Скриншоты из последних инструментов Codex"));
+      last.appendChild(images);
+    }else box.appendChild(images);
     if(previousNearBottom)box.scrollTop=box.scrollHeight;
   }
   async function renderImages(force){
@@ -132,7 +157,7 @@
       state.selected=id;state.loaded=null;state.history=[];state.images=[];
       galleryId="";galleryKey="";renderMessages();void renderImages();
     }
-    renderSessions();renderHeader();tab("chat");
+    renderSessions();renderHeader();tab("chat");stopStream();startStream();renderActivity();
     await loadHistory();void loadQueue();
   }
   async function loadHistory(manual){
@@ -150,9 +175,10 @@
         if(state.selected!==id)return;
         var digest=JSON.stringify([data.entries||[],data.images||[]]);
         if(digest!==state.loaded){
+          if(["completed","failed","cancelled"].includes(liveStatus.get(id)))liveDraft.delete(id);
           var priorImages=JSON.stringify(state.images);
           state.loaded=digest;state.history=data.entries||[];state.images=data.images||[];
-          renderMessages();
+          renderMessages();renderActivity();
           if(priorImages!==JSON.stringify(state.images))void renderImages();
         }else if(manual){note("История актуальна");}
       }catch(err){
@@ -170,12 +196,16 @@
       var health=await fetch("/api/health").then(function(x){return x.json();});
       state.online=Boolean(health.online);
       var status=el("connection");status.classList.toggle("online",state.online);
+      status.classList.toggle("offline",!state.online);
       status.querySelector("span").textContent=state.online?"ПК подключён":"ПК не в сети";
       if(!state.online){renderHeader();return;}
       var data=await api("snapshot");
       state.projects=data.projects||[];state.sessions=data.sessions||[];
+      state.sessions.forEach(function(s){
+      if(s.liveStatus&&(!liveStatus.has(s.id)||liveStatus.get(s.id)==="observing"))liveStatus.set(s.id,s.liveStatus);
+    });
       if(!state.selected&&data.selected&&state.sessions.some(function(x){return x.id===data.selected;}))state.selected=data.selected;
-      renderProjects();renderSessions();renderHeader();
+      renderProjects();renderSessions();renderHeader();startStream();
       if(state.selected&&state.tab==="chat")void loadHistory();
       if(state.selected&&state.tab==="queue")void loadQueue();
       warn("");
@@ -185,18 +215,33 @@
   async function runAction(op,args,onSuccess){
     if(actionInFlight)return;actionInFlight=true;renderHeader();
     try{var data=await api(op,args);if(onSuccess)await onSuccess(data);return data;}
-    catch(err){note(err.message);return null;}
+    catch(err){
+      if(op==="send"&&/active writer|занят.*(?:desktop|codex)|another writer/i.test(err.message)){
+        liveStatus.set(args.sessionId,"desktop_busy");renderHeader();renderSessions();
+      }
+      note(err.message);return null;
+    }
     finally{actionInFlight=false;renderHeader();}
   }
   async function send(ev){
     ev.preventDefault();var text=el("prompt").value.trim();if(!text||!state.selected)return;
     var id=state.selected;
-    var result=await runAction("send",{sessionId:id,text:text},async function(data){
-      el("prompt").value="";
-      note(data.result==="queued"?"Добавлено в очередь":data.result==="held"?"Сообщение ожидает свободный сеанс":"Задание отправлено Codex");
+    if(!pendingSend||pendingSend.sessionId!==id||pendingSend.text!==text){
+      pendingSend={sessionId:id,text:text,requestId:String(Date.now())+"_"+Math.random().toString(36).slice(2,16)};
+    }
+    var result=await runAction("send",{sessionId:id,text:text,requestId:pendingSend.requestId},async function(data){
+      el("prompt").value="";pendingSend=null;
+      if(data.result==="held"){
+        liveStatus.set(id,"desktop_busy");renderHeader();renderSessions();
+      }
+      note(data.result==="queued"?"Добавлено в очередь":data.result==="held"?
+        "Сеанс занят. Сообщение сохранено в боте; для продолжения открой Telegram-чат.":"Задание отправлено Codex");
       await loadHistory();await loadQueue();
     });
-    if(!result)el("prompt").value=text;
+    if(!result){
+      el("prompt").value=text;
+      note("Если связь прервалась, проверь историю. Повторная отправка того же задания защищена от дублей.");
+    }
   }
   async function createSession(){
     var cwd=el("project").value;if(!cwd){note("Сначала выберите проект в списке");tab("sessions");return;}
@@ -209,17 +254,99 @@
   async function removeQueued(id){
     await runAction("queueRemove",{sessionId:state.selected,itemId:id},function(){return loadQueue();});
   }
+  function renderActivity(){
+    var box=el("live-activity"),id=state.selected,draft=liveDraft.get(id)||"",tools=liveTools.get(id)||[];
+    box.replaceChildren();box.classList.toggle("hidden",!id||(!draft&&!tools.length));
+    if(!id)return;
+    if(tools.length)box.appendChild(node("div","live-heading","Активность Codex"));
+    if(draft)box.appendChild(node("div","live-draft",draft));
+    tools.slice(-5).forEach(function(x){box.appendChild(node("div","live-tool","⚙ "+x));});
+  }
+  function stopStream(){
+    if(streamTimer)clearTimeout(streamTimer);
+    streamTimer=null;
+    if(streamCtrl)streamCtrl.abort();
+    streamCtrl=null;streamSession="";
+  }
+  function streamEvent(e){
+    if(!e||e.sessionId!==state.selected||!Number.isSafeInteger(e.id))return;
+    var id=e.sessionId;
+    cursors.set(id,Math.max(cursors.get(id)||0,e.id));
+    if(e.kind==="status"&&e.status){
+      liveStatus.set(id,e.status);renderHeader();renderSessions();
+      if(["completed","failed","cancelled"].includes(e.status))void loadHistory(false);
+    }else if(e.kind==="text"&&typeof e.text==="string"){
+      liveDraft.set(id,((liveDraft.get(id)||"")+e.text).slice(-24000));
+    }else if(e.kind==="tool"&&e.label){
+      var t=liveTools.get(id)||[];t.push(e.label);liveTools.set(id,t.slice(-12));
+    }
+    renderActivity();
+  }
+  function startStream(){
+    var id=state.selected;
+    if(!id||!state.online||document.hidden||streamDisabled||!initData||typeof TextDecoder==="undefined"||typeof ReadableStream==="undefined")return;
+    if(streamCtrl&&streamSession===id)return;
+    stopStream();
+    var ctl=new AbortController();streamCtrl=ctl;streamSession=id;
+    (async function(){
+      try{
+        var rsp=await fetch("/api/stream",{method:"POST",signal:ctl.signal,cache:"no-store",
+          headers:{"Content-Type":"application/json","X-Telegram-Init-Data":initData},
+          body:JSON.stringify({sessionId:id,after:cursors.get(id)||0})});
+        if(rsp.status===501){streamDisabled=true;return;}
+        if(rsp.status===401){streamDisabled=true;warn("Срок авторизации истёк. Закрой Mini App и открой заново через /app.");return;}
+        if(!rsp.ok||!rsp.body)throw Error("Stream HTTP "+rsp.status);
+        streamDelay=1000;
+        el("connection").classList.remove("reconnecting");
+        var reader=rsp.body.getReader(),decoder=new TextDecoder(),buffer="";
+        while(!ctl.signal.aborted){
+          var x=await reader.read();if(x.done)break;
+          buffer+=decoder.decode(x.value,{stream:true});
+          if(buffer.length>250000)buffer=buffer.slice(-120000);
+          var at;
+          while((at=buffer.indexOf("\n\n"))>=0){
+            var packet=buffer.slice(0,at);buffer=buffer.slice(at+2);
+            if(packet.includes("event: reauth")){streamDisabled=true;warn("Перезапусти Mini App для продления авторизации.");return;}
+            var line=packet.split("\n").find(function(l){return l.startsWith("data: ");});
+            if(line){try{streamEvent(JSON.parse(line.slice(6)));}catch(_){}}
+          }
+        }
+      }catch(err){
+        if(!ctl.signal.aborted&&state.selected===id&&!document.hidden){
+          el("connection").classList.add("reconnecting");
+          el("connection").querySelector("span").textContent="Переподключение…";
+        }
+      }finally{
+        if(streamCtrl!==ctl)return;
+        streamCtrl=null;streamSession="";
+        if(!ctl.signal.aborted&&state.selected===id&&!document.hidden&&!streamDisabled){
+          var delay=streamDelay;streamDelay=Math.min(streamDelay*2,30000);
+          streamTimer=setTimeout(function(){streamTimer=null;startStream();},delay);
+        }
+      }
+    })();
+  }
   function on(id,event,fn){el(id).addEventListener(event,fn);}
   on("project","change",function(e){state.project=e.target.value;renderSessions();});
   on("search","input",renderSessions);
   on("composer","submit",function(e){void send(e);});
   on("prompt","keydown",function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();el("composer").requestSubmit();}});
+  on("prompt","input",function(){if(pendingSend&&pendingSend.text!==el("prompt").value.trim())pendingSend=null;});
   on("new-chat","click",function(){void createSession();});
   on("refresh","click",function(){void loadHistory(true);});
   on("stop","click",function(){if(!state.selected)return;if(!window.confirm("Остановить текущую задачу Codex?"))return;void runAction("cancel",{sessionId:state.selected},function(){note("Команда остановки отправлена");});});
   on("queue-reload","click",function(){void loadQueue();});
   on("resume","click",function(){void runAction("queueResume",{sessionId:state.selected},function(){note("Очередь возобновлена");return loadQueue();});});
   document.querySelectorAll(".bottom-nav button").forEach(function(b){b.addEventListener("click",function(){tab(b.dataset.tab);});});
+  if(window.addEventListener){
+    window.addEventListener("offline",function(){
+      state.online=false;stopStream();
+      el("connection").classList.remove("online");el("connection").classList.add("offline");
+      el("connection").querySelector("span").textContent="Нет соединения";
+      renderHeader();
+    });
+    window.addEventListener("online",function(){void refresh();if(state.selected){void loadHistory(false);startStream();}});
+  }
   tab("sessions");
   if(!initData){warn("Откройте эту страницу через Mini App своего Telegram-бота.");}
   else{
@@ -233,7 +360,8 @@
     },5000);
     setInterval(function(){if(!document.hidden)void refresh();},15000);
     document.addEventListener("visibilitychange",function(){
-      if(!document.hidden){void refresh();if(state.selected)void loadHistory(false);}
+      if(!document.hidden){void refresh();if(state.selected){void loadHistory(false);startStream();}}
+      else stopStream();
     });
   }
 })();

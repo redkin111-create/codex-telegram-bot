@@ -7,7 +7,9 @@
   <meta name="description" content="Codex Remote — управление локальным Codex из Telegram">
   <title>Codex Remote</title>
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/markdown.css">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="/markdown.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
@@ -36,6 +38,7 @@
           </div>
         </div>
         <div id="messages" class="messages" aria-live="polite"><div class="empty-state"><div class="empty-icon">⌘</div><strong>Ваш Codex, где бы вы ни были</strong><p>Выберите проект или создайте новый сеанс, чтобы управлять задачами прямо в Telegram.</p></div></div>
+        <div id="live-activity" class="live-activity hidden" aria-live="polite"></div>
         <div id="images" class="images hidden" aria-label="Скриншоты из отчёта"></div>
         <form id="composer" class="composer">
           <textarea id="prompt" rows="2" maxlength="16000" placeholder="Напишите задачу Codex…" aria-label="Задание для Codex" disabled></textarea>
