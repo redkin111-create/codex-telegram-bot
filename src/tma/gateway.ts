@@ -41,10 +41,12 @@ function headers(res:ServerResponse):void {
   res.setHeader("Cache-Control","no-store");
   res.setHeader("X-Content-Type-Options","nosniff");
   res.setHeader("Referrer-Policy","no-referrer");
-  res.setHeader("X-Frame-Options","SAMEORIGIN");
+  // Telegram Web embeds Mini Apps in an iframe from its own origin.
+  // A SAMEORIGIN X-Frame-Options header would make the UI blank on Telegram Web.
   res.setHeader("Content-Security-Policy",
     "default-src 'none'; script-src 'self' https://telegram.org; style-src 'self'; " +
-    "connect-src 'self'; img-src 'self' data: blob:; font-src 'self'; frame-ancestors 'self'");
+    "connect-src 'self'; img-src 'self' data: blob:; font-src 'self'; " +
+    "frame-ancestors 'self' https://web.telegram.org https://*.telegram.org");
 }
 function json(res:ServerResponse,status:number,value:unknown):void {
   res.statusCode=status; res.setHeader("Content-Type","application/json; charset=utf-8");res.end(JSON.stringify(value));
