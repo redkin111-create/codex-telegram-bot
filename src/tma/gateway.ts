@@ -103,12 +103,14 @@ export type LocalTmaExecutor=(job:TmaJob)=>Promise<unknown>;
 export interface LiveGateway {
   feed:TmaLiveFeed;
   authorize:(userId:number,sessionId:string)=>Promise<boolean>;
+  connected?:()=>boolean;
 }
 async function route(req:IncomingMessage,res:ServerResponse,cfg:GatewayConfig,localExecute?:LocalTmaExecutor,live?:LiveGateway):Promise<void> {
   headers(res);
   const pathname=new URL(req.url||"/","http://localhost").pathname;
   if(pathname==="/api/health"&&req.method==="GET"){
-    json(res,200,{online:!!localExecute||Date.now()-lastAgentAt<25000});return;
+    json(res,200,{online:!!localExecute||Date.now()-lastAgentAt<25000,
+      codexConnected:live?.connected?.(),serverTime:Date.now()});return;
   }
   if(pathname.startsWith("/api/agent/")){
     if(!agentAuthorized(req,cfg.secret)){json(res,401,{error:"Unauthorized agent"});return;}
@@ -149,7 +151,9 @@ async function route(req:IncomingMessage,res:ServerResponse,cfg:GatewayConfig,lo
     const params=await body(req,2048);
     const sessionId=String(params.sessionId??"");
     const after=Number(params.after??0);
-    if(!/^[a-z0-9-]{8,80}$/i.test(sessionId)||!Number.isSafeInteger(after)||after<0){
+    const requestedEpoch=typeof params.epoch==="string"?params.epoch:"";
+    if(!/^[a-z0-9-]{8,80}$/i.test(sessionId)||!Number.isSafeInteger(after)||after<0||
+       (requestedEpoch!==""&&!/^[0-9a-f]{24}$/.test(requestedEpoch))){
       json(res,400,{error:"Invalid stream request"});return;
     }
     if(!await live.authorize(userId,sessionId)){
@@ -160,13 +164,20 @@ async function route(req:IncomingMessage,res:ServerResponse,cfg:GatewayConfig,lo
     res.setHeader("Connection","keep-alive");
     res.setHeader("X-Accel-Buffering","no");
     res.flushHeaders();
+    if(res.destroyed)return;
     res.write(": connected\n\n");
+    res.write("event: hello\ndata: "+JSON.stringify({epoch:live.feed.epoch})+"\n\n");
     let stopped=false;
     const push=(event:import("./live.js").LiveEvent)=>{
       if(stopped||res.destroyed)return;
-      res.write("id: "+event.id+"\ndata: "+JSON.stringify(event)+"\n\n");
+      if(!res.write("id: "+event.id+"\ndata: "+JSON.stringify(event)+"\n\n")){
+        // A slow/suspended WebView must not accumulate unbounded buffered
+        // events on the laptop. Reconnect and resume from the last received ID.
+        res.end();
+      }
     };
-    const unsubscribe=live.feed.subscribe(sessionId,after,push);
+    const validCursor=requestedEpoch===live.feed.epoch?after:0;
+    const unsubscribe=live.feed.subscribe(sessionId,validCursor,push);
     const heartbeat=setInterval(()=>{if(!res.destroyed)res.write(": heartbeat\n\n");},15000);
     // Auth dates expire after an hour, so force a reconnect and explicit
     // reauthorization instead of leaving an indefinitely authorized stream.
