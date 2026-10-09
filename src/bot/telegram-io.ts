@@ -107,3 +107,36 @@ export async function sendMarkdownDoc(
     await safeSend(api, chatId, mdChunks[i]!, plainChunks[i] ?? mdChunks[i]!, extra);
   }
 }
+
+
+/** Exact plain-text splitting with headroom for Telegram's 4096-char limit.
+ * Unlike MarkdownV2 chunking, this never removes lines or alters code fences.
+ */
+export function chunkPlainText(text: string, limit = 3800): string[] {
+  if (!text) return [];
+  if (!Number.isSafeInteger(limit) || limit < 2 || limit > 4096) throw new RangeError("Invalid Telegram chunk length");
+  const parts: string[] = [];
+  let pos = 0;
+  while (pos < text.length) {
+    let end = Math.min(pos + limit, text.length);
+    if (end < text.length) {
+      const newline = text.lastIndexOf("\n", end - 1);
+      if (newline >= pos + Math.floor(limit / 3)) end = newline + 1;
+      // Avoid splitting a UTF-16 surrogate pair across messages.
+      if (end < text.length && end > pos &&
+          text.charCodeAt(end - 1) >= 0xd800 && text.charCodeAt(end - 1) <= 0xdbff &&
+          text.charCodeAt(end) >= 0xdc00 && text.charCodeAt(end) <= 0xdfff) end--;
+    }
+    parts.push(text.slice(pos, end));
+    pos = end;
+  }
+  return parts;
+}
+
+export async function sendPlainTextChunks(
+  api: Api, chatId: number, text: string, extra: Record<string, unknown> = {},
+): Promise<void> {
+  for (const chunk of chunkPlainText(text)) {
+    await withRetry(() => api.sendMessage(chatId, chunk, extra));
+  }
+}
