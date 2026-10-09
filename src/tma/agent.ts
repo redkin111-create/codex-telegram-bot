@@ -15,6 +15,7 @@ import type { AppConfig } from "../config.js";
 import { createLogger } from "../logger.js";
 import { readConversationHistory } from "../sessions/history.js";
 import { SessionStore } from "../sessions/store.js";
+import { TelegramSessionRegistry } from "../sessions/telegram-registry.js";
 import { argumentString, isTmaJob, type TmaJob, type TmaResult } from "./protocol.js";
 
 const log=createLogger("tma:agent");
@@ -30,6 +31,7 @@ export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegis
 export class MiniAppAgent {
   private readonly abort=new AbortController();
   private readonly store:SessionStore;
+  private readonly telegramSessions:TelegramSessionRegistry;
   private readonly root:string;
   private readonly secret:string;
   private readonly results=new Map<string,TmaResult>();
@@ -45,6 +47,7 @@ export class MiniAppAgent {
     if(secret.length<32)throw new Error("TMA_AGENT_TOKEN must be at least 32 characters");
     this.secret=secret;
     this.store=new SessionStore(deps.cfg.sessionsDir);
+    this.telegramSessions=new TelegramSessionRegistry(deps.cfg.dataDir);
   }
   start():void{if(!this.loopPromise)this.loopPromise=this.run();}
   stop():void{this.abort.abort();}
@@ -86,7 +89,7 @@ export class MiniAppAgent {
       }
     }
   }
-  private async catalogue():Promise<{projects:CodexProjectSummary[];threads:CodexThreadSummary[]}>{
+  private async catalogue(userId:number):Promise<{projects:CodexProjectSummary[];threads:CodexThreadSummary[]}>{
     const [projects,threads]=await Promise.all([
       this.deps.acp.listProjects().catch(()=>[] as CodexProjectSummary[]),
       this.deps.acp.listThreads({
@@ -95,16 +98,17 @@ export class MiniAppAgent {
       }).catch(()=>[] as CodexThreadSummary[]),
     ]);
     return {projects,threads:threads.filter(t=>!t.ephemeral&&
+      (!this.telegramSessions.get(t.id)||this.telegramSessions.get(t.id)?.chatId===userId)&&
       ["cli","vscode","appServer"].includes(threadSourceKind(t)??""))};
   }
-  private async thread(id:string):Promise<CodexThreadSummary>{
-    const {threads}=await this.catalogue();
+  private async thread(id:string,userId:number):Promise<CodexThreadSummary>{
+    const {threads}=await this.catalogue(userId);
     const thread=threads.find(t=>t.id===id);
     if(!thread)throw new Error("Переписка не найдена в Codex");
     return thread;
   }
-  private async project(path:string):Promise<{name:string;cwd:string}>{
-    const {projects,threads}=await this.catalogue();
+  private async project(path:string,userId:number):Promise<{name:string;cwd:string}>{
+    const {projects,threads}=await this.catalogue(userId);
     // Never trust arbitrary cwd from a web request. It must have been reported
     // by local Codex, or explicitly allowed in the bot's project roots.
     const matched=projects.find(p=>
@@ -119,7 +123,7 @@ export class MiniAppAgent {
     const chatId=job.userId,controller=registry.controller(chatId),args=job.args;
     switch(job.op){
       case "snapshot":{
-        const {projects,threads}=await this.catalogue();
+        const {projects,threads}=await this.catalogue(chatId);
         const controlled=controller.list();
         const active=registry.get(chatId);
         const projectMap=new Map<string,string>();
@@ -151,7 +155,7 @@ export class MiniAppAgent {
       }
       case "history":{
         const id=argumentString(args,"sessionId",80);
-        const t=await this.thread(id);
+        const t=await this.thread(id,chatId);
         const path=this.store.jsonlPath(id);
         const entries=readConversationHistory(path,40).map(e=>({
           role:e.role,text:e.text,timestamp:e.timestamp,
@@ -160,7 +164,7 @@ export class MiniAppAgent {
         return {entries,images:refs,project:t.cwd||""};
       }
       case "create":{
-        const target=await this.project(argumentString(args,"cwd",700));
+        const target=await this.project(argumentString(args,"cwd",700),chatId);
         const rt=await controller.addNew(target.cwd,target.name);
         if(!rt.sessionId)throw new Error("Новый сеанс не создан");
         this.selected.set(chatId,rt.sessionId);
@@ -168,7 +172,7 @@ export class MiniAppAgent {
       }
       case "select":{
         const id=argumentString(args,"sessionId",80);
-        const t=await this.thread(id);
+        const t=await this.thread(id,chatId);
         if(!t.cwd)throw new Error("Неизвестная рабочая папка сеанса");
         if(controller.runtimeForSession(id)) await controller.switchTo(id);
         else await controller.addAttach(id,t.cwd,basename(t.cwd),[]);
@@ -177,7 +181,7 @@ export class MiniAppAgent {
       }
       case "send":{
         const id=argumentString(args,"sessionId",80),message=argumentString(args,"text",16000);
-        const t=await this.thread(id);
+        const t=await this.thread(id,chatId);
         if(!t.cwd)throw new Error("Неизвестная рабочая папка");
         if(!controller.runtimeForSession(id)){
           try{await controller.addAttach(id,t.cwd,basename(t.cwd),[]);}
@@ -216,7 +220,7 @@ export class MiniAppAgent {
       }
       case "image":{
         const id=argumentString(args,"sessionId",80);
-        const t=await this.thread(id);
+        const t=await this.thread(id,chatId);
         if(!t.cwd)throw new Error("Неизвестная папка проекта");
         const candidate=argumentString(args,"path",1200);
         const referenced=recentWatchImagePaths(this.store.jsonlPath(id),t.cwd);
