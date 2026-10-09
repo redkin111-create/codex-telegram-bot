@@ -78,6 +78,7 @@ async function serveStatic(pathname:string,res:ServerResponse):Promise<void> {
     "/markdown.js":["markdown.js","text/javascript; charset=utf-8"],
     "/photo-input.js":["photo-input.js","text/javascript; charset=utf-8"],
     "/markdown.css":["markdown.css","text/css; charset=utf-8"],
+    "/photo.css":["photo.css","text/css; charset=utf-8"],
   };
   const found=files[pathname];
   if(!found){json(res,404,{error:"Not found"});return;}
