@@ -235,7 +235,7 @@ export class MiniAppAgent {
           const entries=(await readConversationHistoryAsync(path,40)).map(e=>({
             role:e.role,text:e.text,timestamp:e.timestamp,
           }));
-          const refs=t.cwd?recentWatchImagePaths(path,t.cwd).slice(0,8):[];
+          const refs=t.cwd?recentWatchImagePaths(path,t.cwd).slice(-8):[];
           const result={entries,images:refs,project:t.cwd||""};
           // The agent may append to the log during this read. Don't store
           // a stale transcript under a newer file revision.
