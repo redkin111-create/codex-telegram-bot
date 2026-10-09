@@ -21,14 +21,22 @@ export async function deliverWatchReport(
     if (!entry.text.trim()) continue;
     const header = entry.role === "assistant" ? "🤖 Codex\n" : "👤 Запрос\n";
     const text = header + entry.text;
+    // Send the complete file first: even if a later Telegram text chunk fails,
+    // the user already has an intact copy of the full report.
+    if (entry.role === "assistant" && entry.text.length > LONG_REPORT_THRESHOLD) {
+      const markdown = Buffer.from(entry.text, "utf8");
+      if (markdown.length <= DOCUMENT_LIMIT) {
+        const filename = `codex-report-${new Date(entry.timestamp ?? Date.now()).toISOString().replace(/[:.]/g, "-")}.md`;
+        try {
+          await api.sendDocument(chatId, new InputFile(markdown, filename), {
+            caption: "📄 Полный отчёт Codex без сокращений",
+            disable_notification: silent,
+          });
+        } catch {
+          // Continue sending plain text even when document uploads are blocked.
+        }
+      }
+    }
     await sendPlainTextChunks(api, chatId, text, { disable_notification: silent });
-    if (entry.role !== "assistant") continue;
-    const markdown = Buffer.from(entry.text, "utf8");
-    if (entry.text.length <= LONG_REPORT_THRESHOLD || markdown.length > DOCUMENT_LIMIT) continue;
-    const filename = `codex-report-${new Date(entry.timestamp ?? Date.now()).toISOString().replace(/[:.]/g, "-")}.md`;
-    await api.sendDocument(chatId, new InputFile(markdown, filename), {
-      caption: "📄 Полный отчёт Codex без сокращений",
-      disable_notification: silent,
-    });
   }
 }
