@@ -26,7 +26,7 @@ test("Windows Mini App agent lists existing Codex projects and sessions",async()
     addAttach:async()=>{throw new Error("should not attach for snapshot");},
   };
   const registry={controller:()=>controller,get:()=>runtime} as unknown as RuntimeRegistry;
-  const cfg={sessionsDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
   const agent=new MiniAppAgent({cfg,acp,registry},"http://127.0.0.1:3301","secret-with-more-than-thirty-two-characters");
   try{
     const result=await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}}) as {
