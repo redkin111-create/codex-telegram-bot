@@ -8,6 +8,8 @@
   var initData=tg&&tg.initData||"",actionInFlight=false,snapshotInFlight=false,timer=null;
   var historyRequests=new Map(),queueRequests=new Map(),imageCache=new Map(),galleryId="",galleryKey="";
   var pendingSend=null,liveStatus=new Map();
+  var streamCtrl=null,streamSession="",streamDelay=1000,streamTimer=null,streamDisabled=false;
+  var cursors=new Map(),liveDraft=new Map(),liveTools=new Map();
   function node(tag,klass,text){var n=document.createElement(tag);if(klass)n.className=klass;if(text!==undefined)n.textContent=String(text);return n;}
   function note(text){var n=el("toast");n.textContent=text;n.classList.remove("hidden");clearTimeout(timer);timer=setTimeout(function(){n.classList.add("hidden");},3600);}
   function warn(text){el("warning").textContent=text;el("warning").classList.toggle("hidden",!text);}
@@ -150,7 +152,7 @@
       state.selected=id;state.loaded=null;state.history=[];state.images=[];
       galleryId="";galleryKey="";renderMessages();void renderImages();
     }
-    renderSessions();renderHeader();tab("chat");
+    renderSessions();renderHeader();tab("chat");stopStream();startStream();renderActivity();
     await loadHistory();void loadQueue();
   }
   async function loadHistory(manual){
@@ -168,9 +170,10 @@
         if(state.selected!==id)return;
         var digest=JSON.stringify([data.entries||[],data.images||[]]);
         if(digest!==state.loaded){
+          if(["completed","failed","cancelled"].includes(liveStatus.get(id)))liveDraft.delete(id);
           var priorImages=JSON.stringify(state.images);
           state.loaded=digest;state.history=data.entries||[];state.images=data.images||[];
-          renderMessages();
+          renderMessages();renderActivity();
           if(priorImages!==JSON.stringify(state.images))void renderImages();
         }else if(manual){note("История актуальна");}
       }catch(err){
@@ -192,7 +195,9 @@
       if(!state.online){renderHeader();return;}
       var data=await api("snapshot");
       state.projects=data.projects||[];state.sessions=data.sessions||[];
-      state.sessions.forEach(function(s){if(s.liveStatus)liveStatus.set(s.id,s.liveStatus);});
+      state.sessions.forEach(function(s){
+      if(s.liveStatus&&(!liveStatus.has(s.id)||liveStatus.get(s.id)==="observing"))liveStatus.set(s.id,s.liveStatus);
+    });startStream();
       if(!state.selected&&data.selected&&state.sessions.some(function(x){return x.id===data.selected;}))state.selected=data.selected;
       renderProjects();renderSessions();renderHeader();
       if(state.selected&&state.tab==="chat")void loadHistory();
@@ -231,6 +236,78 @@
   async function removeQueued(id){
     await runAction("queueRemove",{sessionId:state.selected,itemId:id},function(){return loadQueue();});
   }
+  function renderActivity(){
+    var box=el("live-activity"),id=state.selected,draft=liveDraft.get(id)||"",tools=liveTools.get(id)||[];
+    box.replaceChildren();box.classList.toggle("hidden",!id||(!draft&&!tools.length));
+    if(!id)return;
+    if(tools.length)box.appendChild(node("div","live-heading","Активность Codex"));
+    if(draft)box.appendChild(node("div","live-draft",draft));
+    tools.slice(-5).forEach(function(x){box.appendChild(node("div","live-tool","⚙ "+x));});
+  }
+  function stopStream(){
+    if(streamTimer)clearTimeout(streamTimer);
+    streamTimer=null;
+    if(streamCtrl)streamCtrl.abort();
+    streamCtrl=null;streamSession="";
+  }
+  function streamEvent(e){
+    if(!e||e.sessionId!==state.selected||!Number.isSafeInteger(e.id))return;
+    var id=e.sessionId;
+    cursors.set(id,Math.max(cursors.get(id)||0,e.id));
+    if(e.kind==="status"&&e.status){
+      liveStatus.set(id,e.status);renderHeader();renderSessions();
+      if(["completed","failed","cancelled"].includes(e.status))void loadHistory(false);
+    }else if(e.kind==="text"&&typeof e.text==="string"){
+      liveDraft.set(id,((liveDraft.get(id)||"")+e.text).slice(-24000));
+    }else if(e.kind==="tool"&&e.label){
+      var t=liveTools.get(id)||[];t.push(e.label);liveTools.set(id,t.slice(-12));
+    }
+    renderActivity();
+  }
+  function startStream(){
+    var id=state.selected;
+    if(!id||!state.online||document.hidden||streamDisabled||!initData)return;
+    if(streamCtrl&&streamSession===id)return;
+    stopStream();
+    var ctl=new AbortController();streamCtrl=ctl;streamSession=id;
+    (async function(){
+      try{
+        var rsp=await fetch("/api/stream",{method:"POST",signal:ctl.signal,cache:"no-store",
+          headers:{"Content-Type":"application/json","X-Telegram-Init-Data":initData},
+          body:JSON.stringify({sessionId:id,after:cursors.get(id)||0})});
+        if(rsp.status===501){streamDisabled=true;return;}
+        if(rsp.status===401){streamDisabled=true;warn("Срок авторизации истёк. Закрой Mini App и открой заново через /app.");return;}
+        if(!rsp.ok||!rsp.body)throw Error("Stream HTTP "+rsp.status);
+        streamDelay=1000;
+        el("connection").classList.remove("reconnecting");
+        var reader=rsp.body.getReader(),decoder=new TextDecoder(),buffer="";
+        while(!ctl.signal.aborted){
+          var x=await reader.read();if(x.done)break;
+          buffer+=decoder.decode(x.value,{stream:true});
+          if(buffer.length>250000)buffer=buffer.slice(-120000);
+          var at;
+          while((at=buffer.indexOf("\n\n"))>=0){
+            var packet=buffer.slice(0,at);buffer=buffer.slice(at+2);
+            if(packet.includes("event: reauth")){streamDisabled=true;warn("Перезапусти Mini App для продления авторизации.");return;}
+            var line=packet.split("\n").find(function(l){return l.startsWith("data: ");});
+            if(line){try{streamEvent(JSON.parse(line.slice(6)));}catch(_){}}
+          }
+        }
+      }catch(err){
+        if(!ctl.signal.aborted&&state.selected===id&&!document.hidden){
+          el("connection").classList.add("reconnecting");
+          el("connection").querySelector("span").textContent="Переподключение…";
+        }
+      }finally{
+        if(streamCtrl!==ctl)return;
+        streamCtrl=null;streamSession="";
+        if(!ctl.signal.aborted&&state.selected===id&&!document.hidden&&!streamDisabled){
+          var delay=streamDelay;streamDelay=Math.min(streamDelay*2,30000);
+          streamTimer=setTimeout(function(){streamTimer=null;startStream();},delay);
+        }
+      }
+    })();
+  }
   function on(id,event,fn){el(id).addEventListener(event,fn);}
   on("project","change",function(e){state.project=e.target.value;renderSessions();});
   on("search","input",renderSessions);
@@ -243,6 +320,8 @@
   on("queue-reload","click",function(){void loadQueue();});
   on("resume","click",function(){void runAction("queueResume",{sessionId:state.selected},function(){note("Очередь возобновлена");return loadQueue();});});
   document.querySelectorAll(".bottom-nav button").forEach(function(b){b.addEventListener("click",function(){tab(b.dataset.tab);});});
+  window.addEventListener("offline",function(){state.online=false;stopStream();renderHeader();});
+  window.addEventListener("online",function(){void refresh();if(state.selected){void loadHistory(false);startStream();}});
   tab("sessions");
   if(!initData){warn("Откройте эту страницу через Mini App своего Telegram-бота.");}
   else{
@@ -256,7 +335,8 @@
     },5000);
     setInterval(function(){if(!document.hidden)void refresh();},15000);
     document.addEventListener("visibilitychange",function(){
-      if(!document.hidden){void refresh();if(state.selected)void loadHistory(false);}
+      if(!document.hidden){void refresh();if(state.selected){void loadHistory(false);startStream();}}
+      else stopStream();
     });
   }
 })();
