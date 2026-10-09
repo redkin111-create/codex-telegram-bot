@@ -1,6 +1,6 @@
 /** A deliberately small, allowlisted RPC protocol shared by the VPS and PC. */
 export const TMA_OPERATIONS = [
-  "snapshot", "history", "activity", "create", "select", "send", "cancel",
+  "snapshot", "history", "activity", "diagnostics", "create", "select", "send", "cancel",
   "queue", "queueRemove", "queueResume", "image",
 ] as const;
 export type TmaOperation = (typeof TMA_OPERATIONS)[number];
