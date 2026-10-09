@@ -7,7 +7,7 @@
  * retry. No prompt text, images or tokens are stored on disk.
  */
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 type State="reserved"|"completed"|"uncertain";
@@ -106,9 +106,11 @@ export class DurablePromptJournal {
   private write():void{
     const temp=this.path+"."+process.pid+"."+randomBytes(4).toString("hex")+".tmp";
     try{
-      writeFileSync(temp,JSON.stringify({version:1,records:this.records} satisfies FileState),{
-        encoding:"utf8",mode:0o600,flag:"wx",
-      });
+      const fd=openSync(temp,"wx",0o600);
+      try{
+        writeFileSync(fd,JSON.stringify({version:1,records:this.records} satisfies FileState),"utf8");
+        fsyncSync(fd);
+      }finally{closeSync(fd);}
       renameSync(temp,this.path);
     }catch(error){
       try{unlinkSync(temp);}catch{ /* no tmp */ }
