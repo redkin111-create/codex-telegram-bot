@@ -4,6 +4,11 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api } from "grammy";
+import { EventEmitter } from "node:events";
+import type { AcpClient } from "../src/acp/client.js";
+import type { AppConfig } from "../src/config.js";
+import { SessionRuntime } from "../src/bot/session-runtime.js";
+import { DEFAULT_NOTIFICATION_PREFERENCES } from "../src/app/notifications.js";
 import { chunkPlainText } from "../src/bot/telegram-io.js";
 import { deliverWatchReport } from "../src/bot/watch-report.js";
 import { recentWatchImagePaths, watchImagePathsFromEvents } from "../src/bot/watch-images.js";
@@ -102,5 +107,48 @@ test("watch images cannot escape project via absolute paths or symlinks", async 
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("Watch backfills a complete previous Codex answer and its screenshot", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-watch-integration-"));
+  const path = join(dir, "screen.png");
+  const log = join(dir, "rollout.jsonl");
+  const answer = "Completed task\\n" + "Reviewed everything.\\n".repeat(410);
+  writeFileSync(path, Buffer.from([137, 80, 78, 71]));
+  const records = [
+    { type: "session_meta", payload: { id: "watch-session", cwd: dir } },
+    { type: "response_item", payload: { type: "function_call_output", output: `Screenshot saved: "${path}"` } },
+    { type: "response_item", payload: { type: "message", role: "assistant",
+      content: [{ type: "output_text", text: answer }] } },
+  ];
+  writeFileSync(log, records.map((line) => JSON.stringify(line)).join("\n") + "\n");
+  const sent: string[] = [];
+  let docs = 0;
+  let images = 0;
+  const api = {
+    sendMessage: async (_id: number, body: string) => { sent.push(body); return { message_id: sent.length }; },
+    sendDocument: async () => { docs++; return { message_id: 30 }; },
+    sendPhoto: async () => { images++; return { message_id: 31 }; },
+  } as unknown as Api;
+  const cfg = { workspace: dir, dataDir: dir, sendAgentImages: true, agentImagesMax: 8,
+    quietNotifications: true } as AppConfig;
+  const acp = new EventEmitter() as AcpClient;
+  const settings = { get: () => ({ notifications: DEFAULT_NOTIFICATION_PREFERENCES }) };
+  const runtime = new SessionRuntime(api, 9090, acp, cfg, settings as never,
+    { cwd: dir, sessionId: "watch-session" });
+  try {
+    runtime.startWatch(log, false, dir);
+    // The snapshot is sent asynchronously and ordered before future log events.
+    const pending = (runtime as unknown as { watchDelivery: Promise<void> }).watchDelivery;
+    await pending;
+    assert.equal(sent.join(""), "🤖 Codex\n" + answer);
+    assert(sent.length > 1);
+    assert.equal(docs, 1);
+    assert.equal(images, 1);
+  } finally {
+    runtime.stopWatch();
+    runtime.dispose();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
