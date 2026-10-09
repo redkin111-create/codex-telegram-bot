@@ -17,7 +17,7 @@ import { notificationCompletionEnabled, notificationShouldBeLoud, type Notificat
 import type { SettingsStore } from "../app/settings-store.js";
 import { type PromptInput, type ReasoningEffort, textPrompt } from "../app/types.js";
 import { createLogger } from "../logger.js";
-import { buildTranscript, conversationEntries } from "../sessions/history.js";
+import { buildTranscript, conversationEntries, readConversationHistory } from "../sessions/history.js";
 import { buildPriming, recentTranscript } from "./session-fork.js";
 import { TailWatcher } from "../sessions/tail.js";
 import type { HistoryEntry } from "../sessions/types.js";
@@ -31,19 +31,12 @@ import { removeIncomingAttachment } from "./incoming-files.js";
 import { buildContentBlocks } from "./prompt-content.js";
 import { backoffSchedule, briefErrorMessage, formatErrorSummary, formatRetryNotice, RETRY_BASE_MS } from "./prompt-retry.js";
 import { sendMarkdownDoc } from "./telegram-io.js";
+import { sendCompleteWatchReport } from "./watch-report.js";
 import { TypingIndicator } from "./typing.js";
 import { commandOutputPaths } from "./command-artifacts.js";
 import { DurableQueueStore } from "./durable-queue.js";
 
 const log = createLogger("runtime");
-
-const WATCH_ENTRY_MAX = 700;
-const WATCH_ICON: Record<string, string> = {
-  user: "\u{1F464}",
-  assistant: "\u{1F916}",
-  tool: "\u{1F527}",
-  system: "\u2139\uFE0F",
-};
 
 export type AttachResult = "resumed" | "forked";
 
@@ -123,6 +116,9 @@ export class SessionRuntime {
   private readonly listener: (sessionId: string, update: SessionUpdate) => void;
   private primingContext: string | undefined;
   private watcher: TailWatcher | undefined;
+  private watchGeneration = 0;
+  private watchDelivery: Promise<void> = Promise.resolve();
+  private readonly watchImagesSent = new Set<string>();
   /** True when the active watch is a transient "follow" of this session's own
    *  in-flight turn (started on switch) rather than an explicit /watch of
    *  another session — follow-watches are auto-stopped when a new turn streams. */
@@ -366,16 +362,40 @@ export class SessionRuntime {
 
   startWatch(jsonlPath: string, follow = false): void {
     this.stopWatch();
+    const generation = this.watchGeneration;
+    this.watchImagesSent.clear();
     this.watchIsFollow = follow;
-    this.watcher = new TailWatcher(jsonlPath, (entries) => void this.onWatchEntries(entries));
+    this.watcher = new TailWatcher(jsonlPath, (entries) => {
+      // Polls may overlap while Telegram is delivering several pages/photos.
+      // Serialize them to preserve the order of the Codex report.
+      this.watchDelivery = this.watchDelivery.catch(() => {}).then(async () => {
+        if (generation !== this.watchGeneration) return;
+        await this.onWatchEntries(entries, generation);
+      }).catch((error) => log.warn("watch delivery failed:", (error as Error).message));
+    });
     this.watcher.start(true);
   }
 
   stopWatch(): boolean {
+    this.watchGeneration++;
     if (!this.watcher) return false;
     this.watcher.stop();
     this.watcher = undefined;
     this.watchIsFollow = false;
+    this.watchImagesSent.clear();
+    return true;
+  }
+
+  /** Replay the last complete assistant message and referenced screenshots.
+   * This is explicit, so reopening Watch never floods the chat with old logs. */
+  async sendLastWatchReport(jsonlPath: string, cwd: string): Promise<boolean> {
+    const report = readConversationHistory(jsonlPath, 24)
+      .filter((entry) => entry.role === "assistant").at(-1);
+    if (!report) return false;
+    const mode = this.settings.get(this.chatId).notifications?.mode ?? "all";
+    const silent = !notificationShouldBeLoud(mode, this.cfg.quietNotifications, "info");
+    await sendCompleteWatchReport(this.api, this.chatId, report.text, { title: "📄 Последний ответ Codex", silent });
+    await this.sendWatchImages(report.text, cwd);
     return true;
   }
 
@@ -1355,20 +1375,34 @@ export class SessionRuntime {
     }
   }
 
-  private async onWatchEntries(entries: HistoryEntry[]): Promise<void> {
-    const body = conversationEntries(entries)
-      .map((e) => {
-        const icon = WATCH_ICON[e.role] ?? "\u2022";
-        if (e.role === "tool") return `${icon} ${e.tool ? `\`${e.tool}\`` : "tool"}`;
-        const text = e.text.length > WATCH_ENTRY_MAX ? e.text.slice(0, WATCH_ENTRY_MAX) + " …" : e.text;
-        return `${icon} ${text}`;
-      })
-      .filter(Boolean)
-      .join("\n\n");
-    if (body.trim()) {
-      const mode = this.settings.get(this.chatId).notifications?.mode ?? "all";
-      const loud = notificationShouldBeLoud(mode, this.cfg.quietNotifications, "info");
-      await sendMarkdownDoc(this.api, this.chatId, body, { loud, silent: !loud });
+  private async onWatchEntries(entries: HistoryEntry[], generation: number): Promise<void> {
+    const mode = this.settings.get(this.chatId).notifications?.mode ?? "all";
+    const silent = !notificationShouldBeLoud(mode, this.cfg.quietNotifications, "info");
+    for (const entry of conversationEntries(entries)) {
+      if (generation !== this.watchGeneration) return;
+      await sendCompleteWatchReport(this.api, this.chatId, entry.text, {
+        title: entry.role === "assistant" ? "🤖 Codex" : "👤 Сообщение",
+        silent,
+      });
+      if (entry.role === "assistant" && generation === this.watchGeneration) {
+        await this.sendWatchImages(entry.text, this.cwd);
+      }
+    }
+  }
+
+  private async sendWatchImages(text: string, cwd: string): Promise<void> {
+    if (!this.cfg.sendAgentImages || !text) return;
+    const paths = extractImagePaths(text, cwd);
+    if (paths.length === 0) return;
+    try {
+      await sendImages(this.api, this.chatId, paths, {
+        since: 0, // referenced screenshots may predate the moment Watch was enabled
+        already: this.watchImagesSent,
+        max: Math.max(1, this.cfg.agentImagesMax ?? 8),
+        allowedRoot: cwd,
+      });
+    } catch (error) {
+      log.warn("watch screenshot delivery failed:", (error as Error).message);
     }
   }
 }
