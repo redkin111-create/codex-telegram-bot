@@ -5,6 +5,7 @@
  */
 import { AcpClient } from "./acp/client.js";
 import { startMiniAppAgent } from "./tma/agent.js";
+import { enabledLocalTma, startLocalTma, type LocalTmaService } from "./tma/local.js";
 import { createBot } from "./bot/bot.js";
 import { CANONICAL_DIR, loadConfig } from "./config.js";
 import { InstanceLock } from "./app/instance-lock.js";
@@ -51,7 +52,18 @@ async function main(): Promise<void> {
 
   await acp.start();
   const { bot, registry, scheduler, updater } = await createBot(cfg, acp);
-  const miniApp = startMiniAppAgent({ cfg, acp, registry });
+  // TMA_LOCAL runs the UI, gateway and outbound Codex bridge in this existing
+  // service. No VPS required. Failures never prevent the Telegram bot starting.
+  let localTma: LocalTmaService | undefined;
+  if (enabledLocalTma()) {
+    try {
+      localTma = await startLocalTma(cfg, acp, registry);
+    } catch (error) {
+      log.error("Could not start local Mini App (bot remains available):", error);
+    }
+  }
+  // Legacy remote gateway mode remains supported for existing deployments.
+  const miniApp = enabledLocalTma() ? undefined : startMiniAppAgent({ cfg, acp, registry });
   scheduler.start();
   await updater.start();
 
@@ -63,6 +75,7 @@ async function main(): Promise<void> {
     scheduler.stop();
     updater.stop();
     miniApp?.stop();
+    void localTma?.stop().catch(error => log.warn("TMA shutdown:", error));
     registry.disposeAll();
     void bot.stop().catch(() => {});
     acp.stop();
