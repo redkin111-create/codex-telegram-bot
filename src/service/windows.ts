@@ -15,6 +15,19 @@ import type { LaunchSpec, ServiceController, ServiceResult } from "./types.js";
 const TASK = "CodexTelegramBot";
 /** Launcher dropped in the per-user Startup folder when no admin is available. */
 const STARTUP_VBS = "CodexTelegramBot.vbs";
+const PAUSE_NAME = "service.paused";
+/** Explicit stop overrides self-healing. The file is local to this instance. */
+export function servicePausePath(spec:LaunchSpec):string{return join(spec.logsDir,PAUSE_NAME);}
+function pauseService(spec:LaunchSpec){
+  mkdirSync(spec.logsDir,{recursive:true});
+  writeFileSync(servicePausePath(spec),"stopped by user\n");
+}
+function resumeService(spec:LaunchSpec){
+  rmSync(servicePausePath(spec),{force:true});
+}
+function writeLauncher(path:string,spec:LaunchSpec):void{
+  writeFileSync(path,`\uFEFF${vbsLauncher(spec)}`,"utf16le");
+}
 
 /** The per-user Startup folder (runs at logon for the current user, no admin).
  *  Undefined only if APPDATA is unset (e.g. running with no roaming profile). */
@@ -65,7 +78,8 @@ export const windowsController: ServiceController = {
     const vbs = vbsPath(spec);
     // Windows Script Host expects a Unicode encoding for paths containing
     // non-ASCII characters (for example, a Cyrillic Windows user name).
-    writeFileSync(vbs, `\uFEFF${vbsLauncher(spec)}`, "utf16le");
+    writeLauncher(vbs,spec);
+    resumeService(spec);
 
     // Preferred: a hidden ONLOGON Scheduled Task. Registering a *logon-triggered*
     // task is a privileged operation, so /Create succeeds only from an elevated
@@ -122,7 +136,7 @@ export const windowsController: ServiceController = {
     }
     try {
       mkdirSync(dir, { recursive: true });
-      writeFileSync(startupVbs, `\uFEFF${vbsLauncher(spec)}`, "utf16le");
+      writeLauncher(startupVbs,spec);
     } catch (e) {
       return fail(`Startup-folder install failed: ${(e as Error).message}`);
     }
@@ -137,6 +151,7 @@ export const windowsController: ServiceController = {
   },
 
   async uninstall(spec) {
+    pauseService(spec);
     const task = taskSource();
     const startup = startupSource();
     if (task.exists) {
@@ -156,6 +171,10 @@ export const windowsController: ServiceController = {
     const task = taskSource();
     if (task.exists) {
       if (!sameWindowsCheckout(spec.cwd, task.source)) return fail(staleTargetMessage(spec.cwd, task.source));
+      // Upgrade pre-watchdog launchers automatically on the normal "restart"
+      // command; users shouldn't have to reinstall their Windows service.
+      writeLauncher(vbsPath(spec),spec);
+      resumeService(spec);
       const settings = configureTaskSettings();
       if (!settings.ok) return fail(`Could not update the scheduled task settings: ${settings.out.trim()}`);
       if (isRunning(spec)) return ok(`Already running.\nSource: ${spec.cwd}`);
@@ -166,6 +185,8 @@ export const windowsController: ServiceController = {
     if (startupVbs && existsSync(startupVbs)) {
       const startup = startupSource();
       if (!sameWindowsCheckout(spec.cwd, startup.source)) return fail(staleTargetMessage(spec.cwd, startup.source));
+      writeLauncher(startupVbs,spec);
+      resumeService(spec);
       if (isRunning(spec)) return ok(`Already running.\nSource: ${spec.cwd}`);
       runSafe("wscript.exe", [startupVbs]);
       return ok(`Started.\nSource: ${spec.cwd}`);
@@ -176,6 +197,9 @@ export const windowsController: ServiceController = {
   async stop(spec) {
     const task = taskSource();
     if (task.exists && !sameWindowsCheckout(spec.cwd, task.source)) return fail(staleTargetMessage(spec.cwd, task.source));
+    // Write BEFORE killing Node, so the watchdog sees an intentional stop
+    // rather than starting a second bot and causing Telegram 409 conflicts.
+    pauseService(spec);
     if (task.exists) runSafe("schtasks", ["/End", "/TN", TASK]); // best-effort if task-based
     const res = runSafe("powershell", ["-NoProfile", "-Command", killScript(entryOf(spec))]);
     return ok(`Stopped. ${res.out.trim()}`);
@@ -230,14 +254,40 @@ function readText(path: string): string | undefined {
   try { return readFileSync(path, "utf16le"); } catch { return undefined; }
 }
 
-function vbsLauncher(spec: LaunchSpec): string {
-  const cmd = `""${spec.nodePath}"" ${spec.args.map((a) => `""${a}""`).join(" ")}`;
+/** Hidden Windows launcher with supervised Node child and bounded backoff.
+ *  The wrapper stays alive while Node runs; a nonzero crash triggers restart.
+ *  An intentional "stop" creates a pause marker so it never relaunches.
+ *  A zero exit (e.g. existing instance won the lock) also ends the wrapper.
+ */
+export function vbsLauncher(spec: LaunchSpec): string {
+  const cmd = "\\"\\"" + spec.nodePath + "\\"\\" " + spec.args.map(a=>"\\"\\"" + a + "\\"\\"").join(" ");
   const codexPath = spec.codexCliPath.replace(/"/g, '""');
+  const pause = servicePausePath(spec).replace(/"/g,'""');
+  const watchdogLog = join(spec.logsDir,"watchdog-events.log").replace(/"/g,'""');
   return [
     'Set sh = CreateObject("WScript.Shell")',
-    `sh.Environment("PROCESS")("CODEX_CLI_PATH") = "${codexPath}"`,
-    `sh.CurrentDirectory = "${spec.cwd}"`,
-    `sh.Run "${cmd}", 0, False`,
+    'Set fs = CreateObject("Scripting.FileSystemObject")',
+    'sh.Environment("PROCESS")("CODEX_TG_SUPERVISED") = "1"',
+    'sh.Environment("PROCESS")("CODEX_CLI_PATH") = "' + codexPath + '"',
+    'sh.CurrentDirectory = "' + spec.cwd.replace(/"/g,'""') + '"',
+    'pauseFile = "' + pause + '"',
+    'eventsFile = "' + watchdogLog + '"',
+    'delayMs = 3000',
+    'Do While Not fs.FileExists(pauseFile)',
+    '  startedAt = Timer',
+    '  exitCode = sh.Run("' + cmd + '", 0, True)',
+    '  If fs.FileExists(pauseFile) Then Exit Do',
+    '  If exitCode = 0 Then Exit Do',
+    '  On Error Resume Next',
+    '  Set eventLog = fs.OpenTextFile(eventsFile, 8, True)',
+    '  eventLog.WriteLine Now & " Node exited with code " & exitCode & "; restart in " & (delayMs / 1000) & "s"',
+    '  eventLog.Close',
+    '  On Error GoTo 0',
+    '  If (Timer - startedAt) > 120 Then delayMs = 3000',
+    '  WScript.Sleep delayMs',
+    '  If delayMs < 60000 Then delayMs = delayMs * 2',
+    '  If delayMs > 60000 Then delayMs = 60000',
+    'Loop',
   ].join("\r\n");
 }
 
