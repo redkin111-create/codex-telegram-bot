@@ -12,6 +12,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isTmaOperation, type TmaJob, type TmaResult } from "./protocol.js";
 import { verifyTelegramInitData } from "./security.js";
+import type { TmaLiveFeed } from "./live.js";
 
 const home = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "apps", "mini-app", "public");
 const pending = new Map<string, { userId:number; resolve:(v:TmaResult)=>void; timer:NodeJS.Timeout }>();
@@ -95,7 +96,11 @@ function enqueue(job:TmaJob):Promise<TmaResult> {
   });
 }
 export type LocalTmaExecutor=(job:TmaJob)=>Promise<unknown>;
-async function route(req:IncomingMessage,res:ServerResponse,cfg:GatewayConfig,localExecute?:LocalTmaExecutor):Promise<void> {
+export interface LiveGateway {
+  feed:TmaLiveFeed;
+  authorize:(userId:number,sessionId:string)=>Promise<boolean>;
+}
+async function route(req:IncomingMessage,res:ServerResponse,cfg:GatewayConfig,localExecute?:LocalTmaExecutor,live?:LiveGateway):Promise<void> {
   headers(res);
   const pathname=new URL(req.url||"/","http://localhost").pathname;
   if(pathname==="/api/health"&&req.method==="GET"){
@@ -131,6 +136,44 @@ async function route(req:IncomingMessage,res:ServerResponse,cfg:GatewayConfig,lo
     }
     json(res,404,{error:"Not found"});return;
   }
+  if(pathname==="/api/stream"&&req.method==="POST"){
+    // POST fetch streaming: signed Telegram initData travels in the header,
+    // never in query strings, URLs, Referer headers or access logs.
+    const userId=verifyTelegramInitData(
+      String(req.headers["x-telegram-init-data"]??""),cfg.token,cfg.owners);
+    if(!live){json(res,501,{error:"Live feed requires local Codex mode"});return;}
+    const params=await body(req,2048);
+    const sessionId=String(params.sessionId??"");
+    const after=Number(params.after??0);
+    if(!/^[a-z0-9-]{8,80}$/i.test(sessionId)||!Number.isSafeInteger(after)||after<0){
+      json(res,400,{error:"Invalid stream request"});return;
+    }
+    if(!await live.authorize(userId,sessionId)){
+      json(res,403,{error:"Session access denied"});return;
+    }
+    res.statusCode=200;
+    res.setHeader("Content-Type","text/event-stream; charset=utf-8");
+    res.setHeader("Connection","keep-alive");
+    res.setHeader("X-Accel-Buffering","no");
+    res.flushHeaders();
+    res.write(": connected\n\n");
+    let stopped=false;
+    const push=(event:import("./live.js").LiveEvent)=>{
+      if(stopped||res.destroyed)return;
+      res.write("id: "+event.id+"\ndata: "+JSON.stringify(event)+"\n\n");
+    };
+    const unsubscribe=live.feed.subscribe(sessionId,after,push);
+    const heartbeat=setInterval(()=>{if(!res.destroyed)res.write(": heartbeat\n\n");},15000);
+    // Auth dates expire after an hour, so force a reconnect and explicit
+    // reauthorization instead of leaving an indefinitely authorized stream.
+    const expiry=setTimeout(()=>{res.write("event: reauth\ndata: {}\n\n");res.end();},50*60*1000);
+    const close=()=>{
+      if(stopped)return;
+      stopped=true;clearInterval(heartbeat);clearTimeout(expiry);unsubscribe();
+    };
+    res.once("close",close);
+    return;
+  }
   if(pathname==="/api/execute"&&req.method==="POST"){
     const userId=verifyTelegramInitData(
       String(req.headers["x-telegram-init-data"]??""),cfg.token,cfg.owners);
@@ -162,8 +205,9 @@ async function route(req:IncomingMessage,res:ServerResponse,cfg:GatewayConfig,lo
   if(req.method==="GET"&&!pathname.startsWith("/api/")){await serveStatic(pathname,res);return;}
   json(res,404,{error:"Not found"});
 }
-export function startGateway(cfg=gatewayConfig(),localExecute?:LocalTmaExecutor){
-  const server=createServer((req,res)=>{void route(req,res,cfg,localExecute).catch(error=>{
+export function startGateway(cfg=gatewayConfig(),localExecute?:LocalTmaExecutor,live?:LiveGateway){
+  const server=createServer((req,res)=>{void route(req,res,cfg,localExecute,live).catch(error=>{
+    if(res.headersSent){if(!res.writableEnded)res.end();return;}
     json(res,error?.name==="TmaAuthError"?401:400,{error:(error as Error).message||"Request failed"});
   });});
   server.listen(cfg.port,cfg.host,()=>console.log("Codex TMA gateway listening on "+cfg.host+":"+cfg.port));
