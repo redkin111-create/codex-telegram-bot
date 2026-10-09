@@ -41,7 +41,7 @@ export async function startLocalTma(
   cfg: AppConfig,
   acp: AcpClient,
   registry: RuntimeRegistry,
-  options: { port?: number; startFunnel?: boolean; tailscaleCommand?: TailscaleCommand } = {},
+  options: { port?: number; startFunnel?: boolean; tailscaleCommand?: TailscaleCommand; retryDelayMs?: number } = {},
 ): Promise<LocalTmaService> {
   const port = options.port ?? Number(process.env.TMA_PORT || "3301");
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) {
@@ -77,25 +77,50 @@ export async function startLocalTma(
   log.info("Local Mini App and Codex agent listening on " + origin);
 
   const shouldPublish = options.startFunnel ?? autoTailscaleFunnel();
+  let closed = false;
+  let retryTimer: NodeJS.Timeout | undefined;
+  let endRetry: (() => void) | undefined;
+  // Tailscale service may initialize after the bot starts at Windows logon.
+  // Keep checking with bounded backoff rather than requiring a manual restart.
   const tunnelReady: Promise<string | undefined> = shouldPublish
-    ? ensureTailscaleFunnel(addr.port, options.tailscaleCommand).then(
-        url => { log.info("Tailscale Funnel available at " + url); return url; },
-        err => {
-          log.warn("Tailscale Funnel could not be enabled: " + (err as Error).message);
-          log.warn("The local Mini App remains available. Check Tailscale login, DNS and Funnel permissions.");
-          return undefined;
-        },
-      )
+    ? (async () => {
+        let failures = 0;
+        while (!closed) {
+          try {
+            const url = await ensureTailscaleFunnel(addr.port, options.tailscaleCommand);
+            log.info("Tailscale Funnel available at " + url);
+            return url;
+          } catch (error) {
+            if (closed) break;
+            log.warn("Tailscale Funnel not ready: " + (error as Error).message);
+            const wait = options.retryDelayMs ??
+              Math.min(60_000, 5_000 * 2 ** Math.min(failures++, 4));
+            await new Promise<void>(resolve => {
+              endRetry = resolve;
+              retryTimer = setTimeout(() => {
+                retryTimer = undefined;
+                endRetry = undefined;
+                resolve();
+              }, wait);
+              retryTimer.unref();
+            });
+          }
+        }
+        return undefined;
+      })()
     : Promise.resolve(undefined);
 
   if (!shouldPublish) log.info("TMA_TAILSCALE_AUTO is disabled; no public Funnel was changed.");
-  let closed = false;
   return {
     origin,
     tunnelReady,
     async stop() {
       if (closed) return;
       closed = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      endRetry?.();
+      endRetry = undefined;
+      retryTimer = undefined;
       agent.stop();
       // A persisted --bg Tailscale route belongs to the Tailscale daemon and
       // survives a bot restart. Removing the bot must not wipe that route.
