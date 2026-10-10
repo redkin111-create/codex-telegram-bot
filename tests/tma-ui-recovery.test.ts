@@ -79,7 +79,9 @@ test("TMA survives health timeout, distinguishes Codex crash from PC offline and
   await pause();
   assert.equal(intervals.length,4);
   assert.match(element("chat-state").textContent,/Codex app-server переподключается/);
-  assert.equal(element("prompt").disabled,true);
+  assert.equal(element("prompt").disabled,false,
+    "temporary Codex app-server disconnect must NOT lock the draft composer");
+  assert.equal(element("send").disabled,false);
 
   // Native Codex reconnects but the existing catalogue need not be refreshed.
   connected=true;
