@@ -386,6 +386,10 @@
     var images=photos.map(function(p){return{mimeType:p.mimeType,data:p.data};});
     var result=await runAction("send",{sessionId:id,text:text,images:images,requestId:pendingSend.requestId},function(data){
       if(data.result==="blocked"){
+        // This attempt was explicitly NOT accepted. Permit a fresh request
+        // after the Desktop writer is released without reusing the journaled
+        // blocked result from a previous request ID.
+        pendingSend=null;
         liveStatus.set(id,"desktop_busy");renderHeader();renderSessions();
         note("Codex Desktop занят. Сообщение НЕ отправлено — закрой Desktop-сеанс или создай продолжение.");
         return;
