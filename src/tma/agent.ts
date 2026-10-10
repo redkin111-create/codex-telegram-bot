@@ -10,7 +10,7 @@ import { textPrompt } from "../app/types.js";
 import type { RuntimeRegistry } from "../bot/registry.js";
 import { isVisibleThreadForChat, threadSourceKind } from "../bot/catalog.js";
 import { LiveSessionConflictError } from "../bot/session-runtime.js";
-import { recentWatchImagePaths } from "../bot/watch-images.js";
+import { TmaScreenshotIndex } from "./screenshots.js";
 import type { AppConfig } from "../config.js";
 import { createLogger } from "../logger.js";
 import { readConversationHistoryAsync } from "../sessions/history.js";
@@ -41,6 +41,7 @@ export class MiniAppAgent {
   private readonly store:SessionStore;
   private readonly telegramSessions:TelegramSessionRegistry;
   private readonly promptJournal:DurablePromptJournal;
+  private readonly screenshots=new TmaScreenshotIndex();
   private readonly root:string;
   private readonly secret:string;
   private readonly results=new Map<string,TmaResult>();
@@ -213,11 +214,14 @@ export class MiniAppAgent {
       }
       case "activity":{
         const id=argumentString(args,"sessionId",80);
-        await this.thread(id,chatId);
-        const file=statSyncSafe(this.store.jsonlPath(id));
+        const t=await this.thread(id,chatId);
+        const path=this.store.jsonlPath(id);
+        const file=statSyncSafe(path);
         const rt=registry.runtimeForSession(chatId,id);
-        return {mtimeMs:file.mtimeMs,size:file.size,busy:Boolean(rt?.isBusy),queue:rt?.queueLength??0,
-          checkedAt:Date.now()};
+        // Scan the evolving rollout while Codex is still working.
+        const images=t.cwd?await this.screenshots.scan(id,path,t.cwd):[];
+        return {mtimeMs:file.mtimeMs,size:file.size,busy:Boolean(rt?.isBusy),
+          queue:rt?.queueLength??0,images,checkedAt:Date.now()};
       }
       case "history":{
         const id=argumentString(args,"sessionId",80);
@@ -235,7 +239,7 @@ export class MiniAppAgent {
           const entries=(await readConversationHistoryAsync(path,40)).map(e=>({
             role:e.role,text:e.text,timestamp:e.timestamp,
           }));
-          const refs=t.cwd?recentWatchImagePaths(path,t.cwd).slice(-8):[];
+          const refs=t.cwd?await this.screenshots.scan(id,path,t.cwd):[];
           const result={entries,images:refs,project:t.cwd||""};
           // The agent may append to the log during this read. Don't store
           // a stale transcript under a newer file revision.
@@ -355,8 +359,8 @@ export class MiniAppAgent {
         const t=await this.thread(id,chatId);
         if(!t.cwd)throw new Error("Неизвестная папка проекта");
         const candidate=argumentString(args,"path",1200);
-        const referenced=recentWatchImagePaths(this.store.jsonlPath(id),t.cwd);
-        if(!referenced.includes(candidate))throw new Error("Изображение не относится к отчёту");
+        const referenced=await this.screenshots.authorized(id,this.store.jsonlPath(id),t.cwd,candidate);
+        if(!referenced)throw new Error("Изображение не относится к этому сеансу");
         const root=realpathSync(t.cwd),real=realpathSync(candidate);
         const rel=relative(root,real);
         if(!rel||rel===".."||rel.startsWith(".."+sep)||isAbsolute(rel))throw new Error("Недопустимый путь");
