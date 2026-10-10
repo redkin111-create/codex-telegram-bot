@@ -15,3 +15,15 @@
 .diagnostics-panel{background:#1d2c35;border:1px solid #345b67;color:#dce8f0;margin:8px 12px;padding:12px;border-radius:10px;font-size:12px;line-height:1.5}
 .diagnostics-panel.hidden{display:none}
 .diagnostics-text{font-size:12px;line-height:1.65;white-space:pre-wrap;word-break:break-word;margin:9px 0}
+
+/* Live screenshots stay visible while the agent is working and before any
+   final assistant message. Horizontally scrollable in Telegram WebView. */
+.screenshot-zone{flex:none;min-height:0;border-top:1px solid #32473f;background:#16251f;padding:9px 14px 10px;max-height:194px}
+.screenshot-zone.hidden{display:none}
+.screenshot-head{display:flex;justify-content:space-between;align-items:center;margin:0 3px 8px;color:#a9e3bd;font-size:11px}
+.screenshot-head span{color:#8ea69b;font-size:10px}
+.screenshot-zone .images{border:0;max-height:143px;padding:0;gap:9px;overflow-x:auto;display:flex}
+.screenshot-card{flex:0 0 auto;width:130px;min-width:0;display:flex;flex-direction:column;gap:4px}
+.screenshot-zone .images .screenshot-card img{height:100px;max-width:130px;width:100%;border-radius:8px;object-fit:cover}
+.screenshot-name{font-size:10px;color:#a6b9c5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:700px){.screenshot-zone{padding:8px 12px;max-height:171px}.screenshot-zone .images{max-height:120px}.screenshot-card{width:111px}.screenshot-zone .images .screenshot-card img{height:79px;max-width:111px}}
