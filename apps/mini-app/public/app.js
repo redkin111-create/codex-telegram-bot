@@ -98,43 +98,54 @@
       outer.appendChild(bubble);
       box.appendChild(outer);
     });
-    var images=el("images"),last=null;
-    for(var i=box.children.length-1;i>=0;i--){
-      var item=box.children[i];
-      if(item.className==="message assistant"){last=item;break;}
-    }
-    if(last){
-      if(state.images.length)last.appendChild(node("div","screenshot-caption","Скриншоты из последних инструментов Codex"));
-      last.appendChild(images);
-    }else box.appendChild(images);
+    // Screenshots live in their own strip outside the report transcript:
+    // Codex may produce several of them BEFORE writing an assistant message.
     if(previousNearBottom)box.scrollTop=box.scrollHeight;
   }
+  function imageRef(x){
+    return typeof x==="string"?{path:x,mtimeMs:0,name:x.split(/[\\\\/]/).pop()||"Скриншот"}:x;
+  }
   async function renderImages(force){
-    var id=state.selected,paths=state.images.slice(-6);
-    var key=JSON.stringify([id,paths]);
+    var id=state.selected,paths=state.images.slice(-10).map(imageRef);
+    var key=JSON.stringify([id,paths.map(function(x){return[x.path,x.mtimeMs,x.size];})]);
     if(!force&&key===galleryKey&&id===galleryId)return;
     galleryId=id;galleryKey=key;
-    var panel=el("images");panel.replaceChildren();panel.classList.add("hidden");
-    if(!id)return;
+    var panel=el("images"),zone=el("screenshot-zone");
+    panel.replaceChildren();
+    zone.classList.toggle("hidden",!id||paths.length===0);
+    el("screenshot-count").textContent=paths.length+" шт.";
+    if(!id||!paths.length)return;
     for(var i=0;i<paths.length;i++){
       if(state.selected!==id||galleryKey!==key)return;
+      var item=paths[i];
       try{
-        var cacheKey=id+":"+paths[i],data=imageCache.get(cacheKey);
-        if(!data){data=await api("image",{sessionId:id,path:paths[i]});imageCache.set(cacheKey,data);}
+        var cacheKey=id+":"+item.path+":"+item.mtimeMs+":"+item.size;
+        var data=imageCache.get(cacheKey);
+        if(!data){
+          data=await api("image",{sessionId:id,path:item.path});
+          imageCache.set(cacheKey,data);
+        }
         if(state.selected!==id||galleryKey!==key)return;
-        var img=node("img");img.src="data:"+data.mime+";base64,"+data.data;img.alt=data.name||"Скриншот Codex";
+        var card=node("div","screenshot-card");
+        var img=node("img");img.src="data:"+data.mime+";base64,"+data.data;
+        img.alt=data.name||item.name||"Скриншот Codex";
         img.onclick=function(){
-          var overlay=node("div","lightbox");
-          var close=node("button","lightbox-close","✕");
+          var overlay=node("div","lightbox"),close=node("button","lightbox-close","✕");
           var full=node("img");full.src=this.src;full.alt=this.alt;
           function dismiss(){overlay.remove();}
-          close.onclick=dismiss;overlay.onclick=function(event){if(event.target===overlay)dismiss();};
+          close.onclick=dismiss;
+          overlay.onclick=function(event){if(event.target===overlay)dismiss();};
           overlay.append(close,full);document.body.append(overlay);
         };
-        panel.appendChild(img);panel.classList.remove("hidden");
-      }catch(_){/* A temporarily missing screenshot must not block the chat. */}
+        card.appendChild(img);
+        card.appendChild(node("span","screenshot-name",data.name||item.name||"Скриншот"));
+        panel.appendChild(card);
+      }catch(_){
+        // The agent may have renamed or still be writing an image. Do not
+        // hide other screenshots; retry when its mtime/size changes.
+      }
     }
-    if(imageCache.size>18)imageCache.clear();
+    if(imageCache.size>14)imageCache.clear();
   }
   function renderActivityClock(){
     var label=el("activity-meta"),sync=el("sync-state");
@@ -184,6 +195,10 @@
         if(state.selected!==id)return;
         var changed=data.mtimeMs!==lastActivityStamp;
         lastActivityStamp=data.mtimeMs;
+        if(Array.isArray(data.images)){
+          var next=data.images,changedImages=JSON.stringify(next)!==JSON.stringify(state.images);
+          if(changedImages){state.images=next;void renderImages();}
+        }
         lastActivityAt=data.mtimeMs||0;
         if(data.busy){
           liveStatus.set(id,"working");
@@ -259,7 +274,10 @@
         if(digest!==state.loaded){
           if(["completed","failed","cancelled"].includes(liveStatus.get(id)))liveDraft.delete(id);
           var priorImages=JSON.stringify(state.images);
-          state.loaded=digest;state.history=data.entries||[];state.images=data.images||[];
+          state.loaded=digest;state.history=data.entries||[];
+          // Activity is a faster source of live image references. History
+          // may have been read just before an image appeared.
+          if(Array.isArray(data.images)&&data.images.length>=state.images.length)state.images=data.images;
           renderMessages();renderActivity();
           if(priorImages!==JSON.stringify(state.images))void renderImages();
         }else if(manual){note("История актуальна");}
