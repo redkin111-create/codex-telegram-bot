@@ -7,7 +7,7 @@
   var app=el("app"),state={projects:[],sessions:[],selected:null,project:"",history:[],images:[],queue:[],online:false,busy:false,tab:"sessions",loaded:null};
   var initData=tg&&tg.initData||"",actionInFlight=false,snapshotInFlight=false,timer=null;
   var historyRequests=new Map(),queueRequests=new Map(),imageCache=new Map(),galleryId="",galleryKey="";
-  var pendingSend=null,liveStatus=new Map();
+  var pendingSend=null,liveStatus=new Map(),selectedFallback=null;
   var streamCtrl=null,streamSession="",streamDelay=1000,streamTimer=null,streamDisabled=false;
   var cursors=new Map(),liveDraft=new Map(),liveTools=new Map();
   var photos=[],photoBusy=false,activityRequests=new Map(),lastActivityStamp=0,lastHistoryAt=0;
@@ -39,7 +39,14 @@
   }
   function fmtTime(sec){if(!sec)return"";var dt=new Date(sec*1000);return dt.toLocaleDateString("ru-RU",{day:"numeric",month:"short"})+" · "+dt.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"});}
   function titleOf(s){return (s.title||"Сеанс Codex").replace(/\s+/g," ").slice(0,130);}
-  function selected(){return state.sessions.find(function(s){return s.id===state.selected;});}
+  function selected(){
+    var current=state.sessions.find(function(s){return s.id===state.selected;});
+    if(current){selectedFallback=current;return current;}
+    // A transient Codex catalogue refresh may omit a previously opened
+    // Desktop thread. Keep its title/composer accessible; the agent still
+    // authorizes every send against the real session on the Windows host.
+    return selectedFallback&&selectedFallback.id===state.selected?selectedFallback:undefined;
+  }
   function renderProjects(){
     var select=el("project"),old=state.project;select.replaceChildren(new Option("Все проекты",""));
     state.projects.forEach(function(p){select.appendChild(new Option(p.name,p.path));});
@@ -74,11 +81,19 @@
     el("chat-state").textContent=s?(!state.online?"Нет связи с ноутбуком":
       state.codexConnected===false?"Codex app-server переподключается":
       labels[ls]||"◉ Статус не подтверждён"):"Здесь появится полная история Codex";
-    el("prompt").disabled=!s||!state.online||state.codexConnected===false;
-    el("send").disabled=!s||!state.online||state.codexConnected===false||actionInFlight||photoBusy;
-    el("attach-photo").disabled=!s||!state.online||photoBusy;
+    // Never lock the editor because of a transient health probe or a stale
+    // Desktop writer. Drafts must remain editable while Codex reconnects.
+    el("prompt").disabled=false;
+    el("send").disabled=actionInFlight||photoBusy;
+    el("attach-photo").disabled=photoBusy;
     el("stop").disabled=!s||!s.busy;
-    el("compose-hint").textContent=!s?"Сначала выберите переписку":s.busy?"Сообщение попадёт в очередь":"Enter — отправить, Shift+Enter — новая строка";
+    el("compose-hint").textContent=actionInFlight?"Отправляю задание…":
+      !s?"Набери текст, затем выбери переписку":
+      !state.online?"Связь с ноутбуком не подтверждена — текст сохранится":
+      state.codexConnected===false?"Codex переподключается — можно подготовить задание":
+      ls==="desktop_busy"?"Codex Desktop удерживает управление сеансом":
+      s.busy?"Сообщение попадёт в очередь":
+      "Enter — отправить, Shift+Enter — новая строка";
     el("detail-title").textContent=s?titleOf(s):"Не выбран";
     el("detail-status").textContent=s?(labels[ls]||"Ожидание"):"Выберите переписку слева";
     renderActivityClock();
@@ -360,25 +375,39 @@
   }
   async function send(ev){
     ev.preventDefault();var text=el("prompt").value.trim();
-    if((!text&&!photos.length)||!state.selected||photoBusy)return;
+    if(actionInFlight||photoBusy)return;
+    if(!text&&!photos.length){note("Напиши сообщение или прикрепи фото");return;}
+    if(!state.selected){note("Выбери переписку, чтобы отправить подготовленное задание");tab("sessions");return;}
     var id=state.selected;
     var fingerprint=JSON.stringify([text,photos.map(function(p){return[p.mimeType,p.data.length,p.data.slice(0,60)];})]);
     if(!pendingSend||pendingSend.sessionId!==id||pendingSend.fingerprint!==fingerprint){
       pendingSend={sessionId:id,fingerprint:fingerprint,requestId:String(Date.now())+"_"+Math.random().toString(36).slice(2,16)};
     }
     var images=photos.map(function(p){return{mimeType:p.mimeType,data:p.data};});
-    var result=await runAction("send",{sessionId:id,text:text,images:images,requestId:pendingSend.requestId},async function(data){
-      el("prompt").value="";photos=[];renderAttachments();pendingSend=null;
+    var result=await runAction("send",{sessionId:id,text:text,images:images,requestId:pendingSend.requestId},function(data){
+      if(data.result==="blocked"){
+        // This attempt was explicitly NOT accepted. Permit a fresh request
+        // after the Desktop writer is released without reusing the journaled
+        // blocked result from a previous request ID.
+        pendingSend=null;
+        liveStatus.set(id,"desktop_busy");renderHeader();renderSessions();
+        note("Codex Desktop занят. Сообщение НЕ отправлено — закрой Desktop-сеанс или создай продолжение.");
+        return;
+      }
       if(data.result==="held"){
         liveStatus.set(id,"desktop_busy");renderHeader();renderSessions();
       }
+      el("prompt").value="";photos=[];renderAttachments();pendingSend=null;
       note(data.result==="queued"?"Добавлено в очередь":data.result==="held"?
-        "Сеанс занят. Сообщение сохранено в боте; для продолжения открой Telegram-чат.":"Задание отправлено Codex");
-      await loadHistory();await loadQueue();void loadActivity();
+        "Сообщение сохранено в боте. Подтверди продолжение через Telegram-чат.":"Задание принято Codex");
+      // A slow history fetch must not turn an accepted prompt into an
+      // apparent send failure or hold the send button for 18 seconds.
+      void loadHistory(false);void loadQueue();void loadActivity();
     });
     if(!result){
+      // Keep the exact error shown by runAction, plus the unmodified draft
+      // and request ID for a safe retry after checking the session.
       el("prompt").value=text;
-      note("Если связь прервалась, проверь историю. Повторная отправка того же задания защищена от дублей.");
     }
   }
   async function createSession(){
@@ -525,12 +554,20 @@
     }
   }
   function on(id,event,fn){el(id).addEventListener(event,fn);}
-  on("attach-photo","click",function(){if(!photoBusy&&state.selected)el("photo-picker").click();});
+  on("attach-photo","click",function(){if(!photoBusy)el("photo-picker").click();});
   on("photo-picker","change",function(e){void addPhotos(e.target.files||[]);});
   on("project","change",function(e){state.project=e.target.value;renderSessions();});
   on("search","input",renderSessions);
   on("composer","submit",function(e){void send(e);});
-  on("prompt","keydown",function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();el("composer").requestSubmit();}});
+  on("prompt","keydown",function(e){
+    // Soft keyboards on Android/iOS need Enter for line breaks. Only the
+    // physical Enter key submits; the visible button works everywhere.
+    var physical=e.code==="Enter"||e.code==="NumpadEnter";
+    var mobile=window.matchMedia&&window.matchMedia("(pointer: coarse)").matches;
+    if(e.key==="Enter"&&physical&&!mobile&&!e.shiftKey&&!e.isComposing){
+      e.preventDefault();el("composer").requestSubmit();
+    }
+  });
   on("prompt","input",function(){if(pendingSend&&pendingSend.text!==el("prompt").value.trim())pendingSend=null;});
   on("new-chat","click",function(){void createSession();});
   on("diagnostics","click",function(){void showDiagnostics();});

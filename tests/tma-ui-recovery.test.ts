@@ -40,7 +40,9 @@ test("TMA survives health timeout, distinguishes Codex crash from PC offline and
     Telegram:{WebApp:{initData:"signed-test-payload",ready(){},expand(){}}},
     addEventListener:(name:string,fn:()=>void)=>{windowCallbacks.set(name,fn);},
   };
-  let connected=false,down=false,message="Старый отчёт";
+  let connected=false,down=false,message="Старый отчёт",dropSelected=false;
+  let sendMode:"error"|"blocked"|"accepted"="error";
+  const sendIds:string[]=[];
   const fetch=async (url:string,options?:{body?:string;signal?:AbortSignal})=>{
     if(url==="/api/health"){
       if(down){
@@ -50,10 +52,16 @@ test("TMA survives health timeout, distinguishes Codex crash from PC offline and
       }
       return {ok:true,json:async()=>({online:true,codexConnected:connected})};
     }
-    const op=JSON.parse(options?.body??"{}").op;
+    const request=JSON.parse(options?.body??"{}");
+    const op=request.op;
+    if(op==="send"){
+      sendIds.push(request.args.requestId);
+      if(sendMode==="error")return {ok:false,status:503,json:async()=>({ok:false,error:"Codex временно не отвечает"})};
+      return {ok:true,json:async()=>({ok:true,data:{result:sendMode==="blocked"?"blocked":"queued"}})};
+    }
     if(op==="snapshot")return{ok:true,json:async()=>({ok:true,data:{
       projects:[{name:"toy",path:"C:/toy"}],
-      sessions:[{id:"thread-0001",title:"TMA reliability",cwd:"C:/toy",source:"cli",updatedAt:1}],
+      sessions:dropSelected?[]:[{id:"thread-0001",title:"TMA reliability",cwd:"C:/toy",source:"cli",updatedAt:1}],
       selected:"thread-0001",
     }})};
     if(op==="history")return{ok:true,json:async()=>({ok:true,data:{
@@ -79,7 +87,16 @@ test("TMA survives health timeout, distinguishes Codex crash from PC offline and
   await pause();
   assert.equal(intervals.length,4);
   assert.match(element("chat-state").textContent,/Codex app-server переподключается/);
-  assert.equal(element("prompt").disabled,true);
+  assert.equal(element("prompt").disabled,false,
+    "temporary Codex app-server disconnect must NOT lock the draft composer");
+  assert.equal(element("send").disabled,false);
+  element("prompt").value="Подготовить проверку";
+  element("composer").handlers.get("submit")?.({preventDefault(){}});
+  await pause();
+  assert.equal(sendIds.length,1,"send button must actually call API even when Codex health is false");
+  assert.equal(element("prompt").value,"Подготовить проверку",
+    "network failure must preserve the draft");
+  assert.match(element("toast").textContent,/Codex временно не отвечает/);
 
   // Native Codex reconnects but the existing catalogue need not be refreshed.
   connected=true;
@@ -107,4 +124,30 @@ test("TMA survives health timeout, distinguishes Codex crash from PC offline and
   callbacks.get("visibilitychange")?.();
   await pause(50);
   assert.equal(element("messages").children.at(-1)?.children[1]?.textContent,message);
+
+  // Codex Desktop can refuse the active writer. Never clear a rejected draft
+  // or tell the user it was sent. Retry with a NEW request ID after release.
+  element("prompt").value="Исправить проект";
+  element("prompt").handlers.get("input")?.();
+  sendMode="blocked";
+  element("composer").handlers.get("submit")?.({preventDefault(){}});
+  await pause();
+  assert.equal(element("prompt").value,"Исправить проект");
+  assert.match(element("toast").textContent,/НЕ отправлено/);
+  const blockedId=sendIds.at(-1);
+  sendMode="accepted";
+  element("composer").handlers.get("submit")?.({preventDefault(){}});
+  await pause(50);
+  assert.equal(element("prompt").value,"");
+  assert.notEqual(sendIds.at(-1),blockedId);
+  assert.match(element("toast").textContent,/Добавлено в очередь/);
+
+  // When the catalogue temporarily omits the open Desktop session, keep
+  // editor controls and its saved session context available.
+  dropSelected=true;
+  intervals[1]!();
+  await pause(50);
+  assert.equal(element("prompt").disabled,false);
+  assert.equal(element("send").disabled,false);
+  assert.match(element("chat-title").textContent,/TMA reliability/);
 });
