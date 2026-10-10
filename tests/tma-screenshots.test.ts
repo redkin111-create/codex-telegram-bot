@@ -32,7 +32,7 @@ test("screenshots appear during a running turn, survive >2MiB of later tools and
       listProjects:async()=>[{id:"project",name:"toy",roots:[cwd]}],
       listThreads:async()=>[{id:sid,cwd,name:"Working",source:"cli",recencyAt:1}],
       availableModels:[],currentModelId:"test",
-    }) as AcpClient;
+    }) as unknown as AcpClient;
     const registry={controller:()=>({list:()=>[]}),runtimeForSession:()=>undefined,get:()=>({sessionId:sid})} as unknown as RuntimeRegistry;
     const agent=new MiniAppAgent({cfg,acp,registry},"http://127.0.0.1:3301","secret-with-more-than-thirty-two-characters");
     const job=(op:"activity"|"history"|"image",args:Record<string,unknown>={}):TmaJob=>
