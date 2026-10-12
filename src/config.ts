@@ -87,6 +87,8 @@ export interface AppConfig {
   workspace: string;
   agent?: string;
   trustAllTools: boolean;
+  /** Allow outbound network access while keeping workspace filesystem sandboxing. */
+  codexNetworkAccess: boolean;
   projectRoots: string[];
   streamThrottleMs: number;
   /** Debounce window (ms) for coalescing rapid consecutive text messages
@@ -190,6 +192,7 @@ export function loadConfig(): AppConfig {
     workspace,
     agent: process.env.CODEX_AGENT?.trim() || undefined,
     trustAllTools: bool(process.env.CODEX_TRUST_ALL_TOOLS, false),
+    codexNetworkAccess: bool(process.env.CODEX_NETWORK_ACCESS, false),
     projectRoots: [...new Set(roots)],
     streamThrottleMs: num(process.env.STREAM_THROTTLE_MS, 1500),
     messageBatchMs: nonNegNum(process.env.MESSAGE_BATCH_MS, 800),

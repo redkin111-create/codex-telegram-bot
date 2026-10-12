@@ -171,27 +171,43 @@ async function route(req:IncomingMessage,res:ServerResponse,cfg:GatewayConfig,lo
     res.write(": connected\n\n");
     res.write("event: hello\ndata: "+JSON.stringify({epoch:live.feed.epoch})+"\n\n");
     let stopped=false;
-    const push=(event:import("./live.js").LiveEvent)=>{
-      if(stopped||res.destroyed)return;
-      if(!res.write("id: "+event.id+"\ndata: "+JSON.stringify(event)+"\n\n")){
-        // A slow/suspended WebView must not accumulate unbounded buffered
-        // events on the laptop. Reconnect and resume from the last received ID.
-        res.end();
-      }
-    };
-    const validCursor=requestedEpoch===live.feed.epoch?after:0;
-    const unsubscribe=live.feed.subscribe(sessionId,validCursor,push);
-    const heartbeat=setInterval(()=>{if(!res.destroyed)res.write(": heartbeat\n\n");},15000);
-    // Auth dates expire after an hour, so force a reconnect and explicit
-    // reauthorization instead of leaving an indefinitely authorized stream.
-    const authTime=Number(new URLSearchParams(String(req.headers["x-telegram-init-data"]??"")).get("auth_date"));
-    const remaining=Math.max(1000,Math.min(50*60*1000,(authTime+3600)*1000-Date.now()-1000));
-    const expiry=setTimeout(()=>{res.write("event: reauth\ndata: {}\n\n");res.end();},remaining);
+    let unsubscribe=()=>{};
+    let heartbeat:ReturnType<typeof setInterval>|undefined;
+    let expiry:ReturnType<typeof setTimeout>|undefined;
     const close=()=>{
       if(stopped)return;
       stopped=true;clearInterval(heartbeat);clearTimeout(expiry);unsubscribe();
     };
+    const end=()=>{
+      close();
+      if(!res.destroyed&&!res.writableEnded)res.end();
+    };
     res.once("close",close);
+    const push=(event:import("./live.js").LiveEvent)=>{
+      if(stopped||res.destroyed||res.writableEnded)return;
+      if(!res.write("id: "+event.id+"\ndata: "+JSON.stringify(event)+"\n\n")){
+        // A slow/suspended WebView must not accumulate unbounded buffered
+        // events on the laptop. Reconnect and resume from the last received ID.
+        end();
+      }
+    };
+    const validCursor=requestedEpoch===live.feed.epoch?after:0;
+    unsubscribe=live.feed.subscribe(sessionId,validCursor,push);
+    // subscribe() replays synchronously. Backpressure may end the response
+    // during replay, before it returns the unsubscribe callback.
+    if(stopped||res.destroyed||res.writableEnded){unsubscribe();return;}
+    heartbeat=setInterval(()=>{
+      if(stopped||res.destroyed||res.writableEnded)return;
+      if(!res.write(": heartbeat\n\n"))end();
+    },15000);
+    // Auth dates expire after an hour, so force a reconnect and explicit
+    // reauthorization instead of leaving an indefinitely authorized stream.
+    const authTime=Number(new URLSearchParams(String(req.headers["x-telegram-init-data"]??"")).get("auth_date"));
+    const remaining=Math.max(1000,Math.min(50*60*1000,(authTime+3600)*1000-Date.now()-1000));
+    expiry=setTimeout(()=>{
+      if(stopped||res.destroyed||res.writableEnded)return;
+      res.write("event: reauth\ndata: {}\n\n");end();
+    },remaining);
     return;
   }
   if(pathname==="/api/execute"&&req.method==="POST"){

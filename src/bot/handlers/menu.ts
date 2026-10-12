@@ -160,7 +160,8 @@ async function showSecurity(ctx: Context, deps: BotDeps): Promise<void> {
   const text = [
     "🔐 Безопасность",
     `Sandbox: ${deps.cfg.trustAllTools ? "полный доступ" : "только рабочие папки"}`,
-    `Подтверждения: ${deps.cfg.trustAllTools ? "выключены" : "для внешних папок и сети"}`,
+    `Подтверждения: ${deps.cfg.trustAllTools ? "выключены" : "для файлов вне проекта"}`,
+    `Сеть в проекте: ${deps.cfg.trustAllTools || deps.cfg.codexNetworkAccess ? "разрешена" : "запрещена"}`,
     `Доверять всем инструментам: ${deps.cfg.trustAllTools ? "ВКЛ" : "ВЫКЛ"}`,
     `Разрешённые пользователи: ${deps.cfg.allowedUsers.size > 0 ? "настроены" : "не настроены"}`,
   ].join("\n");

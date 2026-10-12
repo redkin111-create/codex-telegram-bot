@@ -4,6 +4,7 @@
  *   auth -> menu buttons -> wizard input -> commands -> photos -> text prompt.
  */
 import { Bot, InlineKeyboard } from "grammy";
+import { Agent as HttpsAgent } from "node:https";
 import type { AcpClient } from "../acp/client.js";
 import { AccountManager } from "../app/accounts.js";
 import { AccountRotatorImpl } from "./account-rotator.js";
@@ -79,7 +80,14 @@ export interface BotBundle {
 
 export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBundle> {
   void cleanupIncomingAttachments(cfg.dataDir).catch(() => {});
-  const bot = new Bot(cfg.token);
+  const hasHttpsProxy = Boolean(process.env.HTTPS_PROXY?.trim() || process.env.https_proxy?.trim());
+  const proxyAgent = hasHttpsProxy
+    ? new HttpsAgent({
+        keepAlive: true,
+        proxyEnv: process.env,
+      } as ConstructorParameters<typeof HttpsAgent>[0] & { proxyEnv: NodeJS.ProcessEnv })
+    : undefined;
+  const bot = new Bot(cfg.token, proxyAgent ? { client: { baseFetchConfig: { agent: proxyAgent } } } : undefined);
 
   // Quiet mode (default): silence every outgoing message unless the caller
   // explicitly set disable_notification:false (turn completion, permission

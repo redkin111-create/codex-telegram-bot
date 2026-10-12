@@ -40,3 +40,49 @@ test("Windows Mini App agent lists existing Codex projects and sessions",async()
     assert.equal(result.online,true);
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
+
+test("TMA can still send to a listed session omitted by a later catalogue refresh",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-tma-stale-session-"));
+  const sessionId="01234567-89ab-7cde-8123-456789abcdef";
+  const originalNow=Date.now;
+  let now=originalNow();
+  let listed=true;
+  let submits=0;
+  Date.now=()=>now;
+  try{
+    const acp=Object.assign(new EventEmitter(),{
+      listProjects:async()=>[{id:"p1",name:"toy",roots:[dir]}],
+      listThreads:async()=>listed?[{id:sessionId,name:"Open TMA session",cwd:dir,source:"cli",recencyAt:2}]:[],
+      availableModels:[{modelId:"test",name:"Test Model"}],
+      currentModelId:"test",
+    }) as unknown as AcpClient;
+    const runtime={sessionId,queueLength:0,isBusy:false};
+    const controller={
+      list:()=>[],
+      runtimeForSession:()=>runtime,
+      foreground:()=>runtime,
+    };
+    const registry={
+      controller:()=>controller,
+      get:()=>runtime,
+      submitPrompt:async()=>{submits++;return {kind:"submitted",outcome:"accepted"};},
+    } as unknown as RuntimeRegistry;
+    const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],
+      allowedUsers:new Set(["101"])} as AppConfig;
+    const agent=new MiniAppAgent({cfg,acp,registry},"http://127.0.0.1:3301",
+      "secret-with-more-than-thirty-two-characters");
+    try{
+      await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
+      listed=false;
+      now+=12_001;
+      await agent.execute({id:"abcdef0123456789abcdef02",op:"snapshot",userId:101,args:{}});
+      const result=await agent.execute({id:"abcdef0123456789abcdef03",op:"send",userId:101,
+        args:{sessionId,text:"Проверка TMA",images:[],requestId:"client_0123456789abcdef"}});
+      assert.deepEqual(result,{result:"accepted"});
+      assert.equal(submits,1);
+    }finally{agent.stop();}
+  }finally{
+    Date.now=originalNow;
+    rmSync(dir,{recursive:true,force:true});
+  }
+});

@@ -45,6 +45,7 @@ async function main(): Promise<void> {
     codexCliPath: cfg.codexCliPath,
     workspace: cfg.workspace,
     trustAllTools: cfg.trustAllTools,
+    networkAccess: cfg.codexNetworkAccess,
     codexHome: cfg.codexHome,
     autoRestart: cfg.acpAutoRestart,
     promptIdleTimeoutMs: cfg.promptIdleMs,

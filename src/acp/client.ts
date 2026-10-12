@@ -77,6 +77,8 @@ export interface AcpClientOptions {
   workspace: string;
   /** When true, run every command/edit with no approval prompts (full auto). */
   trustAllTools: boolean;
+  /** Allow network access in workspace-write mode without broadening file access. */
+  networkAccess?: boolean;
   /** Optional CODEX_HOME override (config/sessions/auth live here). */
   codexHome?: string;
   requestTimeoutMs?: number;
@@ -507,13 +509,12 @@ export class AcpClient extends EventEmitter {
         input: toCodexInput(content),
         cwd: this.threadCwd.get(sessionId),
         // Workspace writes and commands are already bounded by workspaceWrite.
-        // Avoid a Telegram prompt for every in-project action; explicit
-        // request_permissions_tool expansions (outside paths/network) still
-        // go through the user's one-time approval flow.
+        // Network can be enabled independently; explicit permission expansions
+        // outside the workspace still go through the user's approval flow.
         approvalPolicy: "never",
         sandboxPolicy: this.opts.trustAllTools
           ? { type: "dangerFullAccess" }
-          : { type: "workspaceWrite", writableRoots: [this.threadCwd.get(sessionId) ?? this.opts.workspace], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+          : { type: "workspaceWrite", writableRoots: [this.threadCwd.get(sessionId) ?? this.opts.workspace], networkAccess: this.opts.networkAccess ?? false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
       };
       const model = this.modelFor(sessionId);
       if (model) params.model = model;

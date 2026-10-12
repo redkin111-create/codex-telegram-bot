@@ -159,8 +159,8 @@ a project narrows the list to its actual working folder. Each screen offers a
 clear way back to the main menu. Model,
 reasoning, and MCP controls use the live information reported by Codex. The bot
 works without repeated prompts inside the selected project folder. Requests to
-access other folders or the network still ask for one-time approval when
-full-access mode is off.
+access other folders still ask for one-time approval when full-access mode is
+off. Network access inside the project can be enabled independently.
 
 ---
 
@@ -225,7 +225,8 @@ separate real MCP `initialize` health check for enabled configured servers.
 | `CODEX_CLI_PATH` | no | auto | Path to the `codex` binary (auto-resolved via PATH otherwise). |
 | `CODEX_HOME` | no | `~/.codex` | Holds `sessions/`, `auth.json`, `config.toml`. |
 | `CODEX_WORKSPACE` | no | cwd | Default working directory. |
-| `CODEX_TRUST_ALL_TOOLS` | no | `false` | `false` allows work inside the selected project without repeated prompts; access outside it or to the network still requires approval. `true` enables `danger-full-access` with approvals disabled. |
+| `CODEX_TRUST_ALL_TOOLS` | no | `false` | `false` keeps file access inside the selected project; access outside it requires approval. `true` enables `danger-full-access` with approvals disabled. |
+| `CODEX_NETWORK_ACCESS` | no | `false` | Allow network requests from commands while keeping file access limited to the selected project. |
 | `CODEX_TG_DIR` | no | `~/.codex/tg` | Folder holding this instance's `.env`, `logs/`, `data/`. |
 | `PROJECT_ROOTS` | no | none | Explicit allowlist for browsing immediate child project folders. Recent Codex projects are discovered from session history. If unset, no home-directory scan occurs; an explicitly set `CODEX_WORKSPACE` may be browsed. |
 | `STREAM_THROTTLE_MS` | no | `1500` | Live-edit interval while streaming. |

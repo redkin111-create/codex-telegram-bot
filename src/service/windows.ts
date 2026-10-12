@@ -6,7 +6,7 @@
  * console window; the app logs to a file. Stop precisely targets our node
  * process by command line, so it works regardless of how it was launched.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runSafe } from "./platform.js";
 import { actionFromTaskXml, sameWindowsCheckout, sourceFromTaskAction, staleTargetMessage } from "./windows-target.js";
@@ -23,7 +23,11 @@ function pauseService(spec:LaunchSpec){
   writeFileSync(servicePausePath(spec),"stopped by user\n");
 }
 function resumeService(spec:LaunchSpec){
-  rmSync(servicePausePath(spec),{force:true});
+  try {
+    unlinkSync(servicePausePath(spec));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
 }
 function writeLauncher(path:string,spec:LaunchSpec):void{
   writeFileSync(path,`\uFEFF${vbsLauncher(spec)}`,"utf16le");

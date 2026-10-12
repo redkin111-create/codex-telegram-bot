@@ -155,7 +155,25 @@ export class MiniAppAgent {
       for(const t of this.ownThreads.values()){
         if(this.telegramSessions.get(t.id)?.chatId===userId&&!visible.some(x=>x.id===t.id))visible.unshift(t);
       }
-      this.knownThreads.set(userId,new Map(visible.map(t=>[t.id,t])));
+      const known=this.knownThreads.get(userId)??new Map<string,CodexThreadSummary>();
+      // A transient app-server catalogue may omit an open session. Keep
+      // previously authorized references so TMA can still read and send to it.
+      // Refresh visible entries in recency order for bounded LRU eviction.
+      for(const t of [...visible].reverse()){
+        known.delete(t.id);
+        known.set(t.id,t);
+      }
+      const selected=this.selected.get(userId);
+      while(known.size>500){
+        const oldest=known.keys().next().value;
+        if(oldest===undefined)break;
+        if(oldest===selected){
+          const thread=known.get(oldest);
+          known.delete(oldest);
+          if(thread)known.set(oldest,thread);
+        }else known.delete(oldest);
+      }
+      this.knownThreads.set(userId,known);
       return {projects,threads:visible};
     })();
     this.catalogues.set(userId,{expiresAt:Date.now()+12000,value});
