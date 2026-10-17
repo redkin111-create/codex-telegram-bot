@@ -9,6 +9,7 @@
  * unchanged. The class name `AcpClient` is kept for import compatibility.
  */
 import { type ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { codexLaunchInfo, codexSpawn } from "../app/codex-cli.js";
 import { createLogger } from "../logger.js";
@@ -17,6 +18,7 @@ import { AcpError, isAccountExhaustedError, isContextExhaustedError, isTransient
 import { decideApproval, decidePermissionsApproval } from "./approvals.js";
 import { handleServerRequest, type ServerHandlerOptions } from "./server-handlers.js";
 import { JsonRpcTransport } from "./transport.js";
+import { installedPluginExists, resolveRemotePluginInstall } from "./plugins.js";
 import {
   commandString,
   itemToUpdates,
@@ -244,6 +246,48 @@ export class AcpClient extends EventEmitter {
   /** Load live Codex inventories. Each endpoint is independent and best-effort. */
   async refreshInventories(): Promise<void> {
     await Promise.all([this.loadModels(), this.loadCapabilities()]);
+  }
+
+  /** Best-effort plugin and app inventory from the already running app-server. */
+  async mobileIntegrationInventory(cwd?: string, threadId?: string): Promise<{
+    pluginCatalog?: unknown;
+    installedPlugins?: unknown;
+    apps?: unknown;
+    installedApps?: unknown;
+  }> {
+    const pluginParams = cwd ? { cwds: [cwd] } : {};
+    const appParams = { limit: 100, ...(threadId ? { threadId } : {}) };
+    const [pluginCatalog, installedPlugins, apps, installedApps] = await Promise.all([
+      this.request("plugin/list", pluginParams).catch(() => undefined),
+      this.request("plugin/installed", {}).catch(() => undefined),
+      this.request("app/list", appParams).catch(() => undefined),
+      this.request("app/installed", {}).catch(() => undefined),
+    ]);
+    return { pluginCatalog, installedPlugins, apps, installedApps };
+  }
+
+  /** Install only a remote plugin that is present and installable in Codex's live catalog. */
+  async installMobilePlugin(pluginId: string, marketplaceName: string, cwd: string): Promise<unknown> {
+    const [catalog, installed] = await Promise.all([
+      this.request("plugin/list", { cwds: [cwd] }),
+      this.request("plugin/installed", {}),
+    ]);
+    if (installedPluginExists(installed, pluginId)) throw new Error("Плагин уже установлен");
+    const target = resolveRemotePluginInstall(catalog, pluginId, marketplaceName);
+    const result = await this.request("plugin/install", {
+      ...target,
+      installAttemptId: randomUUID(),
+    });
+    await this.refreshInventories();
+    return result;
+  }
+
+  /** Remove only a plugin that the running Codex app-server reports as installed. */
+  async uninstallMobilePlugin(pluginId: string): Promise<void> {
+    const installed = await this.request("plugin/installed", {});
+    if (!installedPluginExists(installed, pluginId)) throw new Error("Плагин не найден среди установленных в Codex");
+    await this.request("plugin/uninstall", { pluginId });
+    await this.refreshInventories();
   }
 
   private async loadCapabilities(): Promise<void> {

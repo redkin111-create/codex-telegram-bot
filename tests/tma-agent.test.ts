@@ -111,6 +111,72 @@ test("mobile capability inventory is redacted and settings reuse the owner's exi
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile plugin and app catalogs redact host data and plugin changes stay owner-scoped",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-integrations-"));
+  const sessionId="20202020-2020-4020-8020-202020202020";
+  const calls:Array<{op:string;id?:string;marketplace?:string;cwd?:string}> = [];
+  const runtime={sessionId,isBusy:false};
+  const acp=Object.assign(new EventEmitter(),{
+    isConnected:true,
+    listProjects:async()=>[{id:"p1",name:"project",roots:[dir]}],
+    listThreads:async()=>[{id:sessionId,name:"Plugin session",cwd:dir,source:"cli",recencyAt:2}],
+    refreshInventories:async()=>undefined,
+    accountState:async()=>({}),
+    currentSubagents:()=>[],
+    availableModels:[],
+    availableModes:[],
+    availableSkills:[],
+    availableMcpServers:[],
+    currentModelId:"default",
+    mobileIntegrationInventory:async(cwd?:string,threadId?:string)=>{
+      calls.push({op:"inventory",cwd,id:threadId});
+      return {
+        pluginCatalog:{marketplaces:[{name:"official",path:"C:\\private\\marketplace.json",plugins:[
+          {id:"reviewer@official",name:"reviewer",installed:false,enabled:true,installPolicy:"AVAILABLE",availability:"AVAILABLE",source:{type:"remote"},interface:{shortDescription:"Review project changes"}},
+        ]}]},installedPlugins:{marketplaces:[]},
+        apps:{data:[{id:"calendar",name:"Calendar",description:"Schedule connector",isEnabled:true,isAccessible:false,installUrl:"javascript:alert(1)"}]},
+        installedApps:{apps:[]},
+      };
+    },
+    async installMobilePlugin(id:string,marketplace:string,cwd:string){calls.push({op:"install",id,marketplace,cwd});return {appsNeedingAuth:[
+      {id:"calendar",name:"Calendar",installUrl:"https://login.example.invalid/connect"},
+      {id:"unsafe",name:"Unsafe",installUrl:"javascript:alert(1)"},
+    ]};},
+    async uninstallMobilePlugin(id:string){calls.push({op:"uninstall",id});},
+  }) as unknown as AcpClient;
+  const registry={
+    controller:()=>({list:()=>[]}),
+    get:()=>runtime,
+    runtimeForSession:()=>runtime,
+    ownerChatForSession:()=>101,
+  } as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
+    const capabilities=await agent.executeMobile({op:"capabilities",userId:101,args:{sessionId}}) as {
+      plugins:Array<{id:string;installable:boolean}>;apps:Array<{id:string;installUrl?:string}>;pluginCatalogAvailable:boolean;
+    };
+    assert.equal(capabilities.pluginCatalogAvailable,true);
+    assert.equal(capabilities.plugins[0]?.installable,true);
+    assert.equal(capabilities.apps[0]?.installUrl,undefined);
+    assert.doesNotMatch(JSON.stringify(capabilities),/C:\\\\private/);
+    assert.deepEqual(calls[0],{op:"inventory",cwd:dir,id:sessionId});
+    const installed=await agent.executeMobile({op:"installPlugin",userId:101,args:{sessionId,pluginId:"reviewer@official",marketplace:"official"}}) as {
+      installed:boolean;authorizationRequired:Array<{name:string;installUrl?:string}>;
+    };
+    assert.equal(installed.installed,true);
+    assert.deepEqual(installed.authorizationRequired,[
+      {id:"calendar",name:"Calendar",installUrl:"https://login.example.invalid/connect"},
+      {id:"unsafe",name:"Unsafe"},
+    ]);
+    assert.deepEqual(calls[1],{op:"install",id:"reviewer@official",marketplace:"official",cwd:dir});
+    await agent.executeMobile({op:"uninstallPlugin",userId:101,args:{sessionId,pluginId:"reviewer@official"}});
+    assert.equal(calls[2]?.op,"uninstall");
+    await assert.rejects(agent.executeMobile({op:"installPlugin",userId:202,args:{sessionId,pluginId:"reviewer@official",marketplace:"official"}}),/не разрешён/i);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile session archive, restore and rename reuse the owner's Codex catalogue",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-sessions-"));
   const activeId="30303030-3030-4030-8030-303030303030";

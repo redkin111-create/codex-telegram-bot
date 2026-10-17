@@ -79,6 +79,7 @@ const fixtureStaged = new Set<string>();
 let fixtureBranch = "feat/codex-mobile-fixture";
 let fixtureNotesCommitted = false;
 let fixtureRenameStaged = true;
+let fixturePluginInstalled = false;
 const fixtureFiles = new Map<string, string>([
   ["README.md", "# Fixture project\n\nRead-only history is followed by mobile file access.\n"],
   ["src/main.ts", "export function greet() {\n  return \"Hello from fixture\";\n}\n"],
@@ -235,6 +236,16 @@ const agent = {
       feed.publish(sessionId, { kind: "activity", label: "Запрос на сокращение контекста принят тестовой средой" });
       return { started: true };
     }
+    if (job.op === "installPlugin") {
+      if (args.pluginId !== "reviewer@official" || args.marketplace !== "Fixture official") throw new Error("Плагин отсутствует в каталоге Codex");
+      fixturePluginInstalled = true;
+      return { installed: true, authorizationRequired: [{ id: "calendar", name: "Calendar connector", installUrl: "https://login.example.invalid/connect" }] };
+    }
+    if (job.op === "uninstallPlugin") {
+      if (args.pluginId !== "reviewer@official" || !fixturePluginInstalled) throw new Error("Плагин не найден среди установленных");
+      fixturePluginInstalled = false;
+      return { uninstalled: true };
+    }
     if (job.op === "capabilities") return {
       online: true, ...fixtureSettings,
       models: [{ id: "fixture", name: "Fixture Model" }, { id: "fixture-fast", name: "Fixture Fast" }],
@@ -242,6 +253,14 @@ const agent = {
       reasoningLevels: ["minimal", "low", "medium", "high", "max"],
       skills: [{ name: "Fixture skill", description: "Навык для проверки. <script>alert(1)</script> остаётся текстом." }],
       mcpServers: [{ name: "Fixture MCP", toolCount: 2 }],
+      plugins: [{ id: "reviewer@official", name: "Review helper", marketplace: "Fixture official",
+        description: "Показывает результаты ревью изменений.", capabilities: ["review", "summaries"], sourceType: "remote",
+        installed: fixturePluginInstalled, enabled: true, installable: !fixturePluginInstalled,
+        installPolicy: "AVAILABLE", availability: "AVAILABLE", mustShowInstallationInterstitial: false }],
+      pluginCatalogAvailable: true,
+      apps: [{ id: "calendar", name: "Calendar connector", description: "Fixture connection status only.",
+        enabled: true, accessible: false, callable: false, installUrl: "https://login.example.invalid/connect" }],
+      appsAvailable: true,
       account: { type: "chatgpt", email: "fixture@example.invalid", plan: "fixture" },
       limits: [{ id: "fixture", name: "Тестовый период", primary: { usedPercent: 28, windowDurationMins: 300, resetsAt: Math.floor(Date.now() / 1000) + 3600 } }],
       subagents: [{ id: "fixture-agent", name: "Fixture Agent", status: "running" }],

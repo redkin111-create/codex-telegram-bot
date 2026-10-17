@@ -13,7 +13,7 @@ const CSRF_COOKIE = "__Host-codex-mobile-csrf";
 const MUTATING_OPERATIONS = new Set<TmaOperation>([
   "create", "select", "send", "cancel", "queue", "queueRemove", "queueResume",
 ]);
-const MOBILE_MUTATING_OPERATIONS = new Set<MobileLocalOperation>(["setModel", "setMode", "setReasoning", "setGoal", "clearGoal", "steer", "forkThread", "compactThread", "archiveThread", "unarchiveThread", "renameThread", "writeFile", "createFile", "gitStage", "gitUnstage", "gitCommit", "gitCreateBranch", "gitSwitchBranch"]);
+const MOBILE_MUTATING_OPERATIONS = new Set<MobileLocalOperation>(["setModel", "setMode", "setReasoning", "setGoal", "clearGoal", "steer", "forkThread", "compactThread", "archiveThread", "unarchiveThread", "renameThread", "installPlugin", "uninstallPlugin", "writeFile", "createFile", "gitStage", "gitUnstage", "gitCommit", "gitCreateBranch", "gitSwitchBranch"]);
 
 export interface MobileAgent {
   canReadSession(id: string, userId: number): Promise<boolean>;

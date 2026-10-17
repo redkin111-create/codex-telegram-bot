@@ -100,6 +100,10 @@ export interface MobileCapabilities {
   reasoningLevels: string[];
   skills: Array<{ name: string; description?: string }>;
   mcpServers: Array<{ name: string; toolCount: number }>;
+  plugins: Array<{ id: string; name: string; marketplace: string; description?: string; capabilities: string[]; sourceType?: "remote" | "local" | "git" | "npm"; installed: boolean; enabled: boolean; installable: boolean; installPolicy: "AVAILABLE" | "INSTALLED_BY_DEFAULT" | "NOT_AVAILABLE" | "unknown"; availability: string; mustShowInstallationInterstitial: boolean }>;
+  pluginCatalogAvailable: boolean;
+  apps: Array<{ id: string; name: string; description?: string; enabled: boolean; accessible: boolean; callable: boolean; installUrl?: string }>;
+  appsAvailable: boolean;
   account?: { type: string; email?: string; plan?: string };
   limits: Array<{ id: string; name: string; primary?: { usedPercent: number; windowDurationMins?: number; resetsAt?: number }; secondary?: { usedPercent: number; windowDurationMins?: number; resetsAt?: number } }>;
   subagents: Array<{ id: string; name: string; status: string }>;
@@ -156,4 +160,4 @@ export interface MobileGitDiff {
   checkedAt: number;
 }
 
-export type MobileOperation = "create" | "select" | "send" | "cancel" | "queue" | "queueRemove" | "queueResume" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "writeFile" | "createFile" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch";
+export type MobileOperation = "create" | "select" | "send" | "cancel" | "queue" | "queueRemove" | "queueResume" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "writeFile" | "createFile" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch";

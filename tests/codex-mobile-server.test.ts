@@ -55,6 +55,7 @@ async function startFixture() {
         modes: [{ id: settings.mode, name: "Code" }], reasoningLevels: ["low", "medium", "high"],
         skills: [{ name: "fixture-skill", description: "Safe plain text" }],
         mcpServers: [{ name: "fixture-mcp", toolCount: 2 }], limits: [], subagents: [], checkedAt: 1,
+        plugins: [], pluginCatalogAvailable: false, apps: [], appsAvailable: false,
       };
       if (job.op === "setModel") settings.model = String(job.args.modelId);
       if (job.op === "setMode") settings.mode = String(job.args.modeId);
@@ -308,6 +309,25 @@ test("manual compaction requires a paired device, same Origin and CSRF", async (
     });
     assert.equal(accepted.status, 200);
     assert.equal(f.calls.at(-1)?.op, "compactThread");
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("plugin changes require the paired device, same Origin, CSRF and an owned session", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const url = f.origin + "/api/operations";
+    const body = (sessionId = allowedSession) => JSON.stringify({ op: "installPlugin", args: { sessionId, pluginId: "fixture-plugin", marketplace: "official" } });
+    const anonymous = await fetch(url, { method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: body() });
+    assert.equal(anonymous.status, 401);
+    const noCsrf = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: body() });
+    assert.equal(noCsrf.status, 403);
+    const foreign = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body(foreignSession) });
+    assert.equal(foreign.status, 403);
+    assert.equal(f.calls.filter((call) => call.op === "installPlugin").length, 0);
+    const accepted = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body() });
+    assert.equal(accepted.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "installPlugin");
   } finally { await cleanup(f.server, f.dataDir); }
 });
 

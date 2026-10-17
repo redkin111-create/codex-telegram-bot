@@ -42,9 +42,9 @@ full Desktop replacement while any row below has open work.
 | Files and edits | Browse the authorized session folder, create text files in existing folders, read UTF-8 text, edit/save up to 512 KB with stale-file detection; hides common secret folders/files, skips symlinks and blocks writes while the connected Codex session is busy | Image/binary preview, full diff/review UI and Desktop-equivalent file-change navigation |
 | Terminal and Git | Git branch/status, staged/unstaged diff and per-file diff review (including renames); stage/unstage one reported project path, commit staged changes, list local branches, create a branch and switch to an existing local branch while the Codex session is idle | Terminal/process controls, worktree creation, remote branches, conflict resolution, inline review comments and richer Desktop-equivalent review actions |
 | Models, modes, goals and context | Choose a model, collaboration mode and reasoning level; view, create, pause, resume and clear Codex goals; request manual context compaction while idle | Verify error/rollback behavior across supported Codex versions; show a final compacted status only when Codex confirms it |
-| Skills, MCP and subagents | Safe inventory view; only subagents owned by the paired user | Invoke/manage skills and integrations, plugin/app management and settings where the existing runtime supports it |
+| Skills, MCP, subagents, plugins and apps | Owner-scoped inventories; lists Codex plugins and connected apps; installs/removes only remote plugins the live Codex catalog marks available, with a phone confirmation; offers only HTTPS app-authorization links and shows their host | Enable/disable existing plugins, manage arbitrary/local marketplaces, finish every provider OAuth flow in-browser, invoke/manage skills and MCP integrations |
 | Usage and account | Current account identity and quota windows, when ACP exposes them | Saved-account management, account switching, refresh/error states and parity checks |
-| Apps, plugins, tasks and voice | Goals are supported as noted above | Apps and plugin management, task lifecycle, voice input/output and parity checks |
+| Tasks and voice | Goals are supported as noted above; plugin and app catalog coverage is described above | Desktop task lifecycle, voice input/output and parity checks |
 | Host and workspace setup | Connects only to the one existing local runtime and its authorized projects | Host selection, current branch versus isolated worktree, environment setup and workspace-specific permissions |
 
 New UI behavior is checked in Browser skill against the isolated fake Codex
@@ -56,7 +56,7 @@ they have both server-side authorization tests and browser coverage.
 
 - Root TypeScript check: passed.
 - Mobile app TypeScript check and production build: passed.
-- Full root test suite: 180/180 passed.
+- Current full root test suite: 186/186 passed, including plugin/app redaction, live ACP install/uninstall checks and paired-session/CSRF checks.
 - Focused branch-list/switch and API authorization checks: 2/2 passed.
 - Per-file Git diff filtering validates paths inside the authorized project and passes both names for a selected rename.
 - Mobile app `npm audit`: 0 vulnerabilities.
@@ -77,6 +77,10 @@ they have both server-side authorization tests and browser coverage.
   context compaction, confirm the action, and verify the UI says the request was
   accepted without claiming that Codex finished. All data came from the isolated
   browser fixture.
+- Browser skill at 574×637: browse the fake plugin/app catalog, inspect the
+  install confirmation, install and remove a fake remote plugin, and verify the
+  returned connection link displays its HTTPS host. No provider page was opened.
+  The app link also displayed its host and a warning before leaving the client.
 - CLI pairing approval is now a separate OS-local IPC channel. The mobile HTTP
   server does not expose an approval endpoint, so a reverse proxy cannot reach
   that operation. Automated tests exercise successful approval, a wrong local

@@ -23,6 +23,7 @@ import { TelegramSessionRegistry } from "../sessions/telegram-registry.js";
 import { argumentString, isTmaJob, type TmaJob, type TmaResult } from "./protocol.js";
 import { parseTmaImages, tmaPromptFingerprint } from "./prompt-images.js";
 import { DurablePromptJournal } from "./prompt-journal.js";
+import { normalizeMobileIntegrations, normalizePluginInstallResult } from "../mobile/integrations.js";
 
 const log=createLogger("tma:agent");
 const MAX_IMG=3*1024*1024;
@@ -40,7 +41,7 @@ const sleep=(ms:number,signal:AbortSignal)=>new Promise<void>(resolve=>{
 });
 
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; }
-export type MobileLocalOperation = "capabilities" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "files" | "readFile" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch";
+export type MobileLocalOperation = "capabilities" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "files" | "readFile" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 export class MiniAppAgent {
   private readonly abort=new AbortController();
@@ -423,6 +424,12 @@ export class MiniAppAgent {
       case "capabilities":{
         if(sessionId&&!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
         if(acp.isConnected)await acp.refreshInventories();
+        const integrationThread=sessionId?await this.thread(sessionId,chatId).catch(()=>undefined):undefined;
+        const rawIntegrations=acp.isConnected&&typeof acp.mobileIntegrationInventory==="function"
+          ? await acp.mobileIntegrationInventory(integrationThread?.cwd,sessionId||undefined).catch(()=>undefined)
+          : undefined;
+        const integrations=normalizeMobileIntegrations(rawIntegrations?.pluginCatalog,rawIntegrations?.installedPlugins,
+          rawIntegrations?.apps,rawIntegrations?.installedApps);
         let goal:Awaited<ReturnType<AcpClient["getThreadGoal"]>>;
         let goalAvailable=false;
         if(sessionId&&acp.isConnected){
@@ -452,10 +459,33 @@ export class MiniAppAgent {
           reasoningLevels:REASONING_LEVELS,
           skills:acp.availableSkills.filter(s=>s.enabled!==false).slice(0,100).map(s=>({name:s.name.slice(0,160),description:s.description?.slice(0,500)})),
           mcpServers:acp.availableMcpServers.slice(0,60).map(s=>({name:s.name.slice(0,120),toolCount:Object.keys(s.tools??{}).length})),
+          plugins:integrations.plugins,pluginCatalogAvailable:integrations.pluginCatalogAvailable,
+          apps:integrations.apps,appsAvailable:integrations.appsAvailable,
           account:account.account?{type:account.account.type,email:account.account.email?.slice(0,200),plan:account.account.planType?.slice(0,100)}:undefined,
           limits,subagents,checkedAt:Date.now(),
           goal,goalAvailable,
         };
+      }
+      case "installPlugin":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        const thread=await this.thread(sessionId,chatId);
+        if(!thread.cwd)throw new Error("Для сеанса не определена папка проекта");
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        this.requireIdleMobileRuntime(sessionId,chatId);
+        const pluginId=argumentString(args,"pluginId",200);
+        const marketplaceName=argumentString(args,"marketplace",120);
+        if(!pluginId||!marketplaceName)throw new Error("Плагин не выбран из каталога Codex");
+        const result=await acp.installMobilePlugin(pluginId,marketplaceName,thread.cwd);
+        return {installed:true,authorizationRequired:normalizePluginInstallResult(result)};
+      }
+      case "uninstallPlugin":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        this.requireIdleMobileRuntime(sessionId,chatId);
+        const pluginId=argumentString(args,"pluginId",200);
+        if(!pluginId)throw new Error("Плагин не выбран из списка Codex");
+        await acp.uninstallMobilePlugin(pluginId);
+        return {uninstalled:true};
       }
       case "setModel":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
@@ -588,7 +618,7 @@ export class MiniAppAgent {
   private requireIdleMobileRuntime(sessionId:string,userId:number):void{
     const runtime=this.deps.registry.runtimeForSession(userId,sessionId);
     if(!runtime)throw new Error("Сначала подключите сеанс к мобильному клиенту");
-    if(runtime.isBusy)throw new Error("Дождитесь завершения текущей задачи Codex перед изменением Git");
+    if(runtime.isBusy)throw new Error("Дождитесь завершения текущей задачи Codex перед изменением настроек или файлов проекта");
   }
   private mobileRoot(sessionId:string,userId:number):{root:string;name:string}{
     const thread=this.knownThreads.get(userId)?.get(sessionId);

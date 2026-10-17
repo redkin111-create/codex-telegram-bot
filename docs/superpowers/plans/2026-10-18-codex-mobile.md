@@ -55,7 +55,7 @@
 
 - Add complete work-context selection (host, workspace, branch, worktree and environment setup), steering, richer attachments, side chats, plans/goals, compact and pinning where existing APIs expose them. Steering, goals and manual compact are now implemented; they still need compatibility checks against installed Desktop versions.
 - Finish file edit edge cases, then add review comments, conflict resolution, remote branches and bounded terminal/process controls through existing runtime interfaces. Git already has guarded per-path stage/unstage, staged commit, local branch listing, create-branch/existing-branch switching, and path-scoped diff review including rename paths.
-- Add models/modes/reasoning, safe skills/MCP/subagent inventories and quota display. Saved-account management, Apps/plugins, tasks and voice remain open.
+- Add models/modes/reasoning, safe skills/MCP/subagent inventories, quota display, plugin/app catalogs, and confirmed remote-plugin install/removal. Plugin enable/disable, arbitrary marketplaces, full provider OAuth, saved-account management, tasks and voice remain open.
 - Keep changes allowlisted and require confirmation for destructive or permission-changing actions.
 - Add server tests and browser-check every action against fake filesystem/runtime fixtures.
 

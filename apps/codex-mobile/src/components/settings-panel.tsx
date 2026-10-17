@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, Bot, ChevronDown, CircleHelp, Clock3, Pause, Play, Plug, ShieldCheck, Sparkles, Target, Trash2, X } from "lucide-react";
+import { Activity, Bot, ChevronDown, CircleHelp, Clock3, Download, ExternalLink, Pause, Play, Plug, Puzzle, ShieldCheck, Sparkles, Target, Trash2, X } from "lucide-react";
 import { readCapabilities } from "../api.js";
 import type { MobileCapabilities, MobileOperation } from "../types.js";
 import { Badge, Button, Card, Input, Textarea } from "./ui/primitives.js";
@@ -7,6 +7,17 @@ import { Badge, Button, Card, Input, Textarea } from "./ui/primitives.js";
 const effortLabel: Record<string, string> = {
   minimal: "Минимум", low: "Низкий", medium: "Средний", high: "Высокий", max: "Максимум",
 };
+
+type PluginAction = { kind: "install" | "uninstall"; pluginId: string; };
+type PluginInstallNotice = { name: string; installUrl?: string }[];
+
+function safeLinkHost(value?: string): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password ? url.hostname : undefined;
+  } catch { return undefined; }
+}
 
 export function SettingsPanel({ sessionId, connected, onClose, onOperation }: {
   sessionId: string;
@@ -20,6 +31,8 @@ export function SettingsPanel({ sessionId, connected, onClose, onOperation }: {
   const [error, setError] = useState("");
   const [goalObjective, setGoalObjective] = useState("");
   const [goalBudget, setGoalBudget] = useState("");
+  const [pluginAction, setPluginAction] = useState<PluginAction>();
+  const [pluginNotice, setPluginNotice] = useState<PluginInstallNotice>();
 
   async function reload() {
     setLoading(true);
@@ -83,8 +96,33 @@ export function SettingsPanel({ sessionId, connected, onClose, onOperation }: {
     finally { setSaving(false); }
   }
 
+  async function confirmPluginAction() {
+    const action = pluginAction;
+    const plugin = capabilities?.plugins.find((entry) => entry.id === action?.pluginId);
+    if (!action || !plugin) return;
+    setSaving(true);
+    setError("");
+    setPluginNotice(undefined);
+    try {
+      if (action.kind === "install") {
+        const result = await onOperation("installPlugin", { sessionId, pluginId: plugin.id, marketplace: plugin.marketplace }) as {
+          authorizationRequired?: Array<{ id: string; name: string; installUrl?: string }>;
+        };
+        setPluginNotice(result.authorizationRequired?.map(({ name, installUrl }) => ({ name, installUrl })) ?? []);
+      } else {
+        await onOperation("uninstallPlugin", { sessionId, pluginId: plugin.id });
+        setPluginNotice([]);
+      }
+      setPluginAction(undefined);
+      await reload();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Не удалось изменить плагин Codex");
+    } finally { setSaving(false); }
+  }
+
   const inputClass = "min-h-11 w-full appearance-none rounded-xl border border-border bg-[#111613] px-3 pr-9 text-sm text-text outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:opacity-50";
   const usable = Boolean(capabilities?.online && connected && !saving);
+  const selectedPlugin = capabilities?.plugins.find((entry) => entry.id === pluginAction?.pluginId);
 
   return <div className="fixed inset-0 z-50 flex justify-end bg-black/65" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section role="dialog" aria-modal="true" aria-labelledby="mobile-settings-title" className="safe-area-top safe-area-bottom flex h-full max-h-[100svh] w-full max-w-xl flex-col border-l border-border bg-background shadow-soft">
@@ -131,11 +169,42 @@ export function SettingsPanel({ sessionId, connected, onClose, onOperation }: {
             {capabilities.limits.length ? capabilities.limits.map((limit) => <div key={limit.id} className="space-y-2"><p className="text-xs text-muted">{limit.name}</p>{([limit.primary, limit.secondary].filter(Boolean) as NonNullable<typeof limit.primary>[]).map((window, index) => <div key={index}><div className="mb-1 flex justify-between text-xs"><span>{index === 0 ? "Основной период" : "Дополнительный период"}</span><span>{Math.round(window.usedPercent)}% использовано</span></div><div className="h-1.5 overflow-hidden rounded-full bg-elevated"><div className="h-full rounded-full bg-accent" style={{ width: `${window.usedPercent}%` }} /></div>{window.resetsAt && <p className="mt-1 flex items-center gap-1 text-[11px] text-muted"><Clock3 size={12} /> Сброс: {new Date(window.resetsAt * 1000).toLocaleString()}</p>}</div>)}</div>) : <p className="text-xs text-muted">Информация о лимитах сейчас недоступна.</p>}
           </Card>
           <Card className="space-y-3 p-4"><h3 className="flex items-center gap-2 text-sm font-semibold"><Plug size={16} className="text-accent" /> MCP-серверы</h3>{capabilities.mcpServers.length ? <ul className="space-y-2">{capabilities.mcpServers.map((server) => <li key={server.name} className="flex items-center justify-between gap-3 text-sm"><span className="truncate">{server.name}</span><Badge>{server.toolCount} инструментов</Badge></li>)}</ul> : <p className="text-xs text-muted">Подключённых MCP-серверов нет или их список недоступен.</p>}</Card>
+          <Card className="space-y-3 p-4">
+            <h3 className="flex items-center gap-2 text-sm font-semibold"><Puzzle size={16} className="text-accent" /> Плагины Codex</h3>
+            {!capabilities.pluginCatalogAvailable ? <p className="text-xs leading-relaxed text-muted">Эта версия Codex не предоставляет каталог плагинов.</p> : capabilities.plugins.length ? <ul className="space-y-3">{capabilities.plugins.slice(0, 80).map((plugin) => <li key={`${plugin.marketplace}:${plugin.id}`} className="rounded-xl border border-border bg-[#111613] p-3">
+              <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{plugin.name}</p><p className="mt-1 truncate text-[11px] text-muted">{plugin.marketplace}</p></div><Badge>{plugin.installed ? plugin.enabled ? "Установлен" : "Отключён" : plugin.installable ? "Доступен" : "Недоступен"}</Badge></div>
+              {plugin.description && <p className="mt-2 text-xs leading-relaxed text-muted">{plugin.description}</p>}
+              {plugin.mustShowInstallationInterstitial && plugin.capabilities.length > 0 && <p className="mt-2 text-[11px] text-muted">Возможности: {plugin.capabilities.join(", ")}</p>}
+              <div className="mt-3 flex justify-end">{plugin.installed ? <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" disabled={!usable} onClick={() => setPluginAction({ kind: "uninstall", pluginId: plugin.id })}><Trash2 size={14} /> Удалить</Button>
+                : plugin.installable ? <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" disabled={!usable} onClick={() => setPluginAction({ kind: "install", pluginId: plugin.id })}><Download size={14} /> Установить</Button> : null}</div>
+            </li>)}</ul> : <p className="text-xs text-muted">Каталог плагинов пуст.</p>}
+            <p className="text-[11px] leading-relaxed text-muted">Установка и удаление меняют настройки Codex на этом компьютере. Действие доступно только для записи из актуального каталога уже подключённого Codex.</p>
+            {pluginNotice && <div role="status" className="rounded-xl border border-border bg-[#111613] p-3 text-xs leading-relaxed">
+              {pluginNotice.length ? <><p className="font-semibold">Чтобы завершить настройку плагина, подключите сервис:</p><ul className="mt-2 space-y-2">{pluginNotice.map((app) => <li key={app.name}>{app.installUrl && safeLinkHost(app.installUrl) ? <a className="inline-flex items-center gap-1 text-accent underline" href={app.installUrl} target="_blank" rel="noopener noreferrer">{app.name} · {safeLinkHost(app.installUrl)}<ExternalLink size={12} /></a> : <span>{app.name} · откройте Codex на компьютере для авторизации</span>}</li>)}</ul></> : <p>Изменение плагинов передано Codex.</p>}
+            </div>}
+          </Card>
+          <Card className="space-y-3 p-4">
+            <h3 className="flex items-center gap-2 text-sm font-semibold"><Plug size={16} className="text-accent" /> Приложения и подключения</h3>
+            {!capabilities.appsAvailable ? <p className="text-xs leading-relaxed text-muted">Эта версия Codex не предоставляет список приложений.</p> : capabilities.apps.length ? <ul className="space-y-3">{capabilities.apps.slice(0, 80).map((app) => <li key={app.id} className="rounded-xl border border-border bg-[#111613] p-3">
+              <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{app.name}</p>{app.description && <p className="mt-1 text-xs leading-relaxed text-muted">{app.description}</p>}</div><Badge>{!app.enabled ? "Отключено" : app.callable ? "Подключено" : app.accessible ? "Доступно" : "Требует входа"}</Badge></div>
+              {app.installUrl && !app.accessible && safeLinkHost(app.installUrl) && <a className="mt-2 inline-flex min-h-9 items-center gap-1 text-xs text-accent underline" href={app.installUrl} target="_blank" rel="noopener noreferrer">Подключить · {safeLinkHost(app.installUrl)}<ExternalLink size={12} /></a>}
+            </li>)}</ul> : <p className="text-xs text-muted">Приложения не найдены.</p>}
+            <p className="text-[11px] leading-relaxed text-muted">Состояние читается у локального Codex. Перед переходом проверьте адрес сервиса и подключайте только знакомые вам службы.</p>
+          </Card>
           <Card className="space-y-3 p-4"><h3 className="flex items-center gap-2 text-sm font-semibold"><Bot size={16} className="text-accent" /> Навыки и агенты</h3>{capabilities.skills.length ? <ul className="space-y-3">{capabilities.skills.map((skill) => <li key={skill.name}><p className="text-sm font-medium">{skill.name}</p>{skill.description && <p className="mt-1 text-xs leading-relaxed text-muted">{skill.description}</p>}</li>)}</ul> : <p className="text-xs text-muted">Навыки не найдены.</p>}{capabilities.subagents.length > 0 && <div className="border-t border-border pt-3"><p className="mb-2 text-xs font-semibold text-muted">Подагенты текущего владельца</p><ul className="space-y-2">{capabilities.subagents.map((agent) => <li key={agent.id} className="flex items-center justify-between gap-3 text-sm"><span className="truncate">{agent.name}</span><Badge>{agent.status}</Badge></li>)}</ul></div>}</Card>
           <p className="flex items-start gap-2 text-[11px] leading-relaxed text-muted"><CircleHelp size={14} className="mt-0.5 shrink-0" />Список строится из текущего локального runtime. Здесь отображаются только сведения для выбранного владельца, без локальных путей и секретов MCP.</p>
           <p className="text-center text-[10px] text-muted">Обновлено: {new Date(capabilities.checkedAt).toLocaleTimeString()}</p>
         </>}
       </div>
+      {pluginAction && selectedPlugin && <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
+        <section role="alertdialog" aria-modal="true" aria-labelledby="plugin-confirm-title" className="safe-area-bottom w-full max-w-md space-y-4 rounded-2xl border border-border bg-elevated p-5 shadow-soft">
+          <div><h3 id="plugin-confirm-title" className="text-base font-semibold">{pluginAction.kind === "install" ? "Установить плагин?" : "Удалить плагин?"}</h3><p className="mt-2 text-sm leading-relaxed text-muted"><span className="font-medium text-text">{selectedPlugin.name}</span> · {selectedPlugin.marketplace}</p>
+            <p className="mt-2 text-xs leading-relaxed text-muted">{pluginAction.kind === "install" ? "Codex загрузит плагин из выбранного удалённого каталога. Он может добавлять инструкции и подключать внешние сервисы." : "Плагин будет удалён из настроек Codex на этом компьютере. Это может повлиять на другие сеансы."}</p>
+            {selectedPlugin.capabilities.length > 0 && <p className="mt-2 text-xs text-muted">Заявленные возможности: {selectedPlugin.capabilities.join(", ")}</p>}
+          </div>
+          <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={saving} onClick={() => setPluginAction(undefined)}>Отмена</Button><Button type="button" className="flex-1" disabled={saving || !usable} onClick={() => void confirmPluginAction()}>{saving ? "Выполняю…" : pluginAction.kind === "install" ? "Установить" : "Удалить"}</Button></div>
+        </section>
+      </div>}
     </section>
   </div>;
 }
