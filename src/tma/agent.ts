@@ -2,16 +2,19 @@
  * Windows-side outbound TMA agent. Reuses the SAME AcpClient/RuntimeRegistry as
  * the Telegram bot and never listens on the PC's public network interface.
  */
-import { realpathSync, readFileSync, statSync } from "node:fs";
-import { basename, extname, isAbsolute, relative, sep } from "node:path";
+import { lstatSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { AcpClient } from "../acp/client.js";
-import type { CodexThreadSummary, CodexProjectSummary } from "../acp/codex-protocol.js";
-import { textPrompt } from "../app/types.js";
+import type { CodexThreadSummary, CodexProjectSummary, CodexRateLimitWindow } from "../acp/codex-protocol.js";
+import { REASONING_LEVELS, textPrompt, type ReasoningEffort } from "../app/types.js";
 import type { RuntimeRegistry } from "../bot/registry.js";
 import { isVisibleThreadForChat, threadSourceKind } from "../bot/catalog.js";
 import { LiveSessionConflictError } from "../bot/session-runtime.js";
 import { TmaScreenshotIndex } from "./screenshots.js";
 import type { AppConfig } from "../config.js";
+import { isPathWithinRoot } from "../projects/manager.js";
 import { createLogger } from "../logger.js";
 import { readConversationHistoryAsync } from "../sessions/history.js";
 import { SessionStore } from "../sessions/store.js";
@@ -36,6 +39,8 @@ const sleep=(ms:number,signal:AbortSignal)=>new Promise<void>(resolve=>{
 });
 
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; }
+export type MobileLocalOperation = "capabilities" | "setModel" | "setMode" | "setReasoning" | "files" | "readFile" | "writeFile" | "createFile" | "gitStatus" | "gitDiff";
+export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 export class MiniAppAgent {
   private readonly abort=new AbortController();
   private readonly store:SessionStore;
@@ -65,19 +70,28 @@ export class MiniAppAgent {
   /** Never launch duplicate deep scans for the same JSONL revision. */
   private readonly historyInflight = new Map<string, Promise<unknown>>();
   private loopPromise:Promise<void>|undefined;
-  constructor(private readonly deps:AgentDeps,gatewayUrl:string,secret:string){
-    const url=new URL(gatewayUrl);
-    if(url.protocol!=="https:"&& !(url.protocol==="http:"&&["localhost","127.0.0.1"].includes(url.hostname))){
-      throw new Error("TMA_GATEWAY_URL must use HTTPS outside localhost");
+  constructor(private readonly deps:AgentDeps,gatewayUrl?:string,secret?:string){
+    if(Boolean(gatewayUrl)!==Boolean(secret))throw new Error("TMA gateway URL and token must be configured together");
+    if(gatewayUrl&&secret){
+      const url=new URL(gatewayUrl);
+      if(url.protocol!=="https:"&& !(url.protocol==="http:"&&["localhost","127.0.0.1"].includes(url.hostname))){
+        throw new Error("TMA_GATEWAY_URL must use HTTPS outside localhost");
+      }
+      if(secret.length<32)throw new Error("TMA_AGENT_TOKEN must be at least 32 characters");
+      this.root=url.href.replace(/\/+$/,"");
+      this.secret=secret;
+    }else{
+      // Mobile-only callers reuse this business adapter in-process and never
+      // start the outbound long-poll transport.
+      this.root="";
+      this.secret="";
     }
-    this.root=url.href.replace(/\/+$/,"");
-    if(secret.length<32)throw new Error("TMA_AGENT_TOKEN must be at least 32 characters");
-    this.secret=secret;
     this.store=new SessionStore(deps.cfg.sessionsDir);
     this.telegramSessions=new TelegramSessionRegistry(deps.cfg.dataDir);
     this.promptJournal=new DurablePromptJournal(deps.cfg.dataDir);
   }
   start():void{
+    if(!this.root||!this.secret)throw new Error("Starting the outbound Mini App agent requires a TMA gateway");
     if(!this.loopPromise){
       this.loopPromise=this.run();
       void this.runHeartbeat();
@@ -195,6 +209,243 @@ export class MiniAppAgent {
     if(!/^[a-z0-9-]{8,80}$/i.test(id)||!this.deps.cfg.allowedUsers.has(String(userId)))return false;
     try{await this.thread(id,userId);return true;}catch{return false;}
   }
+  /** Mobile-only inventories and preference changes. These are deliberately
+   * kept out of TMA_OPERATIONS so the remote Telegram gateway cannot dispatch them. */
+  async executeMobile(job:MobileLocalJob):Promise<unknown>{
+    const {acp,registry,cfg}=this.deps;
+    const chatId=job.userId,args=job.args;
+    if(!cfg.allowedUsers.has(String(chatId)))throw new Error("Пользователь не разрешён на ПК");
+    const sessionId=typeof args.sessionId==="string"?args.sessionId:"";
+    if(job.op!=="capabilities"&&!sessionId)throw new Error("Сначала выберите сеанс Codex");
+    const runtime=sessionId?registry.runtimeForSession(chatId,sessionId):undefined;
+    switch(job.op){
+      case "capabilities":{
+        if(sessionId&&!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        if(acp.isConnected)await acp.refreshInventories();
+        const account:Awaited<ReturnType<AcpClient["accountState"]>>=acp.isConnected?await acp.accountState().catch(()=>({})):{};
+        const normalizeWindow=(value:CodexRateLimitWindow|null|undefined)=>value&&Number.isFinite(value.usedPercent)?{
+          usedPercent:Math.max(0,Math.min(100,value.usedPercent)),
+          windowDurationMins:typeof value.windowDurationMins==="number"&&Number.isFinite(value.windowDurationMins)?value.windowDurationMins:undefined,
+          resetsAt:typeof value.resetsAt==="number"&&Number.isFinite(value.resetsAt)?value.resetsAt:undefined,
+        }:undefined;
+        const limits=account.rateLimitsByLimitId?Object.entries(account.rateLimitsByLimitId).map(([id,limit])=>({
+          id:id.slice(0,80),name:typeof limit.limitName==="string"?limit.limitName.slice(0,100):id.slice(0,80),
+          primary:normalizeWindow(limit.primary),secondary:normalizeWindow(limit.secondary),
+        })).slice(0,20):account.rateLimits?[{id:"default",name:"Лимиты Codex",primary:normalizeWindow(account.rateLimits.primary),secondary:normalizeWindow(account.rateLimits.secondary)}]:[];
+        const subagents=acp.currentSubagents().filter(s=>registry.ownerChatForSession(s.sessionId)===chatId).slice(0,30).map(s=>({
+          id:s.sessionId,name:(s.sessionName||s.agentName||"Агент").slice(0,120),status:(s.status?.type||"unknown").slice(0,60),
+        }));
+        return {
+          online:acp.isConnected,
+          model:runtime?.model||acp.currentModelId||"default",
+          mode:runtime?.agent||acp.currentModeId||"",
+          reasoning:runtime?.reasoning||"medium",
+          models:acp.availableModels.slice(0,100).map(m=>({id:m.modelId.slice(0,160),name:m.name.slice(0,160),description:m.description?.slice(0,400)})),
+          modes:acp.availableModes.slice(0,60).map(m=>({id:m.id.slice(0,100),name:m.name.slice(0,120),description:m.description?.slice(0,300)})),
+          reasoningLevels:REASONING_LEVELS,
+          skills:acp.availableSkills.filter(s=>s.enabled!==false).slice(0,100).map(s=>({name:s.name.slice(0,160),description:s.description?.slice(0,500)})),
+          mcpServers:acp.availableMcpServers.slice(0,60).map(s=>({name:s.name.slice(0,120),toolCount:Object.keys(s.tools??{}).length})),
+          account:account.account?{type:account.account.type,email:account.account.email?.slice(0,200),plan:account.account.planType?.slice(0,100)}:undefined,
+          limits,subagents,checkedAt:Date.now(),
+        };
+      }
+      case "setModel":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        if(!runtime)throw new Error("Сначала подключите сеанс к мобильному клиенту");
+        const model=argumentString(args,"modelId",160);
+        if(model!=="default"&&!acp.hasModel(model))throw new Error("Эта модель сейчас недоступна");
+        const result=await runtime.setModelPref(model==="default"?"":model);
+        if(!result.ok)throw new Error(result.error||"Не удалось сменить модель");
+        return {model:model==="default"?"default":model};
+      }
+      case "setMode":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        if(!runtime)throw new Error("Сначала подключите сеанс к мобильному клиенту");
+        const mode=argumentString(args,"modeId",100);
+        if(mode!=="default"&&!acp.hasMode(mode))throw new Error("Этот режим сейчас недоступен");
+        const result=await runtime.setAgentPref(mode==="default"?"":mode);
+        if(!result.ok)throw new Error(result.error||"Не удалось сменить режим");
+        return {mode:mode==="default"?"":mode};
+      }
+      case "setReasoning":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        if(!runtime)throw new Error("Сначала подключите сеанс к мобильному клиенту");
+        const effort=argumentString(args,"effort",20);
+        if(!REASONING_LEVELS.includes(effort as ReasoningEffort))throw new Error("Недопустимый уровень рассуждений");
+        runtime.setReasoningPref(effort as ReasoningEffort);
+        return {reasoning:effort};
+      }
+      case "files":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        return this.mobileFileList(sessionId,chatId,typeof args.path==="string"?args.path:"");
+      }
+      case "readFile":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        return this.mobileReadFile(sessionId,chatId,argumentString(args,"path",1200));
+      }
+      case "writeFile":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        const content=typeof args.content==="string"?args.content:undefined;
+        const expectedHash=argumentString(args,"expectedHash",64);
+        if(content===undefined||Buffer.byteLength(content,"utf8")>512*1024)throw new Error("Файл больше 512 КБ или имеет неверный формат");
+        const target=this.mobileReadFile(sessionId,chatId,argumentString(args,"path",1200));
+        if(!/^[a-f0-9]{64}$/.test(expectedHash)||target.sha256!==expectedHash)throw new Error("Файл изменился после открытия. Перезагрузите его перед сохранением.");
+        const runtime=registry.runtimeForSession(chatId,sessionId);
+        if(!runtime)throw new Error("Сначала подключите сеанс к мобильному клиенту");
+        if(runtime.isBusy)throw new Error("Дождитесь завершения текущей задачи Codex перед сохранением файла");
+        const root=this.mobileRoot(sessionId,chatId).root;
+        const absolute=this.mobilePath(root,argumentString(args,"path",1200));
+        const temp=absolute+".codex-mobile-"+randomBytes(8).toString("hex")+".tmp";
+        const mode=statSync(absolute).mode&0o777;
+        try{
+          writeFileSync(temp,content,{encoding:"utf8",flag:"wx",mode});
+          const parent=realpathSync.native(dirname(absolute));
+          if(!isPathWithinRoot(root,parent)||lstatSync(absolute).isSymbolicLink())throw new Error("Путь проекта изменился во время сохранения");
+          const latest=this.mobileReadFile(sessionId,chatId,argumentString(args,"path",1200));
+          if(latest.sha256!==expectedHash)throw new Error("Файл изменился во время сохранения. Перезагрузите его перед сохранением.");
+          renameSync(temp,absolute);
+        }finally{try{unlinkSync(temp);}catch{/* rename already removed the temporary file */}}
+        return {path:target.path,sha256:createHash("sha256").update(content,"utf8").digest("hex"),savedAt:Date.now()};
+      }
+      case "createFile":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        const content=typeof args.content==="string"?args.content:undefined;
+        const rawPath=argumentString(args,"path",1200);
+        if(content===undefined||Buffer.byteLength(content,"utf8")>512*1024)throw new Error("Файл больше 512 КБ или имеет неверный формат");
+        if(!rawPath||isAbsolute(rawPath)||/^[a-z]:/i.test(rawPath)||rawPath.startsWith("\\\\"))throw new Error("Ожидался относительный путь внутри проекта");
+        const parts=rawPath.split(/[\\/]+/).filter(Boolean);
+        if(parts.some(part=>part===".."||part==="."||part.includes(":")||part.includes("\0")))throw new Error("Недопустимый путь внутри проекта");
+        if(parts.some(part=>this.isHiddenMobileFile(part)))throw new Error("Этот файл недоступен в мобильном просмотре");
+        const name=parts.pop();
+        if(!name||this.isHiddenMobileFile(name))throw new Error("Этот файл недоступен в мобильном просмотре");
+        const {root}=this.mobileRoot(sessionId,chatId);
+        const parent=parts.length?this.mobilePath(root,parts.join("/")):root;
+        if(!statSync(parent).isDirectory())throw new Error("Папка для нового файла не найдена");
+        const actualParent=realpathSync.native(parent);
+        if(!isPathWithinRoot(root,actualParent))throw new Error("Путь выходит за пределы проекта");
+        const absolute=resolve(actualParent,name);
+        if(!isPathWithinRoot(root,absolute))throw new Error("Путь выходит за пределы проекта");
+        try{lstatSync(absolute);throw new Error("Файл уже существует");}
+        catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT")throw error;}
+        const runtime=registry.runtimeForSession(chatId,sessionId);
+        if(!runtime)throw new Error("Сначала подключите сеанс к мобильному клиенту");
+        if(runtime.isBusy)throw new Error("Дождитесь завершения текущей задачи Codex перед созданием файла");
+        try{writeFileSync(absolute,content,{encoding:"utf8",flag:"wx"});}
+        catch(error){if((error as NodeJS.ErrnoException).code==="EEXIST")throw new Error("Файл уже существует");throw error;}
+        return {path:relative(root,absolute).split(sep).join("/"),sha256:createHash("sha256").update(content,"utf8").digest("hex"),savedAt:Date.now()};
+      }
+      case "gitStatus":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        return this.mobileGitStatus(sessionId,chatId);
+      }
+      case "gitDiff":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        return this.mobileGitDiff(sessionId,chatId);
+      }
+    }
+  }
+  private mobileRoot(sessionId:string,userId:number):{root:string;name:string}{
+    const thread=this.knownThreads.get(userId)?.get(sessionId);
+    const cwd=thread?.cwd;
+    if(!cwd)throw new Error("Для сеанса не определена папка проекта");
+    const known=this.knownThreads.get(userId);
+    if(!known?.has(sessionId))throw new Error("Доступ к проекту запрещён");
+    const root=realpathSync.native(cwd);
+    if(!statSync(root).isDirectory())throw new Error("Папка проекта недоступна");
+    return {root,name:thread.name||basename(root)};
+  }
+  private mobilePath(root:string,rawPath:string):string{
+    if(rawPath.length>1200||isAbsolute(rawPath)||/^[a-z]:/i.test(rawPath)||rawPath.startsWith("\\\\"))throw new Error("Ожидался относительный путь внутри проекта");
+    const parts=rawPath.split(/[\\/]+/).filter(Boolean);
+    if(parts.some(part=>part===".."||part==="."||part.includes(":")||part.includes("\0")))throw new Error("Недопустимый путь внутри проекта");
+    const candidate=resolve(root,...parts);
+    if(!isPathWithinRoot(root,candidate))throw new Error("Путь выходит за пределы проекта");
+    const stat=lstatSync(candidate);
+    if(stat.isSymbolicLink())throw new Error("Символические ссылки через мобильный файловый просмотр не открываются");
+    const actual=realpathSync.native(candidate);
+    if(!isPathWithinRoot(root,actual))throw new Error("Путь выходит за пределы проекта");
+    return actual;
+  }
+  private isHiddenMobileFile(name:string):boolean{
+    const lower=name.toLowerCase();
+    return new Set([".git","node_modules",".codex",".ssh",".history",".cache","dist","build","out","target",".venv","__pycache__"]).has(lower)||
+      /^\.env(?:\.|$)/i.test(name)||/^\.npmrc$/i.test(name)||/^(?:id_rsa|id_ed25519|credentials?)(?:\.|$)/i.test(name)||/\.(?:pem|key|p12|pfx)$/i.test(name);
+  }
+  private mobileFileList(sessionId:string,userId:number,rawPath:string){
+    const {root,name}=this.mobileRoot(sessionId,userId);
+    const directory=rawPath?this.mobilePath(root,rawPath):root;
+    if(!statSync(directory).isDirectory())throw new Error("Это не папка проекта");
+    const entries=readdirSync(directory,{withFileTypes:true}).flatMap(entry=>{
+      if(this.isHiddenMobileFile(entry.name))return [];
+      const absolute=resolve(directory,entry.name);
+      try{
+        const info=lstatSync(absolute);
+        if(info.isSymbolicLink()||(!info.isDirectory()&&!info.isFile()))return [];
+        return [{name:entry.name,kind:info.isDirectory()?"directory" as const:"file" as const,
+          size:info.isFile()?info.size:undefined,mtimeMs:info.mtimeMs}];
+      }catch{return [];}
+    }).sort((a,b)=>a.kind===b.kind?a.name.localeCompare(b.name):a.kind==="directory"?-1:1).slice(0,250);
+    return {project:name,path:rawPath.split(/[\\/]+/).filter(Boolean).join("/"),entries};
+  }
+  private mobileReadFile(sessionId:string,userId:number,rawPath:string){
+    const {root,name}=this.mobileRoot(sessionId,userId);
+    if(!rawPath||rawPath.split(/[\\/]+/).some(part=>this.isHiddenMobileFile(part)))throw new Error("Этот файл недоступен в мобильном просмотре");
+    const absolute=this.mobilePath(root,rawPath);
+    const stat=statSync(absolute);
+    if(!stat.isFile()||stat.size>512*1024)throw new Error("Открываются только текстовые файлы размером до 512 КБ");
+    const bytes=readFileSync(absolute);
+    if(bytes.includes(0))throw new Error("Бинарный файл нельзя открыть как текст");
+    let text:string;
+    try{text=new TextDecoder("utf-8",{fatal:true}).decode(bytes);}catch{throw new Error("Файл не является корректным UTF-8 текстом");}
+    return {project:name,path:relative(root,absolute).split(sep).join("/"),text,size:stat.size,
+      sha256:createHash("sha256").update(bytes).digest("hex")};
+  }
+  private gitRoot(projectRoot:string):string{
+    try{
+      const output=execFileSync("git",["--no-pager","-C",projectRoot,"-c","core.fsmonitor=false","rev-parse","--show-toplevel"],{
+        encoding:"utf8",timeout:5000,maxBuffer:64*1024,windowsHide:true,stdio:["ignore","pipe","ignore"],
+      }).trim();
+      if(!output)throw new Error("empty git root");
+      const root=realpathSync.native(output);
+      if(!isPathWithinRoot(projectRoot,root))throw new Error("Git root leaves the authorized project");
+      return root;
+    }catch(error){
+      if((error as NodeJS.ErrnoException).code==="ENOENT")throw new Error("Git не установлен или не найден");
+      if((error as Error).message==="Git root leaves the authorized project")throw error;
+      throw new Error("В доступной папке не найден Git-репозиторий");
+    }
+  }
+  private gitOutput(root:string,args:string[],maxBuffer=2*1024*1024):string{
+    try{
+      return execFileSync("git",["--no-pager","-C",root,"-c","core.fsmonitor=false",...args],{
+        encoding:"utf8",timeout:8000,maxBuffer,windowsHide:true,stdio:["ignore","pipe","ignore"],
+      });
+    }catch(error){
+      if((error as NodeJS.ErrnoException).code==="ENOBUFS")throw new Error("Вывод Git больше 2 МБ; сузьте изменения и повторите просмотр");
+      if((error as NodeJS.ErrnoException).code==="ENOENT")throw new Error("Git не установлен или не найден");
+      throw new Error("Не удалось прочитать состояние Git");
+    }
+  }
+  private mobileGitStatus(sessionId:string,userId:number){
+    const {root,name}=this.mobileRoot(sessionId,userId);
+    const gitRoot=this.gitRoot(root);
+    const lines=this.gitOutput(gitRoot,["status","--porcelain=v1","--branch","--untracked-files=normal"],512*1024).replace(/\r/g,"").split("\n").filter(Boolean);
+    const header=lines.shift()??"";
+    const branch=header.startsWith("## ")?header.slice(3).split("...")[0]?.split(" [")[0]?.slice(0,160)??"":"";
+    const changes=lines.slice(0,250).map((line)=>({
+      code:line.slice(0,2).trim()||"??",
+      path:line.slice(3).replace(/^"|"$/g,"").slice(0,1200),
+    }));
+    return {project:name,branch,clean:changes.length===0,changes,checkedAt:Date.now()};
+  }
+  private mobileGitDiff(sessionId:string,userId:number){
+    const {root,name}=this.mobileRoot(sessionId,userId);
+    const gitRoot=this.gitRoot(root);
+    const safeArgs=["diff","--no-ext-diff","--no-textconv","--no-color","--unified=3"];
+    const unstaged=this.gitOutput(gitRoot,safeArgs);
+    const staged=this.gitOutput(gitRoot,[...safeArgs,"--cached"]);
+    return {project:name,unstaged,staged,checkedAt:Date.now()};
+  }
   private async project(path:string,userId:number):Promise<{name:string;cwd:string}>{
     const {projects,threads}=await this.catalogue(userId);
     // Never trust arbitrary cwd from a web request. It must have been reported
@@ -266,17 +517,19 @@ export class MiniAppAgent {
         const id=argumentString(args,"sessionId",80);
         const t=await this.thread(id,chatId);
         const path=this.store.jsonlPath(id);
+        const includeTools=args.includeTools===true;
+        const cacheKey=id+":"+(includeTools?"tools":"chat");
         // Avoid re-reading multi-megabyte rollout logs every six seconds.
         // A manual refresh still checks the file's current size/mtime first.
         const stat=statSyncSafe(path);
-        const cached=this.historyCache.get(id);
+        const cached=this.historyCache.get(cacheKey);
         if(cached&&cached.size===stat.size&&cached.mtimeMs===stat.mtimeMs)return cached.result;
-        const key=id+":"+stat.size+":"+stat.mtimeMs;
+        const key=cacheKey+":"+stat.size+":"+stat.mtimeMs;
         const existing=this.historyInflight.get(key);
         if(existing)return existing;
         const pending=(async()=>{
-          const entries=(await readConversationHistoryAsync(path,40)).map(e=>({
-            role:e.role,text:e.text,timestamp:e.timestamp,
+          const entries=(await readConversationHistoryAsync(path,40,32*1024*1024,includeTools)).map(e=>({
+            role:e.role,text:e.text,timestamp:e.timestamp,tool:e.tool,
           }));
           const refs=t.cwd?await this.screenshots.scan(id,path,t.cwd):[];
           const result={entries,images:refs,project:t.cwd||""};
@@ -284,7 +537,7 @@ export class MiniAppAgent {
           // a stale transcript under a newer file revision.
           const after=statSyncSafe(path);
           if(after.size===stat.size&&after.mtimeMs===stat.mtimeMs){
-            this.historyCache.set(id,{...stat,result});
+            this.historyCache.set(cacheKey,{...stat,result});
             if(this.historyCache.size>30)this.historyCache.delete(this.historyCache.keys().next().value!);
           }
           return result;
@@ -414,9 +667,9 @@ export class MiniAppAgent {
   }
 }
 
-export function startMiniAppAgent(deps:AgentDeps):MiniAppAgent|undefined{
+export function startMiniAppAgent(deps:AgentDeps,shared?:MiniAppAgent):MiniAppAgent|undefined{
   const url=(process.env.TMA_GATEWAY_URL||"").trim(),secret=(process.env.TMA_AGENT_TOKEN||"").trim();
   if(!url&&!secret)return undefined;
   if(!url||!secret){log.warn("TMA disabled: specify both TMA_GATEWAY_URL and TMA_AGENT_TOKEN");return undefined;}
-  const agent=new MiniAppAgent(deps,url,secret);agent.start();return agent;
+  const agent=shared??new MiniAppAgent(deps,url,secret);agent.start();return agent;
 }

@@ -1,0 +1,136 @@
+import { useState } from "react";
+import type { KeyboardEvent } from "react";
+import { ImagePlus, LoaderCircle, Play, Send, Square, Trash2, Wrench } from "lucide-react";
+import "../../../../apps/mini-app/public/photo-input.js";
+import type { HistoryEntry, MobileActivity, MobileLiveEvent, MobileQueue, MobileSession } from "../types.js";
+import { imageUrl } from "../api.js";
+import { SafeMarkdown } from "../markdown.js";
+import { Badge, Button, Textarea } from "./ui/primitives.js";
+
+export interface PromptImage { name: string; mimeType: string; data: string; preview: string; }
+
+export function Conversation({
+  session, history, activity, events, queue, connected, connecting, loading, streamConnected,
+  error, includeTools, onToggleTools, onConnect, onCancel, onSend, onQueueRemove, onQueueResume, onQueueOpen,
+}: {
+  session?: MobileSession;
+  history: HistoryEntry[];
+  activity?: MobileActivity;
+  events: MobileLiveEvent[];
+  queue: MobileQueue;
+  connected: boolean;
+  connecting: boolean;
+  loading: boolean;
+  streamConnected: boolean;
+  error: string;
+  includeTools: boolean;
+  onToggleTools: () => void;
+  onConnect: () => void;
+  onCancel: () => void;
+  onSend: (text: string, images: PromptImage[]) => Promise<void>;
+  onQueueRemove: (itemId: string) => void;
+  onQueueResume: () => void;
+  onQueueOpen: () => void;
+}) {
+  const [text, setText] = useState("");
+  const [images, setImages] = useState<PromptImage[]>([]);
+  const [imageError, setImageError] = useState("");
+  const [preparing, setPreparing] = useState(false);
+  const [queueOpen, setQueueOpen] = useState(false);
+  const [openImage, setOpenImage] = useState<{ path: string; name: string }>();
+
+  async function attach(files: FileList | null) {
+    if (!files?.length) return;
+    setPreparing(true);
+    setImageError("");
+    try {
+      const room = Math.max(0, window.CodexPhotos.max - images.length);
+      if (files.length > room) throw new Error("Можно прикрепить не больше трёх изображений");
+      const prepared: PromptImage[] = [];
+      for (const file of Array.from(files)) prepared.push(await window.CodexPhotos.prepare(file));
+      setImages((current) => [...current, ...prepared]);
+    } catch (cause) { setImageError(cause instanceof Error ? cause.message : "Не удалось подготовить изображение"); }
+    finally { setPreparing(false); }
+  }
+
+  async function submit() {
+    if (!text.trim() && images.length === 0) return;
+    await onSend(text.trim(), images);
+    setText("");
+    setImages([]);
+  }
+
+  function submitOnEnter(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+      event.preventDefault();
+      void submit();
+    }
+  }
+
+  if (!session) return <main className="flex min-w-0 flex-1 items-center justify-center p-5"><div className="max-w-sm text-center"><div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-border bg-panel text-accent"><Wrench size={22} /></div><h2 className="mt-5 text-lg font-semibold">Выберите сеанс</h2><p className="mt-2 text-sm leading-6 text-muted">Можно сначала просмотреть историю. Подключение понадобится, чтобы отправить задачу или управлять очередью.</p></div></main>;
+
+  const status = activity?.liveLabel || session.liveLabel || "Статус неизвестен";
+  const toolEvents = events.filter((event) => event.kind === "tool" || event.kind === "status" || event.kind === "activity").slice(-5);
+
+  return <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-transparent">
+    <header className="sticky top-0 z-10 border-b border-border bg-[#111512]/95 px-4 py-3 backdrop-blur md:px-6">
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <div className="min-w-0"><h1 className="truncate text-base font-semibold">{session.title || "Новый сеанс"}</h1><p className="mt-1 truncate font-mono text-[10px] text-muted">{session.cwd}</p></div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Badge className={`${session.liveStatus === "working" ? "border-[#536441] text-[#d5f49c]" : session.liveStatus === "failed" ? "border-[#733b39] text-[#ffc3bd]" : ""}`}><span className={`mr-1.5 h-1.5 w-1.5 rounded-full ${session.busy ? "animate-pulse bg-accent" : "bg-[#748073]"}`} />{status}</Badge>
+          {!connected && <Button variant="outline" className="min-h-9 px-3 text-xs" onClick={onConnect} disabled={connecting}>{connecting ? <LoaderCircle size={14} className="animate-spin" /> : <Play size={14} />}Подключить</Button>}
+          {connected && session.busy && <Button variant="danger" className="min-h-9 px-3 text-xs" onClick={onCancel}><Square size={13} /> Остановить</Button>}
+        </div>
+      </div>
+      {toolEvents.length > 0 && <div className="mt-3 flex gap-2 overflow-x-auto pb-0.5" aria-label="Текущие события Codex">
+        {toolEvents.map((event) => <span key={`${event.id}-${event.kind}`} className="flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-panel px-2.5 py-1 text-[11px] text-muted">{event.kind === "tool" ? <Wrench size={12} className="text-accent" /> : null}{event.label || event.status || "Событие"}</span>)}
+      </div>}
+      <p className="sr-only" role="status">{streamConnected ? "Поток Codex подключён" : "Поток Codex переподключается"}</p>
+    </header>
+
+    <div className="min-h-0 flex-1 overflow-y-auto px-3 py-5 sm:px-5 md:px-8">
+      {loading && history.length === 0 && <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted"><LoaderCircle size={16} className="animate-spin" /> Загружаю историю…</div>}
+      {!loading && history.length === 0 && <div className="mx-auto mt-10 max-w-md rounded-2xl border border-dashed border-border bg-panel/60 p-6 text-center"><p className="font-medium">История пока пустая</p><p className="mt-2 text-sm text-muted">Подключите сеанс и отправьте задачу.</p></div>}
+      <div className="mx-auto flex max-w-4xl flex-col gap-4">
+        {history.map((entry, index) => entry.role === "tool" ? <details key={`${entry.timestamp ?? "t"}-${index}`} className="rounded-xl border border-border bg-[#151a16]">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-xs font-medium text-[#bac7b6]"><Wrench size={14} className="text-accent" />{entry.tool || "Инструмент"}<span className="ml-auto text-[#737f74]">Показать вывод</span></summary>
+          <pre className="max-h-80 overflow-auto border-t border-border p-3 font-mono text-xs leading-5 text-[#d3dbd1]">{entry.text}</pre>
+        </details> : <article key={`${entry.timestamp ?? "m"}-${index}`} className={`max-w-[94%] rounded-2xl border px-4 py-3 ${entry.role === "user" ? "ml-auto border-[#46533d] bg-[#20291b]" : "mr-auto border-border bg-panel"}`}>
+          <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-[#859084]">{entry.role === "user" ? "Вы" : entry.role === "system" ? "Система" : "Codex"}{entry.timestamp ? <time className="font-normal normal-case tracking-normal">{new Date(entry.timestamp).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" })}</time> : null}</div>
+          <SafeMarkdown text={entry.text} />
+        </article>)}
+      </div>
+
+      {(activity?.images.length ?? 0) > 0 && <section className="mx-auto mt-6 max-w-4xl"><h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted">Скриншоты сеанса</h2><div className="grid grid-cols-2 gap-3 sm:grid-cols-3">{activity!.images.map((image) => <button type="button" key={image.path} onClick={() => setOpenImage({ path: image.path, name: image.name })} aria-label={"Открыть скриншот " + image.name} className="overflow-hidden rounded-xl border border-border bg-panel text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"><img src={imageUrl(session.id, image.path)} alt={image.name} loading="lazy" className="aspect-video w-full object-cover" /><span className="block truncate px-2 py-1.5 text-xs text-muted">{image.name}</span></button>)}</div></section>}
+    </div>
+
+    {queueOpen && <section className="mx-3 mb-3 rounded-2xl border border-border bg-panel p-3 sm:mx-5 md:mx-8" aria-label="Очередь задач">
+      <div className="mb-2 flex items-center justify-between"><h2 className="text-sm font-semibold">Очередь · {queue.items.length}</h2><div className="flex gap-2"><Button variant="outline" className="min-h-9 px-2.5 text-xs" onClick={onQueueResume} disabled={!queue.paused}><Play size={13} /> Возобновить</Button><Button variant="ghost" className="min-h-9 px-2" aria-label="Скрыть очередь" onClick={() => setQueueOpen(false)}>×</Button></div></div>
+      <div className="max-h-40 space-y-2 overflow-y-auto">{queue.items.map((item) => <div key={item.id} className="flex items-center gap-2 rounded-xl bg-[#111613] px-3 py-2"><p className="min-w-0 flex-1 truncate text-xs text-muted">{item.text}</p><Button variant="ghost" className="min-h-8 px-2 text-[#c58980]" aria-label="Удалить из очереди" onClick={() => onQueueRemove(item.id)}><Trash2 size={14} /></Button></div>)}{queue.items.length === 0 && <p className="py-2 text-xs text-muted">В очереди нет задач.</p>}</div>
+    </section>}
+
+    {error && <p className="mx-3 mb-2 rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd] sm:mx-5 md:mx-8" role="alert">{error}</p>}
+    {imageError && <p className="mx-3 mb-2 rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd] sm:mx-5 md:mx-8" role="alert">{imageError}</p>}
+
+    <form className="safe-area-bottom border-t border-border bg-[#141815] px-3 py-3 sm:px-5 md:px-8" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+      {images.length > 0 && <div className="mx-auto mb-2 flex max-w-4xl gap-2 overflow-x-auto">{images.map((image, index) => <div key={`${image.name}-${index}`} className="relative h-16 w-20 shrink-0 overflow-hidden rounded-lg border border-border"><img src={image.preview} alt={image.name} className="h-full w-full object-cover" /><button type="button" aria-label={`Убрать ${image.name}`} className="absolute right-1 top-1 rounded-full bg-black/75 px-1.5 text-xs" onClick={() => setImages((current) => current.filter((_, i) => i !== index))}>×</button></div>)}</div>}
+      <div className="mx-auto flex max-w-4xl items-end gap-2">
+        <label className="flex min-h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-xl border border-border bg-[#1b211c] text-muted hover:text-accent" aria-label="Прикрепить фото">
+          <ImagePlus size={19} />
+          <input type="file" className="sr-only" accept="image/jpeg,image/png,image/webp" multiple disabled={preparing || images.length >= 3} onChange={(event) => { void attach(event.target.files); event.target.value = ""; }} />
+        </label>
+        <div className="min-w-0 flex-1"><Textarea value={text} onChange={(event) => setText(event.target.value)} onKeyDown={submitOnEnter} placeholder={connected ? "Задача для Codex…" : "Подключите сеанс, чтобы отправить задачу"} disabled={!connected} rows={2} className="min-h-[48px] max-h-40 resize-none py-3" aria-label="Сообщение Codex" /></div>
+        <Button type="submit" className="min-h-12 w-12 shrink-0 px-0" disabled={!connected || (!text.trim() && images.length === 0) || preparing} aria-label="Отправить задачу">{preparing ? <LoaderCircle className="animate-spin" size={18} /> : <Send size={18} />}</Button>
+      </div>
+      <div className="mx-auto mt-2 flex max-w-4xl items-center justify-between text-[10px] text-[#758077]">
+        <span>{connected ? "Enter отправляет · Shift+Enter переносит строку" : "История доступна без подключения"}</span>
+        <div className="flex items-center gap-2"><button type="button" className="min-h-8 rounded-lg px-2 text-xs text-muted hover:bg-elevated" onClick={() => { setQueueOpen((value) => !value); onQueueOpen(); }}>Очередь {queue.items.length}</button><button type="button" className="min-h-8 rounded-lg px-2 text-xs text-muted hover:bg-elevated" aria-pressed={includeTools} onClick={onToggleTools}>{includeTools ? "Скрыть инструменты" : "Показать инструменты"}</button>{queue.busy && <span className="flex items-center gap-1"><LoaderCircle size={11} className="animate-spin" />Работает</span>}</div>
+      </div>
+    </form>
+    {openImage && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90 p-3 sm:p-8" role="dialog" aria-modal="true" aria-label={openImage.name} onMouseDown={(event) => { if (event.target === event.currentTarget) setOpenImage(undefined); }}>
+      <Button variant="outline" className="absolute right-4 top-4 z-10 min-h-11 px-4" aria-label="Закрыть скриншот" onClick={() => setOpenImage(undefined)}>Закрыть</Button>
+      <img src={imageUrl(session.id, openImage.path)} alt={openImage.name} className="max-h-[88svh] max-w-full rounded-xl object-contain" />
+      <span className="sr-only">{openImage.name}</span>
+    </div>}
+  </main>;
+}

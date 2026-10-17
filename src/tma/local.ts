@@ -34,6 +34,9 @@ export function autoTailscaleFunnel(env: NodeJS.ProcessEnv = process.env): boole
 export interface LocalTmaService {
   stop(): Promise<void>;
   origin: string;
+  /** Shared adapters let other local clients use the same owner checks/feed. */
+  agent: MiniAppAgent;
+  feed: TmaLiveFeed;
   /** Initial non-blocking Funnel setup result, for diagnostics and tests. */
   tunnelReady: Promise<string | undefined>;
 }
@@ -42,7 +45,7 @@ export async function startLocalTma(
   cfg: AppConfig,
   acp: AcpClient,
   registry: RuntimeRegistry,
-  options: { port?: number; startFunnel?: boolean; tailscaleCommand?: TailscaleCommand; retryDelayMs?: number } = {},
+  options: { port?: number; startFunnel?: boolean; tailscaleCommand?: TailscaleCommand; retryDelayMs?: number; agent?: MiniAppAgent; feed?: TmaLiveFeed } = {},
 ): Promise<LocalTmaService> {
   const port = options.port ?? Number(process.env.TMA_PORT || "3301");
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) {
@@ -54,8 +57,8 @@ export async function startLocalTma(
   // The Mini App and Codex live on the same Windows machine. Serve validated
   // requests directly; do not route them through a second HTTP long-poll,
   // which serialized history/screenshots and caused 28-second timeouts.
-  const agent = new MiniAppAgent({ cfg, acp, registry }, "http://127.0.0.1:3301", secret);
-  const live = new TmaLiveFeed(acp);
+  const agent = options.agent ?? new MiniAppAgent({ cfg, acp, registry }, "http://127.0.0.1:3301", secret);
+  const live = options.feed ?? new TmaLiveFeed(acp);
   // Permission prompts still use the Telegram bot's secure approval UI.
   // The Mini App reflects their pending state without granting permissions.
   const oldApproval=acp.permissionHandler;
@@ -137,6 +140,8 @@ export async function startLocalTma(
   if (!shouldPublish) log.info("TMA_TAILSCALE_AUTO is disabled; no public Funnel was changed.");
   return {
     origin,
+    agent,
+    feed:live,
     tunnelReady,
     async stop() {
       if (closed) return;

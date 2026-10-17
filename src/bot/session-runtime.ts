@@ -408,16 +408,19 @@ export class SessionRuntime {
     return { ok: true };
   }
 
-  async setAgentPref(agent: string): Promise<void> {
+  async setAgentPref(agent: string): Promise<{ ok: boolean; error?: string }> {
     this.settings.update(this.chatId, { agent });
     if (agent && this.sessionLive && this.sessionId && this.acp.hasMode(agent)) {
       try {
         await this.acp.setMode(this.sessionId, agent);
       } catch (e) {
         log.warn(`set_mode(${agent}) failed: ${(e as Error).message}`);
+        this.changed();
+        return { ok: false, error: (e as Error).message };
       }
     }
     this.changed();
+    return { ok: true };
   }
 
   setReasoningPref(effort: ReasoningEffort): void {

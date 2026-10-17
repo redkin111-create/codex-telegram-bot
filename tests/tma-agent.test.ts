@@ -1,13 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { EventEmitter } from "node:events";
-import { mkdtempSync,rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ReasoningEffort } from "../src/app/types.js";
 import { MiniAppAgent } from "../src/tma/agent.js";
 import type { AppConfig } from "../src/config.js";
 import type { AcpClient } from "../src/acp/client.js";
 import type { RuntimeRegistry } from "../src/bot/registry.js";
+
+test("mobile-only agent can use existing runtime logic without an outbound TMA transport",()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-agent-"));
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp:new EventEmitter() as AcpClient,registry:{} as RuntimeRegistry});
+  try{assert.throws(()=>agent.start(),/gateway/i);}
+  finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
 
 test("Windows Mini App agent lists existing Codex projects and sessions",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-tma-agent-"));
@@ -38,6 +49,147 @@ test("Windows Mini App agent lists existing Codex projects and sessions",async()
     assert.equal(result.sessions[0]?.id,"session-a");
     assert.equal(result.selected,"session-a");
     assert.equal(result.online,true);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("mobile capability inventory is redacted and settings reuse the owner's existing session runtime",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-capabilities-"));
+  const sessionId="10101010-1010-4010-8010-101010101010";
+  let inventoryRefreshes=0;
+  const runtime={
+    sessionId,model:"fixture-model",agent:"code",reasoning:"medium" as ReasoningEffort,
+    async setModelPref(value:string){this.model=value;return {ok:true};},
+    async setAgentPref(value:string){this.agent=value;return {ok:true};},
+    setReasoningPref(value:ReasoningEffort){this.reasoning=value;},
+  };
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"toy",roots:[dir]}],
+    listThreads:async()=>[{id:sessionId,name:"Mobile settings",cwd:dir,source:"cli",recencyAt:2}],
+    refreshInventories:async()=>{inventoryRefreshes++;},
+    accountState:async()=>({account:{type:"chatgpt",email:"owner@example.invalid",planType:"Plus"},
+      rateLimits:{primary:{usedPercent:12,windowDurationMins:300,resetsAt:123}}}),
+    availableModels:[{modelId:"fixture-model",name:"Fixture model",description:"Model description"}],
+    availableModes:[{id:"code",name:"Code",description:"Code mode"}],
+    currentModelId:"fixture-model",currentModeId:"code",
+    availableSkills:[{name:"fixture-skill",description:"Safe text",path:"C:\\private\\skill\\SKILL.md",enabled:true}],
+    availableMcpServers:[{name:"fixture-mcp",tools:{run:{token:"must not escape"}}}],
+    currentSubagents:()=>[
+      {sessionId:"own-agent",agentName:"Own agent",status:{type:"running"}},
+      {sessionId:"other-agent",agentName:"Other agent",status:{type:"running"}},
+    ],
+    hasModel:(id:string)=>id==="fixture-model",
+    hasMode:(id:string)=>id==="code",
+  }) as unknown as AcpClient;
+  Object.defineProperty(acp,"isConnected",{value:true});
+  const registry={
+    controller:()=>({list:()=>[]}),
+    get:()=>runtime,
+    runtimeForSession:()=>runtime,
+    ownerChatForSession:(id:string)=>id==="own-agent"?101:202,
+  } as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
+    const capabilities=await agent.executeMobile({op:"capabilities",userId:101,args:{sessionId}}) as {
+      skills:Array<{name:string}>;mcpServers:Array<{toolCount:number}>;subagents:Array<{id:string}>;limits:Array<{primary?:{usedPercent:number}}>;
+    };
+    assert.equal(inventoryRefreshes,1);
+    assert.equal(capabilities.skills[0]?.name,"fixture-skill");
+    assert.equal(capabilities.mcpServers[0]?.toolCount,1);
+    assert.deepEqual(capabilities.subagents.map((entry)=>entry.id),["own-agent"]);
+    assert.equal(capabilities.limits[0]?.primary?.usedPercent,12);
+    assert.doesNotMatch(JSON.stringify(capabilities),/C:\\\\private|must not escape/);
+    await agent.executeMobile({op:"setModel",userId:101,args:{sessionId,modelId:"fixture-model"}});
+    await agent.executeMobile({op:"setMode",userId:101,args:{sessionId,modeId:"code"}});
+    await agent.executeMobile({op:"setReasoning",userId:101,args:{sessionId,effort:"high"}});
+    assert.equal(runtime.model,"fixture-model");
+    assert.equal(runtime.agent,"code");
+    assert.equal(runtime.reasoning,"high");
+    await assert.rejects(agent.executeMobile({op:"setReasoning",userId:101,args:{sessionId,effort:"unsafe"}}),/Недопустимый уровень/);
+    await assert.rejects(agent.executeMobile({op:"capabilities",userId:202,args:{}}),/Пользователь не разрешён/);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("mobile project files stay inside the authorized session, hide secrets and save with a stale-file check",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-files-"));
+  const project=join(dir,"project");
+  mkdirSync(join(project,"src"),{recursive:true});
+  writeFileSync(join(project,"src","main.ts"),"export const answer = 42;\n");
+  writeFileSync(join(project,".env"),"API_KEY=do-not-expose\n");
+  const sessionId="20202020-2020-4020-8020-202020202020";
+  const runtime={sessionId,isBusy:false};
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"project",roots:[project]}],
+    listThreads:async()=>[{id:sessionId,name:"Mobile file edit",cwd:project,source:"cli",recencyAt:2}],
+    availableModels:[],
+  }) as unknown as AcpClient;
+  const registry={controller:()=>({list:()=>[]}),get:()=>runtime,runtimeForSession:()=>runtime} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
+    const root=await agent.executeMobile({op:"files",userId:101,args:{sessionId}}) as {entries:Array<{name:string}>};
+    assert.deepEqual(root.entries.map((entry)=>entry.name),["src"]);
+    const listing=await agent.executeMobile({op:"files",userId:101,args:{sessionId,path:"src"}}) as {entries:Array<{name:string;kind:string}>};
+    assert.deepEqual(listing.entries.map((entry)=>entry.name),["main.ts"]);
+    const file=await agent.executeMobile({op:"readFile",userId:101,args:{sessionId,path:"src/main.ts"}}) as {text:string;sha256:string};
+    assert.equal(file.text,"export const answer = 42;\n");
+    const created=await agent.executeMobile({op:"createFile",userId:101,args:{sessionId,path:"src/new.ts",content:""}}) as {sha256:string};
+    assert.equal(created.sha256,createHash("sha256").update("").digest("hex"));
+    assert.equal((await agent.executeMobile({op:"readFile",userId:101,args:{sessionId,path:"src/new.ts"}}) as {text:string}).text,"");
+    await assert.rejects(agent.executeMobile({op:"createFile",userId:101,args:{sessionId,path:"src/main.ts",content:"overwrite"}}),/already exists|существует/i);
+    await assert.rejects(agent.executeMobile({op:"createFile",userId:101,args:{sessionId,path:"src/.env",content:"secret"}}),/недоступен|Недопустимый/);
+    await assert.rejects(agent.executeMobile({op:"readFile",userId:101,args:{sessionId,path:"../.env"}}),/относительный|Недопустимый путь|недоступен/);
+    await assert.rejects(agent.executeMobile({op:"readFile",userId:101,args:{sessionId,path:".env"}}),/недоступен/);
+    const result=await agent.executeMobile({op:"writeFile",userId:101,args:{sessionId,path:"src/main.ts",content:"export const answer = 43;\n",expectedHash:file.sha256}}) as {sha256:string};
+    assert.notEqual(result.sha256,file.sha256);
+    await assert.rejects(agent.executeMobile({op:"writeFile",userId:101,args:{sessionId,path:"src/main.ts",content:"stale",expectedHash:file.sha256}}),/изменился/);
+    runtime.isBusy=true;
+    const updated=await agent.executeMobile({op:"readFile",userId:101,args:{sessionId,path:"src/main.ts"}}) as {sha256:string};
+    await assert.rejects(agent.executeMobile({op:"writeFile",userId:101,args:{sessionId,path:"src/main.ts",content:"during turn",expectedHash:updated.sha256}}),/текущей задачи/);
+    await assert.rejects(agent.executeMobile({op:"createFile",userId:101,args:{sessionId,path:"src/busy.ts",content:"x"}}),/текущей задачи/);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("mobile Git view reads bounded branch status and safe staged and unstaged diffs",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-git-"));
+  const project=join(dir,"repo");
+  mkdirSync(project,{recursive:true});
+  const run=(...args:string[])=>execFileSync("git",["-C",project,...args],{stdio:"ignore",windowsHide:true});
+  run("init","-q");
+  run("config","user.name","Codex Mobile Test");
+  run("config","user.email","codex-mobile-test@example.invalid");
+  writeFileSync(join(project,"main.ts"),"export const answer = 1;\n");
+  run("add","main.ts");
+  run("commit","-m","fixture base");
+  writeFileSync(join(project,"main.ts"),"export const answer = 2;\n");
+  run("add","main.ts");
+  writeFileSync(join(project,"main.ts"),"export const answer = 3;\n");
+  writeFileSync(join(project,"notes.txt"),"untracked note\n");
+  const sessionId="30303030-3030-4030-8030-303030303030";
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"repo",roots:[project]}],
+    listThreads:async()=>[{id:sessionId,name:"Git fixture",cwd:project,source:"cli",recencyAt:2}],
+    availableModels:[],
+  }) as unknown as AcpClient;
+  const runtime={sessionId,isBusy:false};
+  const registry={controller:()=>({list:()=>[]}),get:()=>runtime,runtimeForSession:()=>runtime} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
+    const status=await agent.executeMobile({op:"gitStatus",userId:101,args:{sessionId}}) as {
+      branch:string;clean:boolean;changes:Array<{code:string;path:string}>;
+    };
+    assert.ok(status.branch);
+    assert.equal(status.clean,false);
+    assert.ok(status.changes.some((entry)=>entry.code==="MM"&&entry.path.includes("main.ts")));
+    assert.ok(status.changes.some((entry)=>entry.code==="??"&&entry.path.includes("notes.txt")));
+    const diff=await agent.executeMobile({op:"gitDiff",userId:101,args:{sessionId}}) as {staged:string;unstaged:string};
+    assert.match(diff.staged,/answer = 2/);
+    assert.match(diff.unstaged,/answer = 3/);
+    assert.doesNotMatch(diff.unstaged,/--color/);
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 

@@ -1,0 +1,166 @@
+import type {
+  MobileActivity, MobileApproval, MobileCapabilities, MobileDevice, MobileFile, MobileFileListing, MobileGitDiff, MobileGitStatus, MobileHistory, MobileLiveEvent, MobileOperation, MobileSnapshot,
+} from "./types.js";
+
+export class MobileApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "MobileApiError";
+  }
+}
+
+async function jsonRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  headers.set("Accept", "application/json");
+  if (init.body !== undefined) headers.set("Content-Type", "application/json");
+  const response = await fetch(path, { ...init, headers, credentials: "same-origin", cache: "no-store" });
+  const payload = await response.json().catch(() => ({})) as { error?: unknown } & T;
+  if (!response.ok) {
+    throw new MobileApiError(typeof payload.error === "string" ? payload.error : `Ошибка сервера (${response.status})`, response.status);
+  }
+  return payload;
+}
+
+export function readSession() {
+  return jsonRequest<{ device: MobileDevice; csrfToken: string }>("/api/session");
+}
+
+export function beginPairing(deviceName: string) {
+  return jsonRequest<{ pairingId: string; code: string; expiresAt: number }>("/api/pairing/start", {
+    method: "POST", body: JSON.stringify({ deviceName }),
+  });
+}
+
+export function pairingStatus() {
+  return jsonRequest<{ status: "pending" | "approved"; csrfToken?: string; device?: MobileDevice }>("/api/pairing/status");
+}
+
+export function readSnapshot() {
+  return jsonRequest<MobileSnapshot>("/api/snapshot");
+}
+
+export function readCapabilities(sessionId: string) {
+  const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
+  return jsonRequest<MobileCapabilities>(`/api/capabilities${query}`);
+}
+
+export function readApprovals(sessionId: string) {
+  return jsonRequest<{ approvals: MobileApproval[] }>(`/api/approvals?sessionId=${encodeURIComponent(sessionId)}`);
+}
+
+export function readFileListing(sessionId: string, path: string) {
+  const query = new URLSearchParams({ sessionId, path });
+  return jsonRequest<MobileFileListing>(`/api/files?${query}`);
+}
+
+export function readProjectFile(sessionId: string, path: string) {
+  const query = new URLSearchParams({ sessionId, path });
+  return jsonRequest<MobileFile>(`/api/file?${query}`);
+}
+
+export function readGitStatus(sessionId: string) {
+  return jsonRequest<MobileGitStatus>(`/api/git/status?sessionId=${encodeURIComponent(sessionId)}`);
+}
+
+export function readGitDiff(sessionId: string) {
+  return jsonRequest<MobileGitDiff>(`/api/git/diff?sessionId=${encodeURIComponent(sessionId)}`);
+}
+
+export function resolveApproval(id: string, sessionId: string, optionId: string, csrfToken: string) {
+  return jsonRequest<{ resolved: boolean }>(`/api/approvals/${encodeURIComponent(id)}`, {
+    method: "POST", headers: { "X-CSRF-Token": csrfToken },
+    body: JSON.stringify({ sessionId, optionId }),
+  });
+}
+
+export function readHistory(sessionId: string, includeTools: boolean) {
+  const query = includeTools ? "?tools=true" : "";
+  return jsonRequest<MobileHistory>(`/api/history/${encodeURIComponent(sessionId)}${query}`);
+}
+
+export function readActivity(sessionId: string) {
+  return jsonRequest<MobileActivity>(`/api/activity/${encodeURIComponent(sessionId)}`);
+}
+
+export function imageUrl(sessionId: string, path: string): string {
+  const url = new URL("/api/image", window.location.origin);
+  url.searchParams.set("sessionId", sessionId);
+  url.searchParams.set("path", path);
+  return url.toString();
+}
+
+export function runOperation<T = unknown>(op: MobileOperation, args: Record<string, unknown>, csrfToken: string) {
+  return jsonRequest<T>("/api/operations", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrfToken },
+    body: JSON.stringify({ op, args }),
+  });
+}
+
+export function readDevices() {
+  return jsonRequest<{ devices: MobileDevice[] }>("/api/devices");
+}
+
+export function revokeDevice(deviceId: string, csrfToken: string) {
+  return jsonRequest<{ revoked: boolean }>(`/api/devices/${encodeURIComponent(deviceId)}`, {
+    method: "DELETE", headers: { "X-CSRF-Token": csrfToken },
+  });
+}
+
+export function logout(csrfToken: string) {
+  return jsonRequest<{ loggedOut: boolean }>("/api/logout", {
+    method: "POST", headers: { "X-CSRF-Token": csrfToken },
+  });
+}
+
+export async function openEventStream(
+  sessionId: string, after: number, epoch: string, csrfToken: string, signal: AbortSignal,
+): Promise<ReadableStreamDefaultReader<Uint8Array>> {
+  const response = await fetch("/api/events", {
+    method: "POST",
+    credentials: "same-origin",
+    cache: "no-store",
+    signal,
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream", "X-CSRF-Token": csrfToken },
+    body: JSON.stringify({ sessionId, after, epoch }),
+  });
+  if (!response.ok || !response.body) {
+    const payload = await response.json().catch(() => ({})) as { error?: unknown };
+    throw new MobileApiError(typeof payload.error === "string" ? payload.error : `Поток событий недоступен (${response.status})`, response.status);
+  }
+  return response.body.getReader();
+}
+
+export interface ParsedSseMessage { id?: number; event: string; data: string; }
+
+export function parseSseBlock(block: string): ParsedSseMessage | undefined {
+  let id: number | undefined;
+  let event = "message";
+  const data: string[] = [];
+  for (const line of block.split(/\r?\n/)) {
+    if (line.startsWith("id:")) {
+      const value = Number(line.slice(3).trim());
+      if (Number.isSafeInteger(value) && value >= 0) id = value;
+    } else if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+  }
+  if (!data.length && event === "message") return undefined;
+  return { id, event, data: data.join("\n") };
+}
+
+export function asLiveEvent(message: ParsedSseMessage): MobileLiveEvent | undefined {
+  if (message.event !== "message") return undefined;
+  try {
+    const value = JSON.parse(message.data) as Partial<MobileLiveEvent>;
+    if (!Number.isSafeInteger(value.id) || typeof value.sessionId !== "string" ||
+        !["text", "tool", "status", "activity", "approval"].includes(String(value.kind))) return undefined;
+    if (value.kind === "approval") {
+      const approval = value.approval as Partial<MobileApproval> | undefined;
+      if (!approval || typeof approval.id !== "string" || !/^[a-f0-9-]{36}$/.test(approval.id) ||
+          typeof approval.title !== "string" || typeof approval.kind !== "string" || !Array.isArray(approval.options) ||
+          approval.options.length === 0 || approval.options.length > 8 ||
+          approval.options.some((option) => !option || typeof option.id !== "string" || typeof option.label !== "string")) return undefined;
+    }
+    return value as MobileLiveEvent;
+  } catch { return undefined; }
+}

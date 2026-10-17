@@ -9,13 +9,21 @@ import type { AcpClient } from "../acp/client.js";
 import type { SessionUpdate } from "../acp/types.js";
 
 export type LiveStatus="working"|"approval"|"completed"|"failed"|"cancelled"|"observing";
+export interface LiveApproval {
+  id:string;
+  title:string;
+  kind:string;
+  summary?:string;
+  options:Array<{id:string;label:string}>;
+}
 export interface LiveEvent {
   id:number;
   sessionId:string;
-  kind:"text"|"tool"|"status"|"activity";
+  kind:"text"|"tool"|"status"|"activity"|"approval";
   text?:string;
   label?:string;
   status?:LiveStatus;
+  approval?:LiveApproval;
   at:number;
 }
 const LIMIT=160;
@@ -41,6 +49,7 @@ export class TmaLiveFeed {
     this.subscribers.clear();this.recent.clear();this.states.clear();
   }
   latestId(){return this.next;}
+  hasSubscribers(sessionId:string):boolean{return (this.subscribers.get(sessionId)?.size??0)>0;}
   getStatus(id:string):{status:LiveStatus;at:number;label?:string}|undefined{return this.states.get(id);}
   publish(sessionId:string,event:Omit<LiveEvent,"id"|"sessionId"|"at">){
     if(!sessionId||sessionId.length>128)return;

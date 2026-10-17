@@ -9,6 +9,8 @@ import { extractProgress } from "../render/progress.js";
 import type { HistoryEntry, HistoryRole } from "./types.js";
 
 const TAIL_WINDOWS = [256 * 1024, 1024 * 1024, 4 * 1024 * 1024]; // grow until entries found
+const MAX_TOOL_OUTPUT_CHARS = 12_000;
+const TOOL_OUTPUT_SUFFIX = "\n[вывод сокращён]";
 
 /**
  * One line of a Codex rollout `.jsonl`: `{ timestamp, type, payload }`.
@@ -143,6 +145,7 @@ export async function readConversationHistoryAsync(
   jsonlPath: string,
   maxEntries = 40,
   maxBytes = 32 * 1024 * 1024,
+  includeToolOutputs = false,
 ): Promise<HistoryEntry[]> {
   if (maxEntries <= 0 || maxBytes <= 0) return [];
   const size = jsonlSize(jsonlPath);
@@ -151,6 +154,7 @@ export async function readConversationHistoryAsync(
   const input = createReadStream(jsonlPath, { start, end: size - 1, highWaterMark: 64 * 1024 });
   const lines = createInterface({ input, crlfDelay: Infinity });
   const entries: HistoryEntry[] = [];
+  const toolNames = new Map<string, string>();
   let first = true;
   try {
     for await (const line of lines) {
@@ -161,9 +165,12 @@ export async function readConversationHistoryAsync(
       // The majority of a Codex rollout is tooling/reasoning; do not parse
       // giant outputs only to discard them. Retain the exact existing parser
       // for response_item records.
-      if (!/"type"\s*:\s*"response_item"/.test(line) || !/"role"\s*:/.test(line)) continue;
-      const entry = parseEventLine(line);
-      if (!entry || (entry.role !== "assistant" && entry.role !== "user")) continue;
+      if (!/"type"\s*:\s*"response_item"/.test(line)) continue;
+      const toolOutput = includeToolOutputs ? parseToolOutputLine(line, toolNames) : undefined;
+      if (!includeToolOutputs && !/"role"\s*:/.test(line)) continue;
+      if (includeToolOutputs && !toolOutput && !/"role"\s*:/.test(line)) continue;
+      const entry = toolOutput ?? parseEventLine(line);
+      if (!entry || (entry.role !== "assistant" && entry.role !== "user" && !(includeToolOutputs && entry.role === "tool"))) continue;
       entries.push(entry);
       if (entries.length > maxEntries) entries.shift();
     }
@@ -172,6 +179,49 @@ export async function readConversationHistoryAsync(
     lines.close();
     input.destroy();
   }
+}
+
+function parseToolOutputLine(line: string, toolNames: Map<string, string>): HistoryEntry | undefined {
+  let event: RolloutLine;
+  try { event = JSON.parse(line) as RolloutLine; } catch { return undefined; }
+  if (event.type !== "response_item" || !event.payload || typeof event.payload !== "object") return undefined;
+  const payload = event.payload as RolloutPayload & { call_id?: unknown; output?: unknown; stdout?: unknown; stderr?: unknown };
+  const type = String(payload.type ?? "");
+  const callId = typeof payload.call_id === "string" ? payload.call_id : "";
+  if (type === "function_call" || type === "local_shell_call" || type === "custom_tool_call") {
+    if (callId) toolNames.set(callId, str(payload.name) || str(payload.tool_name) || "Инструмент");
+    return undefined;
+  }
+  if (type !== "function_call_output") return undefined;
+  const tool = (callId && toolNames.get(callId)) || str(payload.name) || str(payload.tool_name) || "Результат инструмента";
+  const output = payload.output ?? (typeof payload.stdout === "string" || typeof payload.stderr === "string"
+    ? [payload.stdout, payload.stderr].filter((value) => typeof value === "string" && value.length > 0).join("\n")
+    : undefined);
+  let text = toolOutputText(output);
+  if (!text.trim()) return undefined;
+  if (text.length > MAX_TOOL_OUTPUT_CHARS) {
+    text = text.slice(0, MAX_TOOL_OUTPUT_CHARS - TOOL_OUTPUT_SUFFIX.length) + TOOL_OUTPUT_SUFFIX;
+  }
+  return { role: "tool", tool, text, timestamp: parseTs(event.timestamp) };
+}
+
+function toolOutputText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value.map((part) => {
+      if (typeof part === "string") return part;
+      if (!part || typeof part !== "object") return "";
+      const item = part as { text?: unknown; output_text?: unknown; type?: unknown };
+      return typeof item.text === "string" ? item.text : typeof item.output_text === "string" ? item.output_text : "";
+    }).filter(Boolean).join("\n");
+  }
+  if (value && typeof value === "object") {
+    const item = value as { text?: unknown; stdout?: unknown; stderr?: unknown; output?: unknown };
+    if (typeof item.text === "string") return item.text;
+    if (typeof item.output === "string") return item.output;
+    return [item.stdout, item.stderr].filter((part): part is string => typeof part === "string" && part.length > 0).join("\n");
+  }
+  return "";
 }
 
 function parseTail(jsonlPath: string, window: number, maxEntries: number): HistoryEntry[] {
