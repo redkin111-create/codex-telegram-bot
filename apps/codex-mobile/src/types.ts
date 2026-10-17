@@ -22,11 +22,14 @@ export interface MobileSession {
   progress?: number;
   liveStatus: LiveStatus;
   liveLabel: string;
+  archived?: boolean;
 }
 
 export interface MobileSnapshot {
   projects: MobileProject[];
   sessions: MobileSession[];
+  archivedSessions?: MobileSession[];
+  archiveAvailable?: boolean;
   selected: string | null;
   controlled: Array<{ id: string; busy: boolean; queue: number; paused: boolean }>;
   models: Array<{ id: string; name: string }>;
@@ -100,7 +103,20 @@ export interface MobileCapabilities {
   account?: { type: string; email?: string; plan?: string };
   limits: Array<{ id: string; name: string; primary?: { usedPercent: number; windowDurationMins?: number; resetsAt?: number }; secondary?: { usedPercent: number; windowDurationMins?: number; resetsAt?: number } }>;
   subagents: Array<{ id: string; name: string; status: string }>;
+  goal?: MobileThreadGoal;
+  goalAvailable?: boolean;
   checkedAt: number;
+}
+
+export interface MobileThreadGoal {
+  threadId: string;
+  objective: string;
+  status: "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete";
+  tokenBudget: number | null;
+  tokensUsed: number;
+  timeUsedSeconds: number;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface MobileFileEntry {
@@ -140,4 +156,4 @@ export interface MobileGitDiff {
   checkedAt: number;
 }
 
-export type MobileOperation = "create" | "select" | "send" | "cancel" | "queue" | "queueRemove" | "queueResume" | "setModel" | "setMode" | "setReasoning" | "writeFile" | "createFile" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch";
+export type MobileOperation = "create" | "select" | "send" | "cancel" | "queue" | "queueRemove" | "queueResume" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "writeFile" | "createFile" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch";

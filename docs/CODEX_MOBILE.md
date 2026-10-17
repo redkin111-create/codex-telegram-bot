@@ -11,9 +11,10 @@ must not start a second `codex app-server` process.
 - The HTTP service binds only to `127.0.0.1` on a port separate from the
   Telegram Mini App's 3301. It has no public listener and does not configure
   Tailscale. A future private Serve setup must be reviewed separately.
-- A phone is paired by a one-time code which must be approved from a local
-  Windows CLI/control channel. A reverse proxy's loopback `remoteAddress` is
-  never treated as proof that a request came from the laptop.
+- A phone is paired by a one-time code which the laptop's Windows CLI approves
+  over a separate local IPC channel (Windows named pipe or Unix socket). The
+  mobile HTTP server has no approval route. A reverse proxy's loopback
+  `remoteAddress` is never treated as proof that a request came from the laptop.
 - Device sessions use opaque HttpOnly, Secure, SameSite cookies. API and SSE
   requests re-check the device, owner, project and session. Mutations require
   an allowed Origin and CSRF token. Devices can be listed and revoked.
@@ -29,20 +30,22 @@ must not start a second `codex app-server` process.
 ## Desktop capability map
 
 Desktop parity is the goal; this branch is still a partial implementation.
-The work completed so far is the secure connection and the first conversation
-controls. Do not describe the current app as a full Desktop replacement.
+The user expanded the initial read-only scope to full phone control, so the
+mobile app now includes guarded write actions as well. Do not describe it as a
+full Desktop replacement while any row below has open work.
 
 | Desktop area | Current mobile coverage | Remaining for parity |
 | --- | --- | --- |
-| Projects, sessions, history, live status and screenshots | Browse projects and sessions, read history, tool output and authorized screenshots; reconnect the event stream | Search/paging parity, richer live task details and all Desktop session actions |
-| Prompting and queue | Send text/images, stop, queue, resume and remove queued prompts | Desktop-equivalent attachment types, edit/retry behavior and turn controls |
+| Projects, sessions, history, live status and screenshots | Browse projects and sessions, read history, tool output and authorized screenshots; reconnect the event stream; rename, archive, restore and fork sessions | Search/paging parity, richer live task details, pinning, side-chat and remaining Desktop session actions |
+| Prompting and queue | Send text/images, stop, queue, resume and remove queued prompts; steer a confirmed active turn | Desktop-equivalent attachment types, edit/retry behavior and remaining turn controls |
 | Approvals | Owner-scoped phone cards for the active session; allow/deny choices are checked server-side; no phone response falls back to Telegram after 45 seconds | More approval cases and parity checks for supported Codex builds |
 | Files and edits | Browse the authorized session folder, create text files in existing folders, read UTF-8 text, edit/save up to 512 KB with stale-file detection; hides common secret folders/files, skips symlinks and blocks writes while the connected Codex session is busy | Image/binary preview, full diff/review UI and Desktop-equivalent file-change navigation |
-| Terminal and Git | Git branch/status, staged/unstaged diff and per-file diff review (including renames); stage/unstage one reported project path, commit staged changes, list local branches, create a branch and switch to an existing local branch while the Codex session is idle | Terminal/process controls, remote branches, conflict resolution and richer Desktop-equivalent review actions |
-| Models and modes | Choose a model, collaboration mode and reasoning level for a connected session | Verify error/rollback behavior across supported Codex versions |
-| Skills, MCP and subagents | Safe inventory view; only subagents owned by the paired user | Run/manage integrations and settings where the existing runtime supports it |
+| Terminal and Git | Git branch/status, staged/unstaged diff and per-file diff review (including renames); stage/unstage one reported project path, commit staged changes, list local branches, create a branch and switch to an existing local branch while the Codex session is idle | Terminal/process controls, worktree creation, remote branches, conflict resolution, inline review comments and richer Desktop-equivalent review actions |
+| Models, modes, goals and context | Choose a model, collaboration mode and reasoning level; view, create, pause, resume and clear Codex goals; request manual context compaction while idle | Verify error/rollback behavior across supported Codex versions; show a final compacted status only when Codex confirms it |
+| Skills, MCP and subagents | Safe inventory view; only subagents owned by the paired user | Invoke/manage skills and integrations, plugin/app management and settings where the existing runtime supports it |
 | Usage and account | Current account identity and quota windows, when ACP exposes them | Saved-account management, account switching, refresh/error states and parity checks |
-| Apps, plugins, tasks and voice | Not implemented | Inventory/control surfaces, task management and browser voice input/output |
+| Apps, plugins, tasks and voice | Goals are supported as noted above | Apps and plugin management, task lifecycle, voice input/output and parity checks |
+| Host and workspace setup | Connects only to the one existing local runtime and its authorized projects | Host selection, current branch versus isolated worktree, environment setup and workspace-specific permissions |
 
 New UI behavior is checked in Browser skill against the isolated fake Codex
 fixture. That proves the web flow and authorization boundary, not compatibility
@@ -53,7 +56,7 @@ they have both server-side authorization tests and browser coverage.
 
 - Root TypeScript check: passed.
 - Mobile app TypeScript check and production build: passed.
-- Full root test suite: 165/165 passed.
+- Full root test suite: 180/180 passed.
 - Focused branch-list/switch and API authorization checks: 2/2 passed.
 - Per-file Git diff filtering validates paths inside the authorized project and passes both names for a selected rename.
 - Mobile app `npm audit`: 0 vulnerabilities.
@@ -66,6 +69,18 @@ they have both server-side authorization tests and browser coverage.
   file-list refresh, stage/unstage, commit, branch creation, switching to an
   existing local branch, per-file diff, rename diff and return to all files were
   exercised against fake data.
+- Browser skill at 574×637 this turn: rename an active session, archive it,
+  read its archived history, restore it and return to the active view. All data
+  came from the isolated browser fixture.
+- Browser skill at 574×637: fork an idle session and view the copied history;
+  create a goal with a token budget, pause/resume and clear it; request manual
+  context compaction, confirm the action, and verify the UI says the request was
+  accepted without claiming that Codex finished. All data came from the isolated
+  browser fixture.
+- CLI pairing approval is now a separate OS-local IPC channel. The mobile HTTP
+  server does not expose an approval endpoint, so a reverse proxy cannot reach
+  that operation. Automated tests exercise successful approval, a wrong local
+  key, and an unapproved remote HTTP request.
 - No actual Codex service was started; no Tailscale or Telegram configuration
   was changed.
 

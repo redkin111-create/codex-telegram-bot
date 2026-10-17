@@ -38,6 +38,9 @@ import type {
   CodexModelInfo,
   CodexModelListResult,
   CodexThreadResponse,
+  CodexThreadForkResponse,
+  CodexThreadGoal,
+  CodexThreadGoalStatus,
   CodexTokenUsage,
   CodexTurn,
   CodexTurnResponse,
@@ -457,6 +460,71 @@ export class AcpClient extends EventEmitter {
     return [...byId.values()];
   }
 
+  /** Rename a persisted Codex thread using the app-server's native metadata API. */
+  async setThreadName(threadId: string, name: string): Promise<void> {
+    await this.request("thread/name/set", { threadId, name });
+  }
+
+  /** Archive a persisted Codex thread without deleting its history. */
+  async archiveThread(threadId: string): Promise<void> {
+    await this.request("thread/archive", { threadId });
+  }
+
+  /** Restore a previously archived Codex thread. */
+  async unarchiveThread(threadId: string): Promise<void> {
+    await this.request("thread/unarchive", { threadId });
+  }
+
+  /** Fork an idle persisted thread through the same Codex app-server process. */
+  async forkThread(threadId: string): Promise<CodexThreadForkResponse> {
+    const response = await this.request("thread/fork", { threadId }) as CodexThreadForkResponse;
+    if (!response?.thread?.id) throw new AcpError("thread/fork returned no thread id");
+    if (response.cwd) this.threadCwd.set(response.thread.id, response.cwd);
+    if (response.model) this.threadModel.set(response.thread.id, response.model);
+    return response;
+  }
+
+  hasActiveTurn(threadId: string): boolean {
+    return this.turns.has(threadId);
+  }
+
+  async getThreadGoal(threadId: string): Promise<CodexThreadGoal | undefined> {
+    const response = await this.request("thread/goal/get", { threadId }) as { goal?: CodexThreadGoal | null };
+    return response?.goal ?? undefined;
+  }
+
+  async setThreadGoal(threadId: string, input: {
+    objective?: string;
+    status?: CodexThreadGoalStatus;
+    tokenBudget?: number | null;
+  }): Promise<CodexThreadGoal> {
+    if (input.objective !== undefined && (!input.objective.trim() || input.objective.length > 1000)) {
+      throw new Error("Цель должна содержать от 1 до 1000 символов");
+    }
+    if (input.status !== undefined && !["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"].includes(input.status)) {
+      throw new Error("Неизвестный статус цели");
+    }
+    if (input.tokenBudget !== undefined && input.tokenBudget !== null &&
+        (!Number.isSafeInteger(input.tokenBudget) || input.tokenBudget < 1 || input.tokenBudget > 1_000_000_000)) {
+      throw new Error("Бюджет должен быть целым числом от 1 до 1 000 000 000 токенов");
+    }
+    if (input.objective === undefined && input.status === undefined && input.tokenBudget === undefined) {
+      throw new Error("Укажите, что нужно изменить в цели");
+    }
+    const response = await this.request("thread/goal/set", { threadId, origin: "user", ...input }) as { goal?: CodexThreadGoal };
+    if (!response?.goal) throw new AcpError("thread/goal/set returned no goal");
+    return response.goal;
+  }
+
+  async clearThreadGoal(threadId: string): Promise<{ cleared: boolean }> {
+    return await this.request("thread/goal/clear", { threadId, origin: "user" }) as { cleared: boolean };
+  }
+
+  async compactThread(threadId: string): Promise<void> {
+    if (this.hasActiveTurn(threadId)) throw new Error("Нельзя сократить контекст во время активного хода Codex");
+    await this.request("thread/compact/start", { threadId });
+  }
+
   hasMode(id: string): boolean {
     return this.collaborationModes.has(id);
   }
@@ -564,6 +632,26 @@ export class AcpClient extends EventEmitter {
       if (turnId) await this.request("turn/interrupt", { threadId: sessionId, turnId });
     } catch (e) {
       log.debug("interrupt failed:", (e as Error).message);
+    }
+  }
+
+  /** True only while this shared app-server client owns a steerable turn. */
+  canSteer(sessionId: string): boolean {
+    return this.connected && !!this.turns.get(sessionId)?.turnId;
+  }
+
+  /** Add user guidance to the active turn without starting another turn. */
+  async steer(sessionId: string, content: ContentBlock[]): Promise<void> {
+    const active = this.turns.get(sessionId);
+    if (!this.connected || !active?.turnId) throw new AcpError("Нет активной задачи Codex, которую можно направить");
+    const expectedTurnId = active.turnId;
+    const response = await this.request("turn/steer", {
+      threadId: sessionId,
+      expectedTurnId,
+      input: toCodexInput(content),
+    }) as { turnId?: unknown };
+    if (typeof response?.turnId !== "string" || response.turnId !== expectedTurnId) {
+      throw new AcpError("Codex не подтвердил, к какой активной задаче применено направление");
     }
   }
 

@@ -13,7 +13,6 @@ import { join } from "node:path";
 import { ENV_PATH, INSTANCE_DIR, PROJECT_ROOT, loadConfig } from "./config.js";
 import { buildLaunchSpec, getController } from "./service/index.js";
 import { approveMobilePairing } from "./mobile/control.js";
-import { mobilePort } from "./mobile/service.js";
 
 const HELP = `Codex Telegram Bot — CLI
 
@@ -116,7 +115,7 @@ async function mobileCommand(args: string[]): Promise<void> {
   if (!Number.isSafeInteger(ownerId) || !allowed.includes(String(ownerId))) {
     throw new Error("Укажите owner ID из ALLOWED_USERS: codex-tg mobile approve <code> <owner-id>");
   }
-  await approveMobilePairing({ code, ownerId, dataDir: cfg.dataDir, port: mobilePort() });
+  await approveMobilePairing({ code, ownerId, dataDir: cfg.dataDir });
   console.log(`Устройство подтверждено для owner ${ownerId}.`);
 }
 

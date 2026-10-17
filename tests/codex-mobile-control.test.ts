@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
-import { once } from "node:events";
+import { createConnection } from "node:net";
 import test from "node:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { approveMobilePairing, getOrCreateMobileAdminToken } from "../src/mobile/control.js";
+import { MobileAuthStore } from "../src/mobile/auth.js";
+import {
+  approveMobilePairing,
+  getOrCreateMobileAdminToken,
+  mobileControlAddress,
+  startMobileControlChannel,
+} from "../src/mobile/control.js";
 
 test("mobile admin token is generated once and kept out of the repository data format", async () => {
   const dir = await mkdtemp(join(tmpdir(), "codex-mobile-control-"));
@@ -18,31 +23,41 @@ test("mobile admin token is generated once and kept out of the repository data f
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test("Windows CLI approval sends the code only to the loopback service using its local token", async () => {
+test("Windows CLI approval uses a separate local IPC channel and completes pairing", async () => {
   const dir = await mkdtemp(join(tmpdir(), "codex-mobile-cli-"));
-  const token = await getOrCreateMobileAdminToken(dir);
-  let seenAuthorization = "";
-  let seenBody: unknown;
-  const server = createServer(async (req, res) => {
-    seenAuthorization = String(req.headers.authorization ?? "");
-    const chunks: Buffer[] = [];
-    for await (const chunk of req) chunks.push(Buffer.from(chunk));
-    seenBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ approved: true }));
-  });
+  const auth = new MobileAuthStore(dir, { allowedOwners: new Set(["101"]) });
+  const adminToken = await getOrCreateMobileAdminToken(dir);
+  const challenge = auth.beginPairing("Pixel fixture");
+  const control = await startMobileControlChannel({ auth, dataDir: dir, adminToken });
   try {
-    server.listen(0, "127.0.0.1");
-    await once(server, "listening");
-    const address = server.address();
-    assert.ok(address && typeof address !== "string");
-    await approveMobilePairing({ code: "ABCD234567", ownerId: 101, dataDir: dir, port: address.port });
-    assert.equal(seenAuthorization, `Bearer ${token}`);
-    assert.deepEqual(seenBody, { code: "ABCD234567", ownerId: 101 });
+    assert.equal(control.address, mobileControlAddress(dir));
+    await approveMobilePairing({ code: challenge.code, ownerId: 101, dataDir: dir });
+    const login = auth.completePairing(challenge.pairingCookie);
+    assert.equal(login?.status, "approved");
   } finally {
-    server.closeAllConnections();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await control.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("local IPC refuses approval requests without the stored local token", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "codex-mobile-ipc-auth-"));
+  const auth = new MobileAuthStore(dir, { allowedOwners: new Set(["101"]) });
+  const challenge = auth.beginPairing("Untrusted local client");
+  const control = await startMobileControlChannel({ auth, dataDir: dir, adminToken: "expected-control-token" });
+  try {
+    const response = await new Promise<string>((resolve, reject) => {
+      const socket = createConnection(mobileControlAddress(dir));
+      let body = "";
+      socket.once("connect", () => socket.end(JSON.stringify({ token: "wrong-token", code: challenge.code, ownerId: 101 }) + "\n"));
+      socket.on("data", (chunk) => { body += chunk.toString("utf8"); });
+      socket.once("end", () => resolve(body));
+      socket.once("error", reject);
+    });
+    assert.deepEqual(JSON.parse(response), { status: 401, message: "Локальный ключ Codex Mobile не принят" });
+    assert.equal(auth.completePairing(challenge.pairingCookie)?.status, "pending");
+  } finally {
+    await control.close();
     await rm(dir, { recursive: true, force: true });
   }
 });

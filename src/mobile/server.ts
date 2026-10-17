@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, relative, resolve, sep } from "node:path";
@@ -13,7 +13,7 @@ const CSRF_COOKIE = "__Host-codex-mobile-csrf";
 const MUTATING_OPERATIONS = new Set<TmaOperation>([
   "create", "select", "send", "cancel", "queue", "queueRemove", "queueResume",
 ]);
-const MOBILE_MUTATING_OPERATIONS = new Set<MobileLocalOperation>(["setModel", "setMode", "setReasoning", "writeFile", "createFile", "gitStage", "gitUnstage", "gitCommit", "gitCreateBranch", "gitSwitchBranch"]);
+const MOBILE_MUTATING_OPERATIONS = new Set<MobileLocalOperation>(["setModel", "setMode", "setReasoning", "setGoal", "clearGoal", "steer", "forkThread", "compactThread", "archiveThread", "unarchiveThread", "renameThread", "writeFile", "createFile", "gitStage", "gitUnstage", "gitCommit", "gitCreateBranch", "gitSwitchBranch"]);
 
 export interface MobileAgent {
   canReadSession(id: string, userId: number): Promise<boolean>;
@@ -31,22 +31,11 @@ export interface MobileServerOptions {
   agent: MobileAgent;
   approvals?: MobileApprovals;
   feed: TmaLiveFeed;
-  adminToken: string;
   dataDir?: string;
   staticRoot?: string;
   port?: number;
   allowedOrigins?: string[];
   now?: () => number;
-}
-
-function sha256(value: string): Buffer {
-  return createHash("sha256").update(value, "utf8").digest();
-}
-
-function sameSecret(a: string, b: string): boolean {
-  const left = sha256(a);
-  const right = sha256(b);
-  return timingSafeEqual(left, right);
 }
 
 function json(res: ServerResponse, status: number, payload: unknown): void {
@@ -117,11 +106,6 @@ function allowedOrigin(req: IncomingMessage, server: Server, configured: Set<str
   return !!address && typeof address !== "string" && raw === `http://127.0.0.1:${address.port}`;
 }
 
-function adminAuthorized(req: IncomingMessage, token: string): boolean {
-  const value = req.headers.authorization;
-  return typeof value === "string" && value.startsWith("Bearer ") && sameSecret(value.slice(7), token);
-}
-
 function sessionDevice(req: IncomingMessage, auth: MobileAuthStore) {
   return auth.authenticate(cookie(req, SESSION_COOKIE));
 }
@@ -133,7 +117,7 @@ function csrfAuthorized(req: IncomingMessage, deviceId: string, auth: MobileAuth
 }
 
 function safeSessionId(value: string): boolean {
-  return /^[a-z0-9-]{8,80}$/i.test(value);
+  return /^[a-z0-9_-]{8,128}$/i.test(value);
 }
 
 function staticFile(root: string, pathname: string): { path: string; type: string } | undefined {
@@ -188,17 +172,6 @@ export function createMobileServer(options: MobileServerOptions): Server {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     const path = url.pathname;
     const method = req.method ?? "GET";
-
-    if (path === "/_local/pairings/approve" && method === "POST") {
-      if (!adminAuthorized(req, options.adminToken)) { json(res, 401, { error: "Требуется локальное подтверждение" }); return; }
-      const body = await readJson(req, 4096);
-      if (typeof body.code !== "string" || typeof body.ownerId !== "number") { json(res, 400, { error: "Неверный код или owner" }); return; }
-      try {
-        const approved = options.auth.approvePairing(body.code, body.ownerId);
-        json(res, approved ? 200 : 404, approved ? { approved: true } : { error: "Код истёк или уже использован" });
-      } catch (error) { json(res, 403, { error: safeError(error) }); }
-      return;
-    }
 
     const isApi = path.startsWith("/api/");
     const originRequired = isApi && method !== "GET" && method !== "HEAD";

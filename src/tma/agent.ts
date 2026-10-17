@@ -7,7 +7,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { AcpClient } from "../acp/client.js";
-import type { CodexThreadSummary, CodexProjectSummary, CodexRateLimitWindow } from "../acp/codex-protocol.js";
+import type { CodexThreadSummary, CodexProjectSummary, CodexRateLimitWindow, CodexThreadGoalStatus } from "../acp/codex-protocol.js";
 import { REASONING_LEVELS, textPrompt, type ReasoningEffort } from "../app/types.js";
 import type { RuntimeRegistry } from "../bot/registry.js";
 import { isVisibleThreadForChat, threadSourceKind } from "../bot/catalog.js";
@@ -15,6 +15,7 @@ import { LiveSessionConflictError } from "../bot/session-runtime.js";
 import { TmaScreenshotIndex } from "./screenshots.js";
 import type { AppConfig } from "../config.js";
 import { isPathWithinRoot } from "../projects/manager.js";
+import { buildContentBlocks } from "../bot/prompt-content.js";
 import { createLogger } from "../logger.js";
 import { readConversationHistoryAsync } from "../sessions/history.js";
 import { SessionStore } from "../sessions/store.js";
@@ -39,7 +40,7 @@ const sleep=(ms:number,signal:AbortSignal)=>new Promise<void>(resolve=>{
 });
 
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; }
-export type MobileLocalOperation = "capabilities" | "setModel" | "setMode" | "setReasoning" | "files" | "readFile" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch";
+export type MobileLocalOperation = "capabilities" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "files" | "readFile" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 export class MiniAppAgent {
   private readonly abort=new AbortController();
@@ -60,6 +61,11 @@ export class MiniAppAgent {
     expiresAt: number;
     value: Promise<{projects:CodexProjectSummary[];threads:CodexThreadSummary[]}>;
   }>();
+  private readonly archivedCatalogues = new Map<number, {
+    expiresAt: number;
+    value: Promise<CodexThreadSummary[]>;
+  }>();
+  private readonly archivedThreads = new Map<number,Map<string,CodexThreadSummary>>();
   private readonly ownThreads = new Map<string,CodexThreadSummary>();
   /** Stable last-known authorized session references, eliminating an ACP
    * catalogue round-trip for every frequent history/activity poll. */
@@ -158,16 +164,19 @@ export class MiniAppAgent {
     const value=(async()=>{
       const [projects,threads]=await Promise.all([
         this.deps.acp.listProjects().catch(()=>[] as CodexProjectSummary[]),
-        this.deps.acp.listThreads({
+        (typeof this.deps.acp.listAllThreads==="function"?this.deps.acp.listAllThreads({
           limit:100,sortKey:"recency_at",sortDirection:"desc",
           sourceKinds:["cli","vscode","appServer"],
-        }),
+        }):this.deps.acp.listThreads({
+          limit:100,sortKey:"recency_at",sortDirection:"desc",
+          sourceKinds:["cli","vscode","appServer"],
+        })),
       ]);
       const visible=threads.filter(t=>!t.ephemeral&&
-        (!this.telegramSessions.get(t.id)||this.telegramSessions.get(t.id)?.chatId===userId)&&
+        (!this.telegramSessions.getOwner(t.id)||this.telegramSessions.getOwner(t.id)?.chatId===userId)&&
         ["cli","vscode","appServer"].includes(threadSourceKind(t)??""));
       for(const t of this.ownThreads.values()){
-        if(this.telegramSessions.get(t.id)?.chatId===userId&&!visible.some(x=>x.id===t.id))visible.unshift(t);
+        if(this.telegramSessions.getOwner(t.id)?.chatId===userId&&!visible.some(x=>x.id===t.id))visible.unshift(t);
       }
       const known=this.knownThreads.get(userId)??new Map<string,CodexThreadSummary>();
       // A transient app-server catalogue may omit an open session. Keep
@@ -176,6 +185,7 @@ export class MiniAppAgent {
       for(const t of [...visible].reverse()){
         known.delete(t.id);
         known.set(t.id,t);
+        this.archivedThreads.get(userId)?.delete(t.id);
       }
       const selected=this.selected.get(userId);
       while(known.size>500){
@@ -194,19 +204,64 @@ export class MiniAppAgent {
     try{return await value;}
     catch(error){this.catalogues.delete(userId);throw error;}
   }
+  private async archivedCatalogue(userId:number):Promise<CodexThreadSummary[]>{
+    const cached=this.archivedCatalogues.get(userId);
+    if(cached&&cached.expiresAt>Date.now())return cached.value;
+    const value=(async()=>{
+      const params={limit:100,sortKey:"recency_at" as const,sortDirection:"desc" as const,
+        sourceKinds:["cli","vscode","appServer"] as Array<"cli"|"vscode"|"appServer">,archived:true};
+      const threads=typeof this.deps.acp.listAllThreads==="function"
+        ? await this.deps.acp.listAllThreads(params)
+        : await this.deps.acp.listThreads(params);
+      const visible=threads.filter(t=>!t.ephemeral&&
+        (!this.telegramSessions.getOwner(t.id)||this.telegramSessions.getOwner(t.id)?.chatId===userId)&&
+        ["cli","vscode","appServer"].includes(threadSourceKind(t)??""));
+      const known=this.archivedThreads.get(userId)??new Map<string,CodexThreadSummary>();
+      for(const t of [...visible].reverse()){
+        known.delete(t.id);
+        known.set(t.id,t);
+        const active=this.knownThreads.get(userId);
+        active?.delete(t.id);
+      }
+      while(known.size>500){
+        const oldest=known.keys().next().value;
+        if(oldest===undefined)break;
+        known.delete(oldest);
+      }
+      this.archivedThreads.set(userId,known);
+      return visible;
+    })();
+    this.archivedCatalogues.set(userId,{expiresAt:Date.now()+12000,value});
+    try{return await value;}
+    catch(error){this.archivedCatalogues.delete(userId);throw error;}
+  }
   private async thread(id:string,userId:number):Promise<CodexThreadSummary>{
-    const registered=this.telegramSessions.get(id);
+    const registered=this.telegramSessions.getOwner(id);
     if(registered && registered.chatId!==userId)throw new Error("Доступ к переписке запрещён");
     const known=this.knownThreads.get(userId)?.get(id);
     if(known)return known;
     const {threads}=await this.catalogue(userId);
     const thread=threads.find(t=>t.id===id);
-    if(!thread)throw new Error("Переписка не найдена в последних сеансах Codex");
-    return thread;
+    if(thread)return thread;
+    const archivedKnown=this.archivedThreads.get(userId)?.get(id);
+    if(archivedKnown)return archivedKnown;
+    const archived=(await this.archivedCatalogue(userId)).find(t=>t.id===id);
+    if(archived){
+      const activeKnown=this.knownThreads.get(userId)??new Map<string,CodexThreadSummary>();
+      activeKnown.set(id,archived);
+      this.knownThreads.set(userId,activeKnown);
+      return archived;
+    }
+    throw new Error("Переписка не найдена в последних сеансах Codex");
+  }
+  private async isArchivedThread(id:string,userId:number):Promise<boolean>{
+    if(this.knownThreads.get(userId)?.has(id))return this.archivedThreads.get(userId)?.has(id)??false;
+    if(this.archivedThreads.get(userId)?.has(id))return true;
+    return (await this.archivedCatalogue(userId)).some(thread=>thread.id===id);
   }
   /** Validate stream access with the same catalogue/ownership rules as history. */
   async canReadSession(id:string,userId:number):Promise<boolean>{
-    if(!/^[a-z0-9-]{8,80}$/i.test(id)||!this.deps.cfg.allowedUsers.has(String(userId)))return false;
+    if(!/^[a-z0-9_-]{8,128}$/i.test(id)||!this.deps.cfg.allowedUsers.has(String(userId)))return false;
     try{await this.thread(id,userId);return true;}catch{return false;}
   }
   /** Mobile-only inventories and preference changes. These are deliberately
@@ -219,9 +274,161 @@ export class MiniAppAgent {
     if(job.op!=="capabilities"&&!sessionId)throw new Error("Сначала выберите сеанс Codex");
     const runtime=sessionId?registry.runtimeForSession(chatId,sessionId):undefined;
     switch(job.op){
+      case "renameThread":{
+        const thread=await this.thread(sessionId,chatId);
+        const name=argumentString(args,"name",120).trim();
+        if(!name||/[\u0000-\u001f\u007f]/.test(name))throw new Error("Укажите название сеанса длиной до 120 символов");
+        await acp.setThreadName(sessionId,name);
+        const renamed={...thread,name};
+        this.knownThreads.get(chatId)?.set(sessionId,renamed);
+        if(this.archivedThreads.get(chatId)?.has(sessionId))this.archivedThreads.get(chatId)?.set(sessionId,renamed);
+        if(this.ownThreads.has(sessionId))this.ownThreads.set(sessionId,renamed);
+        this.catalogues.delete(chatId);
+        this.archivedCatalogues.delete(chatId);
+        return {sessionId,name};
+      }
+      case "forkThread":{
+        const source=await this.thread(sessionId,chatId);
+        if(!source.cwd)throw new Error("Для сеанса не определена папка проекта");
+        if(runtime?.isBusy||acp.hasActiveTurn(sessionId))throw new Error("Нельзя ответвить сеанс, пока Codex выполняет задачу");
+        const fork=await acp.forkThread(sessionId);
+        const forkId=fork.thread.id;
+        if(!/^[a-z0-9_-]{8,128}$/i.test(forkId))throw new Error("Codex вернул недопустимый ID нового сеанса");
+        const sourceRoot=realpathSync.native(source.cwd);
+        const forkRoot=realpathSync.native(fork.cwd||source.cwd);
+        if(resolve(sourceRoot).toLowerCase()!==resolve(forkRoot).toLowerCase())throw new Error("Codex ответвил сеанс в другой папке проекта");
+        const now=Date.now()/1000;
+        const child:CodexThreadSummary={
+          ...fork.thread,
+          id:forkId,
+          name:typeof fork.thread.name==="string"&&fork.thread.name.trim()?fork.thread.name:`${source.name||"Сеанс"} · ответвление`,
+          cwd:source.cwd,
+          source:fork.thread.source||"appServer",
+          createdAt:typeof fork.thread.createdAt==="number"?fork.thread.createdAt:now,
+          updatedAt:typeof fork.thread.updatedAt==="number"?fork.thread.updatedAt:now,
+          recencyAt:typeof fork.thread.recencyAt==="number"?fork.thread.recencyAt:now,
+          parentThreadId:sessionId,
+        };
+        this.telegramSessions.recordMobile(forkId,chatId,source.cwd,basename(source.cwd));
+        this.ownThreads.set(forkId,child);
+        const known=this.knownThreads.get(chatId)??new Map<string,CodexThreadSummary>();
+        known.set(forkId,child);
+        this.knownThreads.set(chatId,known);
+        this.catalogues.delete(chatId);
+        this.archivedCatalogues.delete(chatId);
+        this.selected.set(chatId,forkId);
+        return {sessionId:forkId};
+      }
+      case "compactThread":{
+        const thread=await this.thread(sessionId,chatId);
+        if(await this.isArchivedThread(sessionId,chatId))throw new Error("Восстановите сеанс из архива перед сокращением контекста");
+        if(!thread.cwd)throw new Error("Для сеанса не определена папка проекта");
+        if(runtime?.isBusy||acp.hasActiveTurn(sessionId))throw new Error("Нельзя сократить контекст, пока Codex выполняет задачу");
+        await acp.compactThread(sessionId);
+        return {started:true};
+      }
+      case "archiveThread":{
+        const thread=await this.thread(sessionId,chatId);
+        if(await this.isArchivedThread(sessionId,chatId))throw new Error("Сеанс уже находится в архиве");
+        if(runtime?.isBusy)throw new Error("Нельзя архивировать сеанс, пока Codex выполняет задачу");
+        await acp.archiveThread(sessionId);
+        this.knownThreads.get(chatId)?.delete(sessionId);
+        this.archivedThreads.get(chatId)?.set(sessionId,thread);
+        this.catalogues.delete(chatId);
+        this.archivedCatalogues.delete(chatId);
+        return {sessionId,archived:true};
+      }
+      case "unarchiveThread":{
+        const thread=await this.thread(sessionId,chatId);
+        if(!await this.isArchivedThread(sessionId,chatId))throw new Error("Сеанс не найден в архиве");
+        await acp.unarchiveThread(sessionId);
+        this.archivedThreads.get(chatId)?.delete(sessionId);
+        const known=this.knownThreads.get(chatId)??new Map<string,CodexThreadSummary>();
+        known.set(sessionId,thread);
+        this.knownThreads.set(chatId,known);
+        this.catalogues.delete(chatId);
+        this.archivedCatalogues.delete(chatId);
+        return {sessionId,archived:false};
+      }
+      case "setGoal":{
+        const thread=await this.thread(sessionId,chatId);
+        if(!thread.cwd)throw new Error("Для сеанса не определена папка проекта");
+        const input:{objective?:string;status?:CodexThreadGoalStatus;tokenBudget?:number|null}={};
+        if(args.objective!==undefined){
+          if(typeof args.objective!=="string")throw new Error("Цель должна быть текстом");
+          input.objective=args.objective;
+        }
+        if(args.status!==undefined){
+          const statuses:CodexThreadGoalStatus[]=["active","paused","blocked","usageLimited","budgetLimited","complete"];
+          if(typeof args.status!=="string"||!statuses.includes(args.status as CodexThreadGoalStatus))throw new Error("Неизвестный статус цели");
+          input.status=args.status as CodexThreadGoalStatus;
+        }
+        if(args.tokenBudget===null)input.tokenBudget=null;
+        else if(args.tokenBudget!==undefined){
+          if(typeof args.tokenBudget!=="number"||!Number.isSafeInteger(args.tokenBudget)||args.tokenBudget<1||args.tokenBudget>1_000_000_000)
+            throw new Error("Бюджет должен быть целым числом от 1 до 1 000 000 000 токенов");
+          input.tokenBudget=args.tokenBudget;
+        }
+        const goal=await acp.setThreadGoal(sessionId,input);
+        return {goal};
+      }
+      case "clearGoal":{
+        await this.thread(sessionId,chatId);
+        return await acp.clearThreadGoal(sessionId);
+      }
+      case "steer":{
+        const text=typeof args.text==="string"&&args.text.length<=16000?args.text.trim():"";
+        const images=parseTmaImages(args.images);
+        if(!text&&!images.length)throw new Error("Напишите направление для Codex или прикрепите фото");
+        const requestId=argumentString(args,"requestId",80);
+        if(!/^[a-zA-Z0-9_-]{12,80}$/.test(requestId))throw new Error("Неверный идентификатор направления");
+        const fingerprint=tmaPromptFingerprint("steer:"+text,images);
+        const key=chatId+":"+sessionId+":steer:"+requestId;
+        const existing=this.sends.get(key);
+        if(existing){
+          if(existing.fingerprint!==fingerprint)throw new Error("Нельзя переиспользовать ID для другого направления");
+          return existing.promise;
+        }
+        const recorded=this.promptJournal.lookup(key,fingerprint);
+        if(recorded.found)return recorded.result;
+        this.promptJournal.reserve(key,fingerprint);
+        let dispatched=false;
+        const pending=(async()=>{
+          try{
+            const thread=await this.thread(sessionId,chatId);
+            if(await this.isArchivedThread(sessionId,chatId))throw new Error("Сначала восстановите сеанс из архива");
+            if(!runtime?.isBusy||!acp.canSteer(sessionId))throw new Error("Текущую задачу нельзя направить: у этого клиента нет подтверждённого активного хода Codex");
+            if(!thread.cwd)throw new Error("Неизвестная рабочая папка сеанса");
+            const input=textPrompt(text||"Проанализируй прикреплённые изображения.");
+            input.images=images;
+            dispatched=true;
+            await acp.steer(sessionId,buildContentBlocks(input));
+            const result={steered:true};
+            this.promptJournal.complete(key,result);
+            return result;
+          }catch(error){
+            if(dispatched)this.promptJournal.uncertain(key);
+            else this.promptJournal.clearBeforeDispatch(key);
+            throw error;
+          }
+        })();
+        this.sends.set(key,{fingerprint,promise:pending,at:Date.now()});
+        void pending.catch(()=>{if(!dispatched)this.sends.delete(key);});
+        if(this.sends.size>180){
+          for(const [k,v] of this.sends)if(Date.now()-v.at>60*60*1000)this.sends.delete(k);
+          if(this.sends.size>180)this.sends.delete(this.sends.keys().next().value!);
+        }
+        return pending;
+      }
       case "capabilities":{
         if(sessionId&&!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
         if(acp.isConnected)await acp.refreshInventories();
+        let goal:Awaited<ReturnType<AcpClient["getThreadGoal"]>>;
+        let goalAvailable=false;
+        if(sessionId&&acp.isConnected){
+          try{goal=await acp.getThreadGoal(sessionId);goalAvailable=true;}
+          catch{goal=undefined;}
+        }
         const account:Awaited<ReturnType<AcpClient["accountState"]>>=acp.isConnected?await acp.accountState().catch(()=>({})):{};
         const normalizeWindow=(value:CodexRateLimitWindow|null|undefined)=>value&&Number.isFinite(value.usedPercent)?{
           usedPercent:Math.max(0,Math.min(100,value.usedPercent)),
@@ -247,6 +454,7 @@ export class MiniAppAgent {
           mcpServers:acp.availableMcpServers.slice(0,60).map(s=>({name:s.name.slice(0,120),toolCount:Object.keys(s.tools??{}).length})),
           account:account.account?{type:account.account.type,email:account.account.email?.slice(0,200),plan:account.account.planType?.slice(0,100)}:undefined,
           limits,subagents,checkedAt:Date.now(),
+          goal,goalAvailable,
         };
       }
       case "setModel":{
@@ -557,6 +765,15 @@ export class MiniAppAgent {
       }
       case "snapshot":{
         const {projects,threads}=await this.catalogue(chatId);
+        let archivedSessions:CodexThreadSummary[]=[];
+        let archiveAvailable=acp.isConnected;
+        if(archiveAvailable){
+          try{archivedSessions=await this.archivedCatalogue(chatId);}
+          catch(error){
+            archiveAvailable=false;
+            log.warn("Could not read Codex archive:",(error as Error).message);
+          }
+        }
         const controlled=controller.list();
         const active=registry.get(chatId);
         const projectMap=new Map<string,string>();
@@ -571,14 +788,21 @@ export class MiniAppAgent {
         if(!projectMap.size)projectMap.set(cfg.workspace,basename(cfg.workspace));
         return {
           projects:[...projectMap].map(([path,name])=>({path,name})),
-          sessions:threads.slice(0,100).map(t=>({
+          sessions:threads.slice(0,500).map(t=>({
             id:t.id,title:(t.name||t.preview||"Новый сеанс").slice(0,180),
             cwd:t.cwd||"",updatedAt:t.recencyAt||t.updatedAt||t.createdAt||0,
             source:threadSourceKind(t)||"unknown",
+            archived:false,
             busy:controlled.some(c=>c.sessionId===t.id&&c.busy),
             queue:controlled.find(c=>c.sessionId===t.id)?.queueLength||0,
             progress:controlled.find(c=>c.sessionId===t.id)?.progress,
           })),
+          archivedSessions:archiveAvailable?archivedSessions.slice(0,500).map(t=>({
+            id:t.id,title:(t.name||t.preview||"Без названия").slice(0,180),
+            cwd:t.cwd||"",updatedAt:t.recencyAt||t.updatedAt||t.createdAt||0,
+            source:threadSourceKind(t)||"unknown",archived:true,busy:false,queue:0,
+          })):[],
+          archiveAvailable,
           selected:this.selected.get(chatId)||active.sessionId||null,
           controlled:controlled.map(c=>({id:c.sessionId,busy:c.busy,queue:c.queueLength,paused:c.queuePaused})),
           model:acp.currentModelId||"default",
@@ -646,6 +870,7 @@ export class MiniAppAgent {
       case "select":{
         const id=argumentString(args,"sessionId",80);
         const t=await this.thread(id,chatId);
+        if(await this.isArchivedThread(id,chatId))throw new Error("Сначала восстановите сеанс из архива");
         if(!t.cwd)throw new Error("Неизвестная рабочая папка сеанса");
         if(controller.runtimeForSession(id)) await controller.switchTo(id);
         else await controller.addAttach(id,t.cwd,basename(t.cwd),[]);
@@ -674,6 +899,7 @@ export class MiniAppAgent {
         const pending=(async()=>{
           try{
             const t=await this.thread(id,chatId);
+            if(await this.isArchivedThread(id,chatId))throw new Error("Сначала восстановите сеанс из архива");
             if(!t.cwd)throw new Error("Неизвестная рабочая папка");
             if(!controller.runtimeForSession(id))await controller.addAttach(id,t.cwd,basename(t.cwd),[]);
             else if(controller.foreground().sessionId!==id)await controller.switchTo(id);

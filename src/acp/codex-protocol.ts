@@ -55,6 +55,26 @@ export interface CodexThreadResponse {
   thread: CodexThread;
 }
 
+export interface CodexThreadForkResponse {
+  thread: CodexThread & Partial<CodexThreadSummary>;
+  cwd?: string;
+  model?: string;
+  modelProvider?: string;
+}
+
+export type CodexThreadGoalStatus = "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete";
+
+export interface CodexThreadGoal {
+  threadId: string;
+  objective: string;
+  status: CodexThreadGoalStatus;
+  tokenBudget: number | null;
+  tokensUsed: number;
+  timeUsedSeconds: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface CodexThreadResumeParams {
   threadId: string;
 }

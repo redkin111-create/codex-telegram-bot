@@ -3,9 +3,8 @@ import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { Server } from "node:http";
+import { createServer, type Server } from "node:http";
 import { MobileAuthStore } from "../../src/mobile/auth.js";
-import { getOrCreateMobileAdminToken } from "../../src/mobile/control.js";
 import { createMobileServer } from "../../src/mobile/server.js";
 import { MobileApprovalBroker } from "../../src/mobile/approvals.js";
 import type { LiveEvent, TmaLiveFeed } from "../../src/tma/live.js";
@@ -15,6 +14,7 @@ import type { RuntimeRegistry } from "../../src/bot/registry.js";
 const ownerId = 101;
 const firstSession = "11111111-1111-4111-8111-111111111111";
 const secondSession = "22222222-2222-4222-8222-222222222222";
+const archivedFixtureSession = "44444444-4444-4444-8444-444444444444";
 const projectOne = "C:\\fixture\\codex-mobile";
 const projectTwo = "C:\\fixture\\other-project";
 const screenshotPath = "C:\\fixture\\codex-mobile\\screenshots\\sample.png";
@@ -55,11 +55,13 @@ const instanceDir = await mkdtemp(join(tmpdir(), "codex-mobile-browser-"));
 const dataDir = join(instanceDir, "data");
 const auth = new MobileAuthStore(dataDir, { allowedOwners: new Set([String(ownerId)]) });
 const feed = new FixtureFeed();
-const adminToken = await getOrCreateMobileAdminToken(dataDir);
 const sessions = [
   { id: firstSession, title: "Разобрать приложение", cwd: projectOne, updatedAt: Date.now(), source: "appServer" },
   { id: secondSession, title: "Проверить API", cwd: projectOne, updatedAt: Date.now() - 10_000, source: "cli" },
   { id: "33333333-3333-4333-8333-333333333333", title: "Другой проект", cwd: projectTwo, updatedAt: Date.now() - 20_000, source: "vscode" },
+];
+const archivedSessions = [
+  { id: archivedFixtureSession, title: "Старый архивный сеанс", cwd: projectOne, updatedAt: Date.now() - 30_000, source: "appServer" },
 ];
 const history = new Map<string, Array<{ role: "user" | "assistant" | "tool"; text: string; tool?: string; timestamp: number }>>([
   [firstSession, [
@@ -72,6 +74,7 @@ const history = new Map<string, Array<{ role: "user" | "assistant" | "tool"; tex
 const controlled = new Map<string, { busy: boolean; queue: Array<{ id: string; text: string }>; paused: boolean }>();
 let selected = firstSession;
 const fixtureSettings = { model: "fixture", mode: "code", reasoning: "medium" };
+const fixtureGoals = new Map<string, { threadId: string; objective: string; status: "active" | "paused"; tokenBudget: number | null; tokensUsed: number; timeUsedSeconds: number; createdAt: number; updatedAt: number }>();
 const fixtureStaged = new Set<string>();
 let fixtureBranch = "feat/codex-mobile-fixture";
 let fixtureNotesCommitted = false;
@@ -83,7 +86,7 @@ const fixtureFiles = new Map<string, string>([
 
 const agent = {
   async canReadSession(sessionId: string, id: number) {
-    return id === ownerId && sessions.some((session) => session.id === sessionId);
+    return id === ownerId && (sessions.some((session) => session.id === sessionId) || archivedSessions.some((session) => session.id === sessionId));
   },
   async execute(job: TmaJob): Promise<unknown> {
     const args = job.args;
@@ -92,8 +95,10 @@ const agent = {
         projects: [{ path: projectOne, name: "codex-mobile" }, { path: projectTwo, name: "other-project" }],
         sessions: sessions.map((session) => {
           const runtime = controlled.get(session.id);
-          return { ...session, busy: runtime?.busy ?? false, queue: runtime?.queue.length ?? 0 };
+          return { ...session, archived: false, busy: runtime?.busy ?? false, queue: runtime?.queue.length ?? 0 };
         }),
+        archivedSessions: archivedSessions.map((session) => ({ ...session, archived: true, busy: false, queue: 0 })),
+        archiveAvailable: true,
         selected, controlled: [...controlled].map(([id, runtime]) => ({ id, busy: runtime.busy, queue: runtime.queue.length, paused: runtime.paused })),
         online: true, model: "fixture", models: [{ id: "fixture", name: "Fixture" }],
       };
@@ -130,11 +135,16 @@ const agent = {
     }
     if (job.op === "send") {
       const message = String(args.text ?? "");
+      const runtime = controlled.get(sessionId) ?? { busy: false, queue: [], paused: false };
+      if (runtime.busy) {
+        runtime.queue.push({ id: randomUUID(), text: message || "Проверить прикреплённое фото" });
+        controlled.set(sessionId, runtime);
+        return { result: "queued" };
+      }
       const entries = history.get(sessionId) ?? [];
       entries.push({ role: "user", text: message || "Проверка фото", timestamp: Date.now() });
       entries.push({ role: "assistant", text: "Задание принято из тестовой среды. Настоящий Codex не запускался.", timestamp: Date.now() });
       history.set(sessionId, entries);
-      const runtime = controlled.get(sessionId) ?? { busy: false, queue: [], paused: false };
       runtime.busy = true;
       controlled.set(sessionId, runtime);
       feed.status(sessionId, "working", "Codex работает (тест)");
@@ -165,6 +175,66 @@ const agent = {
   },
   async executeMobile(job: { op: string; userId: number; args: Record<string, unknown> }): Promise<unknown> {
     const args = job.args;
+    const sessionId = String(args.sessionId ?? "");
+    if (job.op === "forkThread") {
+      const source = sessions.find((session) => session.id === sessionId);
+      if (!source) throw new Error("Сеанс не найден");
+      if (controlled.get(sessionId)?.busy) throw new Error("Нельзя ответвить сеанс, пока Codex выполняет задачу");
+      const id = randomUUID();
+      sessions.unshift({ ...source, id, title: `${source.title} · ответвление`, updatedAt: Date.now(), source: "appServer" });
+      history.set(id, [...(history.get(sessionId) ?? [])]);
+      controlled.set(id, { busy: false, queue: [], paused: false });
+      selected = id;
+      return { sessionId: id };
+    }
+    if (job.op === "steer") {
+      const runtime = controlled.get(sessionId);
+      if (!runtime?.busy) throw new Error("Нет активной задачи для направления");
+      const entries = history.get(sessionId) ?? [];
+      entries.push({ role: "user", text: "Направление: " + String(args.text ?? ""), timestamp: Date.now() });
+      history.set(sessionId, entries);
+      feed.publish(sessionId, { kind: "text", text: "Направление принято тестовой средой" });
+      return { steered: true };
+    }
+    if (job.op === "renameThread") {
+      const session = [...sessions, ...archivedSessions].find((entry) => entry.id === sessionId);
+      if (!session) throw new Error("Сеанс не найден");
+      session.title = String(args.name ?? "");
+      return { sessionId, name: session.title };
+    }
+    if (job.op === "archiveThread") {
+      const index = sessions.findIndex((entry) => entry.id === sessionId);
+      if (index < 0) throw new Error("Активный сеанс не найден");
+      archivedSessions.unshift({ ...sessions.splice(index, 1)[0]! });
+      return { sessionId, archived: true };
+    }
+    if (job.op === "unarchiveThread") {
+      const index = archivedSessions.findIndex((entry) => entry.id === sessionId);
+      if (index < 0) throw new Error("Архивный сеанс не найден");
+      sessions.unshift({ ...archivedSessions.splice(index, 1)[0]! });
+      return { sessionId, archived: false };
+    }
+    if (job.op === "setGoal") {
+      const previous = fixtureGoals.get(sessionId);
+      const goal = {
+        threadId: sessionId,
+        objective: typeof args.objective === "string" ? args.objective : previous?.objective ?? "",
+        status: args.status === "paused" ? "paused" as const : "active" as const,
+        tokenBudget: args.tokenBudget === undefined ? previous?.tokenBudget ?? null : args.tokenBudget as number | null,
+        tokensUsed: previous?.tokensUsed ?? 24,
+        timeUsedSeconds: previous?.timeUsedSeconds ?? 15,
+        createdAt: previous?.createdAt ?? Date.now() / 1000,
+        updatedAt: Date.now() / 1000,
+      };
+      fixtureGoals.set(sessionId, goal);
+      return { goal };
+    }
+    if (job.op === "clearGoal") { fixtureGoals.delete(sessionId); return { cleared: true }; }
+    if (job.op === "compactThread") {
+      if (controlled.get(sessionId)?.busy) throw new Error("Нельзя сократить контекст, пока Codex выполняет задачу");
+      feed.publish(sessionId, { kind: "activity", label: "Запрос на сокращение контекста принят тестовой средой" });
+      return { started: true };
+    }
     if (job.op === "capabilities") return {
       online: true, ...fixtureSettings,
       models: [{ id: "fixture", name: "Fixture Model" }, { id: "fixture-fast", name: "Fixture Fast" }],
@@ -174,7 +244,8 @@ const agent = {
       mcpServers: [{ name: "Fixture MCP", toolCount: 2 }],
       account: { type: "chatgpt", email: "fixture@example.invalid", plan: "fixture" },
       limits: [{ id: "fixture", name: "Тестовый период", primary: { usedPercent: 28, windowDurationMins: 300, resetsAt: Math.floor(Date.now() / 1000) + 3600 } }],
-      subagents: [{ id: "fixture-agent", name: "Fixture Agent", status: "running" }], checkedAt: Date.now(),
+      subagents: [{ id: "fixture-agent", name: "Fixture Agent", status: "running" }],
+      goal: fixtureGoals.get(sessionId), goalAvailable: true, checkedAt: Date.now(),
     };
     if (job.op === "files") {
       const path = String(args.path ?? "");
@@ -279,7 +350,7 @@ const mobileApprovals = new MobileApprovalBroker(
     async () => ({ outcome: { outcome: "cancelled" } }),
   );
 const server: Server = createMobileServer({
-  auth, agent, feed: feed as unknown as TmaLiveFeed, approvals: mobileApprovals, adminToken, dataDir,
+  auth, agent, feed: feed as unknown as TmaLiveFeed, approvals: mobileApprovals, dataDir,
   staticRoot: resolve("apps/codex-mobile/dist"), port: 0,
 });
 server.listen(0, "127.0.0.1");
@@ -290,7 +361,32 @@ const port = address.port;
 const laptopPairing = auth.beginPairing("Browser QA Laptop");
 auth.approvePairing(laptopPairing.code, ownerId);
 auth.completePairing(laptopPairing.pairingCookie);
-process.stdout.write(JSON.stringify({ origin: "http://127.0.0.1:" + port, port, instanceDir, dataDir, firstSession }) + "\n");
+const browserPairing = auth.beginPairing("Browser QA Mobile");
+auth.approvePairing(browserPairing.code, ownerId);
+const browserLogin = auth.completePairing(browserPairing.pairingCookie);
+if (!browserLogin || browserLogin.status !== "approved") throw new Error("Не удалось создать тестовый вход для браузера");
+const browserBootstrap: Server = createServer((_req, res) => {
+  res.statusCode = 302;
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Location", "http://127.0.0.1:" + port + "/");
+  res.setHeader("Set-Cookie", [
+    `__Host-codex-mobile-session=${browserLogin.cookieValue}; Path=/; Secure; HttpOnly; SameSite=Strict`,
+    `__Host-codex-mobile-csrf=${browserLogin.csrfToken}; Path=/; Secure; SameSite=Strict`,
+  ]);
+  res.end();
+});
+browserBootstrap.listen(0, "127.0.0.1");
+await once(browserBootstrap, "listening");
+const bootstrapAddress = browserBootstrap.address();
+if (!bootstrapAddress || typeof bootstrapAddress === "string") throw new Error("Не удалось открыть тестовый bootstrap");
+process.stdout.write(JSON.stringify({
+  origin: "http://127.0.0.1:" + port,
+  bootstrapOrigin: "http://127.0.0.1:" + bootstrapAddress.port,
+  port,
+  instanceDir,
+  dataDir,
+  firstSession,
+}) + "\n");
 
 let inputBuffer = "";
 process.stdin.setEncoding("utf8");
@@ -314,6 +410,8 @@ process.stdin.on("data", (chunk: string) => {
 });
 
 async function shutdown() {
+  browserBootstrap.closeAllConnections();
+  await new Promise<void>((resolveClose) => browserBootstrap.close(() => resolveClose()));
   server.closeAllConnections();
   await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
   await rm(instanceDir, { recursive: true, force: true });

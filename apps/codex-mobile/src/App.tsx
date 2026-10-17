@@ -5,7 +5,7 @@ import {
   readHistory, readSession, readSnapshot, resolveApproval, runOperation,
 } from "./api.js";
 import { ApprovalPanel } from "./components/approval-panel.js";
-import { Conversation, type PromptImage } from "./components/conversation.js";
+import { Conversation, type FollowUpMode, type PromptImage } from "./components/conversation.js";
 import { DevicePanel } from "./components/device-panel.js";
 import { FilesPanel } from "./components/files-panel.js";
 import { GitPanel } from "./components/git-panel.js";
@@ -34,6 +34,8 @@ export default function App() {
   const [includeTools, setIncludeTools] = useState(false);
   const [loading, setLoading] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [forking, setForking] = useState(false);
+  const [compacting, setCompacting] = useState(false);
   const [streamConnected, setStreamConnected] = useState(false);
   const [error, setError] = useState("");
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
@@ -106,14 +108,14 @@ export default function App() {
   }, [device, refreshSnapshot]);
 
   const selectedSession = useMemo(
-    () => snapshot?.sessions.find((session) => session.id === selectedId),
-    [snapshot?.sessions, selectedId],
+    () => snapshot?.sessions.find((session) => session.id === selectedId) ?? snapshot?.archivedSessions?.find((session) => session.id === selectedId),
+    [snapshot?.sessions, snapshot?.archivedSessions, selectedId],
   );
   const connectedIds = useMemo(
     () => new Set(snapshot?.controlled.map((session) => session.id) ?? []),
     [snapshot?.controlled],
   );
-  const connected = connectedIds.has(selectedId);
+  const connected = !selectedSession?.archived && connectedIds.has(selectedId);
 
   useEffect(() => {
     if (!device || !selectedId) {
@@ -241,6 +243,11 @@ export default function App() {
     if (!selectedId) return;
     setConnecting(true);
     try {
+      if (selectedSession?.archived) {
+        await operation("unarchiveThread", { sessionId: selectedId });
+        await refreshSnapshot();
+        return;
+      }
       await operation("select", { sessionId: selectedId });
       await refreshSnapshot();
     } catch { /* The error is shown in the conversation panel. */ }
@@ -257,20 +264,65 @@ export default function App() {
     } catch { /* The error is shown in the conversation panel. */ }
   }
 
-  async function send(text: string, images: PromptImage[]) {
+  async function forkSession() {
+    if (!selectedId || forking) return;
+    setForking(true);
+    try {
+      const fork = await operation<{ sessionId: string }>("forkThread", { sessionId: selectedId });
+      await operation("select", { sessionId: fork.sessionId });
+      setSelectedId(fork.sessionId);
+      setWorkspaceOpen(false);
+      await refreshSnapshot();
+    } catch { /* Keep the source session selected and show the error. */ }
+    finally { setForking(false); }
+  }
+
+  async function compactSession() {
+    if (!selectedId || compacting) return;
+    setCompacting(true);
+    try {
+      await operation("compactThread", { sessionId: selectedId });
+    } finally { setCompacting(false); }
+  }
+
+  async function archiveSession(sessionId: string) {
+    try {
+      await operation("archiveThread", { sessionId });
+      await refreshSnapshot();
+    } catch { /* The app-level alert reports the archive error. */ }
+  }
+
+  async function unarchiveSession(sessionId: string) {
+    try {
+      await operation("unarchiveThread", { sessionId });
+      await refreshSnapshot();
+    } catch { /* The app-level alert reports the restore error. */ }
+  }
+
+  async function renameSession(sessionId: string, name: string) {
+    await operation("renameThread", { sessionId, name });
+    await refreshSnapshot();
+  }
+
+  async function send(text: string, images: PromptImage[], mode: FollowUpMode) {
     if (!selectedId) return;
-    const fingerprint = JSON.stringify([selectedId, text, images.map((image) => [image.name, image.mimeType, image.data.length])]);
+    const fingerprint = JSON.stringify([selectedId, mode, text, images.map((image) => [image.name, image.mimeType, image.data.length])]);
     if (!pendingSend.current || pendingSend.current.fingerprint !== fingerprint) {
       pendingSend.current = { fingerprint, requestId: crypto.randomUUID() };
     }
-    try {
+    if (mode === "steer") {
+      await operation("steer", {
+        sessionId: selectedId, text, images: images.map(({ name, mimeType, data }) => ({ name, mimeType, data })),
+        requestId: pendingSend.current.requestId,
+      });
+    } else {
       await operation("send", {
         sessionId: selectedId, text, images: images.map(({ name, mimeType, data }) => ({ name, mimeType, data })),
         requestId: pendingSend.current.requestId,
       });
-      pendingSend.current = undefined;
-      setTimeout(() => { void refreshSnapshot(); }, 500);
-    } catch { /* Preserve the draft when Codex rejects a task. */ }
+    }
+    pendingSend.current = undefined;
+    setTimeout(() => { void refreshSnapshot(); }, 500);
   }
 
   async function cancel() {
@@ -345,11 +397,13 @@ export default function App() {
     <div className="flex min-h-0 flex-1">
       <Workspace snapshot={snapshot} selectedProject={selectedProject} search={search} selectedId={selectedId}
         open={workspaceOpen} connectedIds={connectedIds} onProjectChange={setSelectedProject} onSearchChange={setSearch}
-        onSelect={setSelectedId} onCreate={() => void createSession()} onClose={() => setWorkspaceOpen(false)} />
+        onSelect={setSelectedId} onCreate={() => void createSession()} onClose={() => setWorkspaceOpen(false)}
+        onArchive={archiveSession} onUnarchive={unarchiveSession} onRename={renameSession} />
       <Conversation session={selectedSession} history={history} activity={activity} events={events} queue={queue}
         connected={connected} connecting={connecting} loading={loading} streamConnected={streamConnected}
         error={error} includeTools={includeTools} onToggleTools={() => setIncludeTools((value) => !value)}
-        onConnect={() => void connectSession()} onCancel={() => void cancel()} onSend={send}
+        onConnect={() => void connectSession()} onCancel={() => void cancel()} onFork={() => void forkSession()} forking={forking}
+        onCompact={compactSession} compacting={compacting} onSend={send}
         onQueueRemove={(id) => void removeQueued(id)} onQueueResume={() => void resumeQueue()}
         onQueueOpen={readQueue} />
     </div>

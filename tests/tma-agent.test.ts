@@ -111,6 +111,185 @@ test("mobile capability inventory is redacted and settings reuse the owner's exi
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile session archive, restore and rename reuse the owner's Codex catalogue",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-sessions-"));
+  const activeId="30303030-3030-4030-8030-303030303030";
+  const archivedId="40404040-4040-4040-8040-404040404040";
+  const busyId="50505050-5050-4050-8050-505050505050";
+  const active={id:activeId,name:"Active session",cwd:dir,source:"cli",createdAt:1,updatedAt:2,recencyAt:2};
+  const busyThread={id:busyId,name:"Busy session",cwd:dir,source:"cli",createdAt:1,updatedAt:1,recencyAt:1};
+  const archived={id:archivedId,name:"Archived session",cwd:dir,source:"appServer",createdAt:1,updatedAt:1,recencyAt:1};
+  const calls:Array<{op:string;id:string;name?:string}> = [];
+  let busy=false;
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"project",roots:[dir]}],
+    listThreads:async(params?:{archived?:boolean})=>params?.archived?[archived]:[active,busyThread],
+    listAllThreads:async(params?:{archived?:boolean})=>params?.archived?[archived]:[active,busyThread],
+    archiveThread:async(id:string)=>{calls.push({op:"archive",id});},
+    unarchiveThread:async(id:string)=>{calls.push({op:"unarchive",id});},
+    setThreadName:async(id:string,name:string)=>{calls.push({op:"rename",id,name});},
+  }) as unknown as AcpClient;
+  const registry={runtimeForSession:(_owner:number,id:string)=>id===activeId||id===busyId?{sessionId:id,isBusy:busy}:undefined,
+    ownerChatForSession:()=>undefined} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  const perform=(op:string,args:Record<string,unknown>)=>agent.executeMobile({op,userId:101,args} as never);
+  try{
+    assert.equal(await agent.canReadSession(archivedId,101),true,"archived history remains readable to its owner");
+    assert.equal(await agent.canReadSession(archivedId,202),false,"an unapproved user cannot read an archived thread");
+
+    await perform("renameThread",{sessionId:activeId,name:"Renamed from phone"});
+    assert.deepEqual(calls.at(-1),{op:"rename",id:activeId,name:"Renamed from phone"});
+    await assert.rejects(perform("renameThread",{sessionId:activeId,name:"  "}),/название|имя/i);
+
+    await perform("archiveThread",{sessionId:activeId});
+    assert.deepEqual(calls.at(-1),{op:"archive",id:activeId});
+    await perform("unarchiveThread",{sessionId:archivedId});
+    assert.deepEqual(calls.at(-1),{op:"unarchive",id:archivedId});
+
+    busy=true;
+    await assert.rejects(perform("archiveThread",{sessionId:busyId}),/занят|выполня/i);
+    await assert.rejects(agent.executeMobile({op:"archiveThread",userId:202,args:{sessionId:activeId}} as never),/не разрешён|доступ/i);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("mobile steer reuses the active owner runtime and never sends without a confirmed active turn",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-steer-"));
+  const sessionId="60606060-6060-4060-8060-606060606060";
+  const thread={id:sessionId,name:"Steerable session",cwd:dir,source:"cli",createdAt:1,updatedAt:2,recencyAt:2};
+  const runtime={sessionId,isBusy:true};
+  let active=true;
+  const calls:Array<{id:string;content:unknown}> = [];
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"project",roots:[dir]}],
+    listThreads:async(params?:{archived?:boolean})=>params?.archived?[]:[thread],
+    canSteer:(id:string)=>id===sessionId&&active,
+    steer:async(id:string,content:unknown[])=>{calls.push({id,content});},
+  }) as unknown as AcpClient;
+  const registry={runtimeForSession:(_owner:number,id:string)=>id===sessionId?runtime:undefined} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  const args=(requestId:string,text:string)=>({sessionId,requestId,text});
+  try{
+    const result=await agent.executeMobile({op:"steer",userId:101,args:args("steer-request-0001","Остановись после проверки теста")});
+    assert.deepEqual(result,{steered:true});
+    assert.deepEqual(calls,[{id:sessionId,content:[{type:"text",text:"Остановись после проверки теста"}]}]);
+    await assert.rejects(agent.executeMobile({op:"steer",userId:101,args:args("steer-request-0001","другой текст")}),/ID.*другого направления/i);
+    runtime.isBusy=false;
+    await assert.rejects(agent.executeMobile({op:"steer",userId:101,args:args("steer-request-0002","Не отправлять")}),/активного хода/i);
+    runtime.isBusy=true;
+    active=false;
+    await assert.rejects(agent.executeMobile({op:"steer",userId:202,args:args("steer-request-0003","Чужой owner")}),/не разрешён/i);
+    assert.equal(calls.length,1);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("mobile fork copies an authorized idle thread and persists the new owner",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-fork-"));
+  const sourceId="70707070-7070-4070-8070-707070707070";
+  const forkId="80808080-8080-4080-8080-808080808080";
+  const source={id:sourceId,name:"Source session",cwd:dir,source:"cli",createdAt:1,updatedAt:2,recencyAt:2};
+  const forked={thread:{id:forkId,name:"Source session · ответвление",source:"appServer"},cwd:dir,model:"fixture-model"};
+  const threads=[source];
+  let busy=false;
+  let activeTurn=false;
+  const calls:string[]=[];
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"project",roots:[dir]}],
+    listThreads:async(params?:{archived?:boolean})=>params?.archived?[]:threads,
+    listAllThreads:async(params?:{archived?:boolean})=>params?.archived?[]:threads,
+    hasActiveTurn:(id:string)=>id===sourceId&&activeTurn,
+    forkThread:async(id:string)=>{calls.push(id);threads.unshift({...source,id:forkId,name:forked.thread.name,source:"appServer"});return forked;},
+  }) as unknown as AcpClient;
+  const registry={runtimeForSession:(_owner:number,id:string)=>id===sourceId?{sessionId:id,isBusy:busy}:undefined,
+    ownerChatForSession:()=>undefined} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101","202"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    assert.equal(await agent.canReadSession(sourceId,101),true);
+    const result=await agent.executeMobile({op:"forkThread",userId:101,args:{sessionId:sourceId}} as never) as {sessionId?:string};
+    assert.equal(result.sessionId,forkId);
+    assert.deepEqual(calls,[sourceId]);
+    assert.equal(await agent.canReadSession(forkId,101),true);
+    assert.equal(await agent.canReadSession(forkId,202),false);
+    const restoredAgent=new MiniAppAgent({cfg,acp,registry});
+    try{
+      assert.equal(await restoredAgent.canReadSession(forkId,101),true,"the owner can reopen their fork after the mobile adapter is recreated");
+      assert.equal(await restoredAgent.canReadSession(forkId,202),false,"another allowed account cannot read the persisted mobile fork");
+    }finally{restoredAgent.stop();}
+    busy=true;
+    await assert.rejects(agent.executeMobile({op:"forkThread",userId:101,args:{sessionId:sourceId}} as never),/выполня|активный ход/i);
+    busy=false;
+    activeTurn=true;
+    await assert.rejects(agent.executeMobile({op:"forkThread",userId:101,args:{sessionId:sourceId}} as never),/выполня|активный ход/i);
+    assert.deepEqual(calls,[sourceId]);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("mobile goal controls read, update and clear only through the authorized thread",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-goal-"));
+  const sessionId="90909090-9090-4090-8090-909090909090";
+  const thread={id:sessionId,name:"Goal session",cwd:dir,source:"cli",createdAt:1,updatedAt:2,recencyAt:2};
+  let goal:{threadId:string;objective:string;status:"active"|"paused";tokenBudget:number|null;tokensUsed:number;timeUsedSeconds:number;createdAt:number;updatedAt:number}|undefined={
+    threadId:sessionId,objective:"Run existing checks",status:"active",tokenBudget:12000,tokensUsed:140,timeUsedSeconds:45,createdAt:1,updatedAt:2,
+  };
+  const calls:Array<{op:string;threadId:string;input?:unknown}> = [];
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"project",roots:[dir]}],
+    listThreads:async()=>[thread],
+    refreshInventories:async()=>{},
+    accountState:async()=>({}),
+    getThreadGoal:async(id:string)=>{calls.push({op:"get",threadId:id});return goal;},
+    setThreadGoal:async(id:string,input:Record<string,unknown>)=>{calls.push({op:"set",threadId:id,input});goal={...goal!,...input,threadId:id,status:(input.status as "active"|"paused")??goal!.status,tokenBudget:(input.tokenBudget as number|null|undefined)??goal!.tokenBudget};return goal;},
+    clearThreadGoal:async(id:string)=>{calls.push({op:"clear",threadId:id});goal=undefined;return {cleared:true};},
+    availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],currentSubagents:()=>[],
+  }) as unknown as AcpClient;
+  Object.defineProperty(acp,"isConnected",{value:true});
+  const registry={runtimeForSession:()=>undefined,ownerChatForSession:()=>undefined} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    const capabilities=await agent.executeMobile({op:"capabilities",userId:101,args:{sessionId}} as never) as {goalAvailable:boolean;goal?:{objective:string}};
+    assert.equal(capabilities.goalAvailable,true);
+    assert.equal(capabilities.goal?.objective,"Run existing checks");
+    await agent.executeMobile({op:"setGoal",userId:101,args:{sessionId,objective:"Review changes",tokenBudget:8000,status:"paused"}} as never);
+    assert.deepEqual(calls.at(-1),{op:"set",threadId:sessionId,input:{objective:"Review changes",status:"paused",tokenBudget:8000}});
+    await agent.executeMobile({op:"clearGoal",userId:101,args:{sessionId}} as never);
+    assert.deepEqual(calls.at(-1),{op:"clear",threadId:sessionId});
+    await assert.rejects(agent.executeMobile({op:"setGoal",userId:202,args:{sessionId,objective:"Forbidden"}} as never),/не разрешён/i);
+    await assert.rejects(agent.executeMobile({op:"setGoal",userId:101,args:{sessionId,tokenBudget:-1}} as never),/бюджет/i);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("mobile context compaction reuses the owner runtime and refuses active turns",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-compact-"));
+  const sessionId="91919191-9191-4191-8191-919191919191";
+  const thread={id:sessionId,name:"Compact session",cwd:dir,source:"cli",createdAt:1,updatedAt:2,recencyAt:2};
+  const runtime={sessionId,isBusy:false};
+  let activeTurn=false;
+  const calls:string[]=[];
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"project",roots:[dir]}],
+    listThreads:async()=>[thread],
+    hasActiveTurn:()=>activeTurn,
+    compactThread:async(id:string)=>{calls.push(id);},
+  }) as unknown as AcpClient;
+  const registry={runtimeForSession:(_owner:number,id:string)=>id===sessionId?runtime:undefined} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    assert.deepEqual(await agent.executeMobile({op:"compactThread",userId:101,args:{sessionId}} as never),{started:true});
+    assert.deepEqual(calls,[sessionId]);
+    runtime.isBusy=true;
+    await assert.rejects(agent.executeMobile({op:"compactThread",userId:101,args:{sessionId}} as never),/выполняет задачу/i);
+    runtime.isBusy=false;
+    activeTurn=true;
+    await assert.rejects(agent.executeMobile({op:"compactThread",userId:101,args:{sessionId}} as never),/активн|выполняет/i);
+    await assert.rejects(agent.executeMobile({op:"compactThread",userId:202,args:{sessionId}} as never),/не разрешён/i);
+    assert.deepEqual(calls,[sessionId]);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile project files stay inside the authorized session, hide secrets and save with a stale-file check",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-files-"));
   const project=join(dir,"project");

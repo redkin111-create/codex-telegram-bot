@@ -38,6 +38,56 @@ test("workspace mode runs in-project actions without per-action approval and kee
   });
 });
 
+test("steer targets only the confirmed active turn and rejects stale or missing turns", async () => {
+  const client = new AcpClient({ codexCliPath: "codex", workspace: "C:\\work", trustAllTools: false });
+  let call: { method: string; params: unknown } | undefined;
+  const internal = client as unknown as {
+    connected: boolean;
+    turns: Map<string, { turnId?: string }>;
+    request: (method: string, params: unknown) => Promise<unknown>;
+  };
+  internal.connected = true;
+  internal.turns.set("thread-1", { turnId: "turn-current" });
+  internal.request = async (method, params) => {
+    call = { method, params };
+    return { turnId: "turn-current" };
+  };
+
+  await client.steer("thread-1", [{ type: "text", text: "Исправь только ошибку из журнала" }]);
+  assert.deepEqual(call, {
+    method: "turn/steer",
+    params: {
+      threadId: "thread-1",
+      expectedTurnId: "turn-current",
+      input: [{ type: "text", text: "Исправь только ошибку из журнала" }],
+    },
+  });
+  internal.request = async () => ({ turnId: "a-different-turn" });
+  await assert.rejects(client.steer("thread-1", [{ type: "text", text: "Не менять файлы" }]), /не подтвердил/i);
+  internal.turns.delete("thread-1");
+  await assert.rejects(client.steer("thread-1", [{ type: "text", text: "Уже не активно" }]), /Нет активной задачи/i);
+});
+
+test("fork requests Codex to copy only the selected source thread", async () => {
+  const client = new AcpClient({ codexCliPath: "codex", workspace: "C:\\work", trustAllTools: false });
+  let call: { method: string; params: unknown } | undefined;
+  const internal = client as unknown as {
+    request: (method: string, params: unknown) => Promise<unknown>;
+    threadCwd: Map<string, string>;
+  };
+  internal.threadCwd.set("thread-source", "C:\\work\\project");
+  internal.request = async (method, params) => {
+    call = { method, params };
+    return { thread: { id: "thread-fork" }, cwd: "C:\\work\\project", model: "fixture-model" };
+  };
+
+  const forkThread = (client as unknown as { forkThread?: (id: string) => Promise<unknown> }).forkThread;
+  assert.equal(typeof forkThread, "function", "AcpClient must expose Codex's native thread/fork operation");
+  const result = await forkThread!.call(client, "thread-source");
+  assert.deepEqual(call, { method: "thread/fork", params: { threadId: "thread-source" } });
+  assert.deepEqual(result, { thread: { id: "thread-fork" }, cwd: "C:\\work\\project", model: "fixture-model" });
+});
+
 test("full conversation catalogue follows every thread/list cursor page", async () => {
   const client = new AcpClient({
     codexCliPath: "codex",

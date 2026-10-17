@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { Activity, Bot, ChevronDown, CircleHelp, Clock3, Plug, ShieldCheck, Sparkles, X } from "lucide-react";
+import { Activity, Bot, ChevronDown, CircleHelp, Clock3, Pause, Play, Plug, ShieldCheck, Sparkles, Target, Trash2, X } from "lucide-react";
 import { readCapabilities } from "../api.js";
 import type { MobileCapabilities, MobileOperation } from "../types.js";
-import { Badge, Button, Card } from "./ui/primitives.js";
+import { Badge, Button, Card, Input, Textarea } from "./ui/primitives.js";
 
 const effortLabel: Record<string, string> = {
   minimal: "Минимум", low: "Низкий", medium: "Средний", high: "Высокий", max: "Максимум",
@@ -18,10 +18,18 @@ export function SettingsPanel({ sessionId, connected, onClose, onOperation }: {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [goalObjective, setGoalObjective] = useState("");
+  const [goalBudget, setGoalBudget] = useState("");
 
   async function reload() {
     setLoading(true);
-    try { setCapabilities(await readCapabilities(sessionId)); setError(""); }
+    try {
+      const next = await readCapabilities(sessionId);
+      setCapabilities(next);
+      setGoalObjective(next.goal?.objective ?? "");
+      setGoalBudget(next.goal?.tokenBudget ? String(next.goal.tokenBudget) : "");
+      setError("");
+    }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось прочитать возможности Codex"); }
     finally { setLoading(false); }
   }
@@ -35,6 +43,43 @@ export function SettingsPanel({ sessionId, connected, onClose, onOperation }: {
       await onOperation(op, { sessionId, [field]: value });
       await reload();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось сохранить настройку"); }
+    finally { setSaving(false); }
+  }
+
+  async function saveGoal() {
+    const objective = goalObjective.trim();
+    if (!objective) { setError("Напишите цель Codex перед сохранением."); return; }
+    const tokenBudget = goalBudget.trim() ? Number(goalBudget) : null;
+    if (tokenBudget !== null && (!Number.isSafeInteger(tokenBudget) || tokenBudget < 1 || tokenBudget > 1_000_000_000)) {
+      setError("Бюджет должен быть целым числом от 1 до 1 000 000 000 токенов.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await onOperation("setGoal", { sessionId, objective, tokenBudget });
+      await reload();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось сохранить цель"); }
+    finally { setSaving(false); }
+  }
+
+  async function setGoalStatus(status: "active" | "paused") {
+    setSaving(true);
+    setError("");
+    try {
+      await onOperation("setGoal", { sessionId, status });
+      await reload();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось изменить статус цели"); }
+    finally { setSaving(false); }
+  }
+
+  async function clearGoal() {
+    setSaving(true);
+    setError("");
+    try {
+      await onOperation("clearGoal", { sessionId });
+      await reload();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось удалить цель"); }
     finally { setSaving(false); }
   }
 
@@ -61,6 +106,24 @@ export function SettingsPanel({ sessionId, connected, onClose, onOperation }: {
             <label className="block space-y-1.5"><span className="text-xs text-muted">Режим</span><span className="relative block"><select aria-label="Режим Codex" className={inputClass} value={capabilities.mode || "default"} disabled={!usable} onChange={(event) => void update("setMode", "modeId", event.target.value)}><option value="default">По умолчанию</option>{capabilities.modes.map((mode) => <option key={mode.id} value={mode.id}>{mode.name}</option>)}</select><ChevronDown size={16} className="pointer-events-none absolute right-3 top-3.5 text-muted" /></span></label>
             <label className="block space-y-1.5"><span className="text-xs text-muted">Глубина рассуждений</span><span className="relative block"><select aria-label="Глубина рассуждений" className={inputClass} value={capabilities.reasoning} disabled={!usable} onChange={(event) => void update("setReasoning", "effort", event.target.value)}>{capabilities.reasoningLevels.map((level) => <option key={level} value={level}>{effortLabel[level] ?? level}</option>)}</select><ChevronDown size={16} className="pointer-events-none absolute right-3 top-3.5 text-muted" /></span></label>
             {!connected && <p className="text-xs leading-relaxed text-muted">Чтобы менять настройки, сначала нажмите «Подключить» в выбранном сеансе.</p>}
+          </Card>
+          <Card className="space-y-4 p-4">
+            <h3 className="flex items-center gap-2 text-sm font-semibold"><Target size={16} className="text-accent" /> Цель сеанса</h3>
+            {capabilities.goalAvailable === false ? <p className="text-xs leading-relaxed text-muted">Эта версия Codex не сообщает цели сеанса.</p> : <>
+              {capabilities.goal && <div className="rounded-xl border border-border bg-[#111613] p-3">
+                <div className="flex items-center justify-between gap-2"><span className="text-xs font-semibold">{({ active: "Активна", paused: "Приостановлена", blocked: "Заблокирована", usageLimited: "Лимит использования", budgetLimited: "Бюджет исчерпан", complete: "Завершена" } as const)[capabilities.goal.status]}</span>
+                  {capabilities.goal.status === "active" ? <Button type="button" variant="outline" className="min-h-8 px-2 text-[11px]" disabled={saving || !capabilities.online} onClick={() => void setGoalStatus("paused")}><Pause size={12} /> Пауза</Button>
+                    : capabilities.goal.status === "paused" ? <Button type="button" variant="outline" className="min-h-8 px-2 text-[11px]" disabled={saving || !capabilities.online} onClick={() => void setGoalStatus("active")}><Play size={12} /> Продолжить</Button> : null}
+                </div>
+                <p className="mt-2 text-xs leading-5 text-muted">Использовано токенов: {capabilities.goal.tokensUsed.toLocaleString("ru-RU")}{capabilities.goal.tokenBudget ? ` из ${capabilities.goal.tokenBudget.toLocaleString("ru-RU")}` : " · без лимита"}</p>
+              </div>}
+              <label className="block space-y-1.5"><span className="text-xs text-muted">Что Codex должен довести до результата</span><Textarea aria-label="Цель Codex" value={goalObjective} onChange={(event) => setGoalObjective(event.target.value)} maxLength={1000} rows={3} placeholder="Например: исправить ошибки сборки и проверить тесты" disabled={saving || !capabilities.online} /></label>
+              <label className="block space-y-1.5"><span className="text-xs text-muted">Лимит токенов · необязательно</span><Input aria-label="Лимит токенов цели" type="number" min={1} max={1_000_000_000} step={1} value={goalBudget} onChange={(event) => setGoalBudget(event.target.value)} placeholder="Без лимита" disabled={saving || !capabilities.online} /></label>
+              <div className="flex gap-2">
+                <Button type="button" className="flex-1" disabled={saving || !capabilities.online || !goalObjective.trim()} onClick={() => void saveGoal()}>{capabilities.goal ? "Сохранить цель" : "Поставить цель"}</Button>
+                {capabilities.goal && <Button type="button" variant="outline" className="min-h-11 px-3 text-[#c58980]" aria-label="Удалить цель сеанса" disabled={saving || !capabilities.online} onClick={() => void clearGoal()}><Trash2 size={15} /> Удалить</Button>}
+              </div>
+            </>}
           </Card>
           {capabilities.account && <Card className="p-4"><h3 className="flex items-center gap-2 text-sm font-semibold"><ShieldCheck size={16} className="text-accent" /> Аккаунт</h3><p className="mt-3 text-sm">{capabilities.account.email || capabilities.account.type}</p><p className="mt-1 text-xs text-muted">{capabilities.account.plan || capabilities.account.type}</p></Card>}
           <Card className="space-y-3 p-4">

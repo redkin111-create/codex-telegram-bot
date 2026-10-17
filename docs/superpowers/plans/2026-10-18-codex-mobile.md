@@ -22,7 +22,8 @@
 
 ## Review Focus
 
-- Reverse-proxy requests cannot impersonate the local CLI approval channel.
+- The laptop CLI approval channel is a separate OS-local IPC endpoint (Windows
+  named pipe or Unix socket), never an HTTP route forwarded to a phone.
 - A revoked/expired device cannot keep using an open SSE connection.
 - Guessing a session ID cannot expose another user's history, screenshots or files.
 - Codex disconnects, timeouts and partial turns remain visible as errors/unknown status.
@@ -32,7 +33,7 @@
 
 ### Task 1: Pairing and device sessions
 
-- Implement expiring one-time pairing, local CLI approval, rate limits, hashed session tokens, device list/revoke, Origin validation and CSRF.
+- Implement expiring one-time pairing, local CLI approval over OS IPC, rate limits, hashed session tokens, device list/revoke, Origin validation and CSRF.
 - Add unit and HTTP tests for approval, expiry, brute-force throttling, revoked devices, Origin/CSRF and unauthenticated requests.
 - Add a local control command that uses a private control channel; do not use `remoteAddress` as the approval check.
 
@@ -46,12 +47,14 @@
 
 - Add the separate React/Tailwind app and safe reusable shadcn-style controls.
 - Implement pairing UX, device management, projects/sessions/history, live status, tool output, screenshots, prompt/queue/stop and phone approval cards with Telegram fallback.
+- Implement session rename, archive, restore and fork using Codex's existing thread APIs.
 - Browser-check each visible behavior on a small phone viewport against an isolated fixture; check XSS and overflow.
 - Add a session-scoped file browser/editor with UTF-8 and size limits, secret-file exclusions, optimistic save checks and busy-session write rejection.
 
 ### Task 4: Coding workflow and integrations
 
-- Finish file edit edge cases, then add remaining review controls and bounded terminal actions through existing runtime interfaces. Git now has guarded per-path stage/unstage, staged commit, local branch listing, create-branch/existing-branch switching, and path-scoped diff review including rename paths.
+- Add complete work-context selection (host, workspace, branch, worktree and environment setup), steering, richer attachments, side chats, plans/goals, compact and pinning where existing APIs expose them. Steering, goals and manual compact are now implemented; they still need compatibility checks against installed Desktop versions.
+- Finish file edit edge cases, then add review comments, conflict resolution, remote branches and bounded terminal/process controls through existing runtime interfaces. Git already has guarded per-path stage/unstage, staged commit, local branch listing, create-branch/existing-branch switching, and path-scoped diff review including rename paths.
 - Add models/modes/reasoning, safe skills/MCP/subagent inventories and quota display. Saved-account management, Apps/plugins, tasks and voice remain open.
 - Keep changes allowlisted and require confirmation for destructive or permission-changing actions.
 - Add server tests and browser-check every action against fake filesystem/runtime fixtures.

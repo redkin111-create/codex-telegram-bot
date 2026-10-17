@@ -10,7 +10,6 @@ import type { LiveEvent, TmaLiveFeed } from "../src/tma/live.js";
 
 const allowedSession = "00000000-0000-4000-8000-000000000101";
 const foreignSession = "00000000-0000-4000-8000-000000000202";
-const adminToken = "fixture-control-token-that-is-not-a-browser-session";
 
 class FixtureFeed {
   readonly epoch = "1234567890abcdef12345678";
@@ -77,7 +76,6 @@ async function startFixture() {
         return true;
       },
     },
-    adminToken,
     dataDir,
     staticRoot: join(dataDir, "no-static-app"),
     port: 0,
@@ -91,7 +89,7 @@ async function startFixture() {
   return { server, auth, feed, calls, approvalDecisions, approvalId, dataDir, origin, failNext: () => { failNext = true; } };
 }
 
-async function pair(origin: string) {
+async function pair(origin: string, auth: MobileAuthStore) {
   const start = await fetch(origin + "/api/pairing/start", {
     method: "POST", headers: { origin, "content-type": "application/json" },
     body: JSON.stringify({ deviceName: "Pixel fixture" }),
@@ -99,11 +97,7 @@ async function pair(origin: string) {
   assert.equal(start.status, 201);
   const challenge = await start.json() as { code: string };
   const pairCookie = cookiePair(start.headers.get("set-cookie"), "__Host-codex-mobile-pair");
-  const approval = await fetch(origin + "/_local/pairings/approve", {
-    method: "POST", headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" },
-    body: JSON.stringify({ code: challenge.code, ownerId: 101 }),
-  });
-  assert.equal(approval.status, 200);
+  assert.equal(auth.approvePairing(challenge.code, 101), true);
   const complete = await fetch(origin + "/api/pairing/status", {
     headers: { origin, cookie: pairCookie },
   });
@@ -142,26 +136,29 @@ test("private API and event stream reject requests without a paired device", asy
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
-test("reverse-proxy loopback headers cannot approve a pairing without the local control token", async () => {
+test("reverse-proxy loopback headers cannot reach the laptop-only pairing approval channel", async () => {
   const f = await startFixture();
   try {
     const start = await fetch(f.origin + "/api/pairing/start", {
       method: "POST", headers: { origin: f.origin, "content-type": "application/json" },
       body: JSON.stringify({ deviceName: "Pixel fixture" }),
     });
-    const { code } = await start.json() as { code: string };
+    const { code: _code } = await start.json() as { code: string };
+    const pairCookie = cookiePair(start.headers.get("set-cookie"), "__Host-codex-mobile-pair");
     const response = await fetch(f.origin + "/_local/pairings/approve", {
       method: "POST", headers: { "x-forwarded-for": "127.0.0.1", "content-type": "application/json" },
-      body: JSON.stringify({ code, ownerId: 101 }),
+      body: JSON.stringify({ code: _code, ownerId: 101 }),
     });
-    assert.equal(response.status, 401);
+    assert.equal(response.status, 404);
+    const pairingState = await fetch(f.origin + "/api/pairing/status", { headers: { origin: f.origin, cookie: pairCookie } });
+    assert.deepEqual(await pairingState.json(), { status: "pending" });
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
 test("pairing cookie becomes a Secure HttpOnly session and reads the shared Codex catalogue", async () => {
   const f = await startFixture();
   try {
-    const login = await pair(f.origin);
+    const login = await pair(f.origin, f.auth);
     const me = await fetch(f.origin + "/api/session", {
       headers: { origin: f.origin, cookie: login.sessionCookie },
     });
@@ -181,7 +178,7 @@ test("pairing cookie becomes a Secure HttpOnly session and reads the shared Code
 test("capabilities are authenticated and session-scoped before reaching the shared agent", async () => {
   const f = await startFixture();
   try {
-    const login = await pair(f.origin);
+    const login = await pair(f.origin, f.auth);
     const capabilities = await fetch(f.origin + `/api/capabilities?sessionId=${allowedSession}`, {
       headers: { origin: f.origin, cookie: login.sessionCookie },
     });
@@ -201,7 +198,7 @@ test("capabilities are authenticated and session-scoped before reaching the shar
 test("Codex preference changes require an authorized session and device CSRF token", async () => {
   const f = await startFixture();
   try {
-    const login = await pair(f.origin);
+    const login = await pair(f.origin, f.auth);
     const url = f.origin + "/api/operations";
     const denied = await fetch(url, {
       method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" },
@@ -223,10 +220,129 @@ test("Codex preference changes require an authorized session and device CSRF tok
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
+test("steer requests require an authenticated device, same Origin, CSRF and session ownership", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const url = f.origin + "/api/operations";
+    const body = JSON.stringify({ op: "steer", args: { sessionId: allowedSession, requestId: "steer-request-0001", text: "Stop after the test" } });
+    const anonymous = await fetch(url, { method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body });
+    assert.equal(anonymous.status, 401);
+    const noCsrf = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body,
+    });
+    assert.equal(noCsrf.status, 403);
+    const foreign = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ op: "steer", args: { sessionId: foreignSession, requestId: "steer-request-0002", text: "Do not send" } }),
+    });
+    assert.equal(foreign.status, 403);
+    const accepted = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body,
+    });
+    assert.equal(accepted.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "steer");
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("fork requests require a paired owner, same Origin and a device CSRF token", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const url = f.origin + "/api/operations";
+    const payload = (sessionId = allowedSession) => JSON.stringify({ op: "forkThread", args: { sessionId } });
+    const anonymous = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: payload(),
+    });
+    assert.equal(anonymous.status, 401);
+    const noCsrf = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: payload(),
+    });
+    assert.equal(noCsrf.status, 403);
+    const foreign = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: payload(foreignSession),
+    });
+    assert.equal(foreign.status, 403);
+    const accepted = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: payload(),
+    });
+    assert.equal(accepted.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "forkThread");
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("goal changes require an authenticated device, same Origin and CSRF", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const url = f.origin + "/api/operations";
+    const body = JSON.stringify({ op: "setGoal", args: { sessionId: allowedSession, objective: "Finish the mobile flow", tokenBudget: 5000 } });
+    const anonymous = await fetch(url, { method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body });
+    assert.equal(anonymous.status, 401);
+    const noCsrf = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body,
+    });
+    assert.equal(noCsrf.status, 403);
+    const changed = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body,
+    });
+    assert.equal(changed.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "setGoal");
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("manual compaction requires a paired device, same Origin and CSRF", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const url = f.origin + "/api/operations";
+    const body = JSON.stringify({ op: "compactThread", args: { sessionId: allowedSession } });
+    const anonymous = await fetch(url, { method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body });
+    assert.equal(anonymous.status, 401);
+    const noCsrf = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body,
+    });
+    assert.equal(noCsrf.status, 403);
+    const accepted = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body,
+    });
+    assert.equal(accepted.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "compactThread");
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("archive, restore and rename actions require a paired owner, Origin and CSRF", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const url = f.origin + "/api/operations";
+    const payload = (op: string, sessionId = allowedSession) => JSON.stringify({ op, args: { sessionId, name: "Renamed session" } });
+    const anonymous = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: payload("archiveThread"),
+    });
+    assert.equal(anonymous.status, 401);
+    const noCsrf = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: payload("archiveThread"),
+    });
+    assert.equal(noCsrf.status, 403);
+    const foreign = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: payload("unarchiveThread", foreignSession),
+    });
+    assert.equal(foreign.status, 403);
+    for (const op of ["renameThread", "archiveThread", "unarchiveThread"]) {
+      const result = await fetch(url, {
+        method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: payload(op),
+      });
+      assert.equal(result.status, 200);
+      assert.equal(f.calls.at(-1)?.op, op);
+    }
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
 test("mobile approval cards are session scoped and decisions require Origin plus CSRF", async () => {
   const f = await startFixture();
   try {
-    const login = await pair(f.origin);
+    const login = await pair(f.origin, f.auth);
     const list = await fetch(f.origin + `/api/approvals?sessionId=${allowedSession}`, {
       headers: { origin: f.origin, cookie: login.sessionCookie },
     });
@@ -252,7 +368,7 @@ test("mobile approval cards are session scoped and decisions require Origin plus
 test("project file reads and writes use the authorized session and write CSRF checks", async () => {
   const f = await startFixture();
   try {
-    const login = await pair(f.origin);
+    const login = await pair(f.origin, f.auth);
     const files = await fetch(f.origin + `/api/files?sessionId=${allowedSession}&path=src`, {
       headers: { origin: f.origin, cookie: login.sessionCookie },
     });
@@ -294,7 +410,7 @@ test("project file reads and writes use the authorized session and write CSRF ch
 test("Git status and diffs are exposed only for the paired owner's session", async () => {
   const f = await startFixture();
   try {
-    const login = await pair(f.origin);
+    const login = await pair(f.origin, f.auth);
     const status = await fetch(f.origin + `/api/git/status?sessionId=${allowedSession}`, {
       headers: { origin: f.origin, cookie: login.sessionCookie },
     });
@@ -349,7 +465,7 @@ test("Git status and diffs are exposed only for the paired owner's session", asy
 test("screenshots are served only for an authorized session with an image content type", async () => {
   const f = await startFixture();
   try {
-    const login = await pair(f.origin);
+    const login = await pair(f.origin, f.auth);
     const image = await fetch(f.origin + `/api/image?sessionId=${allowedSession}&path=${encodeURIComponent("C:\\work\\demo\\screen.png")}`, {
       headers: { origin: f.origin, cookie: login.sessionCookie },
     });
@@ -366,7 +482,7 @@ test("screenshots are served only for an authorized session with an image conten
 test("foreign session identifiers are denied before history reaches the existing agent", async () => {
   const f = await startFixture();
   try {
-    const login = await pair(f.origin);
+    const login = await pair(f.origin, f.auth);
     const response = await fetch(f.origin + `/api/history/${foreignSession}`, {
       headers: { origin: f.origin, cookie: login.sessionCookie },
     });
@@ -378,7 +494,7 @@ test("foreign session identifiers are denied before history reaches the existing
 test("mutations require both an allowed Origin and the device CSRF token", async () => {
   const f = await startFixture();
   try {
-    const login = await pair(f.origin);
+    const login = await pair(f.origin, f.auth);
     const url = f.origin + "/api/operations";
     const payload = JSON.stringify({ op: "send", args: { sessionId: allowedSession, text: "hello" } });
     const badOrigin = await fetch(url, {
@@ -396,7 +512,7 @@ test("mutations require both an allowed Origin and the device CSRF token", async
 test("authenticated event stream resumes its cursor and closes when the client disconnects", async () => {
   const f = await startFixture();
   try {
-    const login = await pair(f.origin);
+    const login = await pair(f.origin, f.auth);
     const controller = new AbortController();
     const response = await fetch(f.origin + "/api/events", {
       method: "POST", signal: controller.signal,
@@ -417,7 +533,7 @@ test("authenticated event stream resumes its cursor and closes when the client d
 test("Codex failures remain visible as a controlled service error", async () => {
   const f = await startFixture();
   try {
-    const login = await pair(f.origin);
+    const login = await pair(f.origin, f.auth);
     f.failNext();
     const response = await fetch(f.origin + "/api/snapshot", {
       headers: { origin: f.origin, cookie: login.sessionCookie },

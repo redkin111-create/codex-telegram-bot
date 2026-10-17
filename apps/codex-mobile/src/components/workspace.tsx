@@ -1,11 +1,11 @@
-import { useMemo } from "react";
-import { FolderKanban, Plus, Search, X } from "lucide-react";
-import type { MobileSnapshot } from "../types.js";
+import { useMemo, useState } from "react";
+import { Archive, ArchiveRestore, Check, FolderKanban, Pencil, Plus, Search, X } from "lucide-react";
+import type { MobileSession, MobileSnapshot } from "../types.js";
 import { Button, Input } from "./ui/primitives.js";
 
 export function Workspace({
   snapshot, selectedProject, search, selectedId, open, connectedIds,
-  onProjectChange, onSearchChange, onSelect, onCreate, onClose,
+  onProjectChange, onSearchChange, onSelect, onCreate, onClose, onArchive, onUnarchive, onRename,
 }: {
   snapshot: MobileSnapshot;
   selectedProject: string;
@@ -18,12 +18,29 @@ export function Workspace({
   onSelect: (sessionId: string) => void;
   onCreate: () => void;
   onClose: () => void;
+  onArchive: (sessionId: string) => Promise<void>;
+  onUnarchive: (sessionId: string) => Promise<void>;
+  onRename: (sessionId: string, name: string) => Promise<void>;
 }) {
-  const sessions = useMemo(() => snapshot.sessions.filter((session) =>
+  const [showArchived, setShowArchived] = useState(false);
+  const [editingId, setEditingId] = useState("");
+  const [renameValue, setRenameValue] = useState("");
+  const [savingName, setSavingName] = useState(false);
+  const sessions = useMemo(() => (showArchived ? snapshot.archivedSessions ?? [] : snapshot.sessions).filter((session) =>
     (!selectedProject || session.cwd === selectedProject) &&
     (!search || `${session.title} ${session.cwd}`.toLowerCase().includes(search.toLowerCase())),
-  ), [snapshot.sessions, selectedProject, search]);
+  ), [snapshot.sessions, snapshot.archivedSessions, selectedProject, search, showArchived]);
   const currentProject = snapshot.projects.find((project) => project.path === selectedProject);
+
+  async function saveRename(session: MobileSession) {
+    if (!renameValue.trim() || savingName) return;
+    setSavingName(true);
+    try {
+      await onRename(session.id, renameValue.trim());
+      setEditingId("");
+    } catch { /* The app-level alert keeps the name available for retry. */ }
+    finally { setSavingName(false); }
+  }
 
   return <>
     {open && <button className="fixed inset-0 z-30 bg-black/55 md:hidden" aria-label="Закрыть список сеансов" onClick={onClose} />}
@@ -48,21 +65,38 @@ export function Workspace({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
-        <div className="mb-2 flex items-center justify-between px-2 text-[10px] font-bold uppercase tracking-[.18em] text-[#849084]"><span>Сеансы</span><span>{sessions.length}</span></div>
+        <div className="mb-2 flex items-center justify-between gap-2 px-2 text-[10px] font-bold uppercase tracking-[.18em] text-[#849084]">
+          <span>{showArchived ? "Архив" : "Сеансы"} · {sessions.length}</span>
+          <button type="button" aria-pressed={showArchived} disabled={!snapshot.archiveAvailable} onClick={() => { setShowArchived((value) => !value); setEditingId(""); }} className="min-h-9 rounded-lg px-2 text-[11px] font-semibold normal-case tracking-normal text-accent disabled:cursor-not-allowed disabled:text-muted">
+            {snapshot.archiveAvailable ? showArchived ? "Активные" : "Архив" : "Архив недоступен"}
+          </button>
+        </div>
+        {showArchived && !snapshot.archiveAvailable && <p className="px-2 pb-2 text-xs text-muted">Codex не подтвердил доступность архива.</p>}
         <div className="space-y-1">
           {sessions.map((session) => {
             const active = session.id === selectedId;
             const connected = connectedIds.has(session.id);
-            return <button key={session.id} onClick={() => { onSelect(session.id); onClose(); }} className={`w-full rounded-xl border px-3 py-3 text-left transition ${active ? "border-[#596b43] bg-[#222a1e]" : "border-transparent hover:border-border hover:bg-elevated"}`}>
-              <span className="flex items-start justify-between gap-3">
-                <span className={`min-w-0 truncate text-sm font-medium ${active ? "text-text" : "text-[#c4cdc3]"}`}>{session.title || "Новый сеанс"}</span>
-                <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${session.busy ? "animate-pulse bg-[#d8f58e]" : connected ? "bg-[#76984c]" : "bg-[#59625a]"}`} aria-label={session.busy ? "Выполняется" : connected ? "Подключён" : "Статус неизвестен"} />
-              </span>
-              <span className="mt-2 block truncate text-xs text-[#839087]">{session.liveLabel || "Статус неизвестен"}</span>
-              <span className="mt-1 block truncate font-mono text-[10px] text-[#657066]">{session.cwd}</span>
-            </button>;
+            return <div key={session.id} className={`rounded-xl border p-2 ${active ? "border-[#596b43] bg-[#222a1e]" : "border-transparent hover:border-border hover:bg-elevated"}`}>
+              <button type="button" onClick={() => { onSelect(session.id); onClose(); }} className="w-full rounded-lg px-1 py-1 text-left">
+                <span className="flex items-start justify-between gap-3">
+                  <span className={`min-w-0 truncate text-sm font-medium ${active ? "text-text" : "text-[#c4cdc3]"}`}>{session.title || "Новый сеанс"}</span>
+                  <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${session.archived ? "bg-[#59625a]" : session.busy ? "animate-pulse bg-[#d8f58e]" : connected ? "bg-[#76984c]" : "bg-[#59625a]"}`} aria-label={session.archived ? "В архиве" : session.busy ? "Выполняется" : connected ? "Подключён" : "Статус неизвестен"} />
+                </span>
+                <span className="mt-2 block truncate text-xs text-[#839087]">{session.archived ? "В архиве" : session.liveLabel || "Статус неизвестен"}</span>
+                <span className="mt-1 block truncate font-mono text-[10px] text-[#657066]">{session.cwd}</span>
+              </button>
+              {editingId === session.id ? <form className="mt-2 flex gap-2" onSubmit={(event) => { event.preventDefault(); void saveRename(session); }}>
+                <Input aria-label={`Новое название ${session.title}`} value={renameValue} onChange={(event) => setRenameValue(event.target.value)} maxLength={120} autoFocus />
+                <Button type="submit" variant="outline" className="min-h-10 px-2" aria-label="Сохранить название" disabled={!renameValue.trim() || savingName}><Check size={16} /></Button>
+                <Button type="button" variant="ghost" className="min-h-10 px-2" aria-label="Отменить переименование" onClick={() => setEditingId("")}><X size={16} /></Button>
+              </form> : <div className="mt-2 flex gap-2">
+                <Button type="button" variant="ghost" className="min-h-9 flex-1 px-2 text-[11px]" onClick={() => { setEditingId(session.id); setRenameValue(session.title); }}><Pencil size={13} /> Переименовать</Button>
+                {showArchived ? <Button type="button" variant="outline" className="min-h-9 flex-1 px-2 text-[11px]" onClick={() => void onUnarchive(session.id)}><ArchiveRestore size={13} /> Восстановить</Button>
+                  : <Button type="button" variant="outline" className="min-h-9 flex-1 px-2 text-[11px]" disabled={session.busy || !snapshot.archiveAvailable} onClick={() => void onArchive(session.id)}><Archive size={13} /> В архив</Button>}
+              </div>}
+            </div>;
           })}
-          {sessions.length === 0 && <p className="rounded-xl border border-dashed border-border px-3 py-5 text-center text-xs leading-5 text-muted">Сеансы не найдены. Проверьте фильтр или обновите список.</p>}
+          {sessions.length === 0 && <p className="rounded-xl border border-dashed border-border px-3 py-5 text-center text-xs leading-5 text-muted">{showArchived ? "В архиве нет сеансов." : "Сеансы не найдены. Проверьте фильтр или обновите список."}</p>}
         </div>
       </div>
       <div className="border-t border-border px-4 py-3 text-[11px] text-[#788278]">Codex Desktop · история и управление</div>
