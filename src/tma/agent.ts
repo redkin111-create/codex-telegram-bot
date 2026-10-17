@@ -2,7 +2,7 @@
  * Windows-side outbound TMA agent. Reuses the SAME AcpClient/RuntimeRegistry as
  * the Telegram bot and never listens on the PC's public network interface.
  */
-import { lstatSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
@@ -41,7 +41,7 @@ const sleep=(ms:number,signal:AbortSignal)=>new Promise<void>(resolve=>{
 });
 
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; }
-export type MobileLocalOperation = "capabilities" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "files" | "readFile" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch";
+export type MobileLocalOperation = "capabilities" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 export class MiniAppAgent {
   private readonly abort=new AbortController();
@@ -487,6 +487,64 @@ export class MiniAppAgent {
         await acp.uninstallMobilePlugin(pluginId);
         return {uninstalled:true};
       }
+      case "createWorktree":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        const source=await this.thread(sessionId,chatId);
+        if(!source.cwd)throw new Error("Для сеанса не определена папка проекта");
+        if(await this.isArchivedThread(sessionId,chatId))throw new Error("Нельзя создать рабочую копию из архивного сеанса");
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        this.requireIdleMobileRuntime(sessionId,chatId);
+        if(typeof acp.hasActiveTurn==="function"&&acp.hasActiveTurn(sessionId))throw new Error("Дождитесь завершения текущей задачи Codex");
+        const branchName=argumentString(args,"branchName",100).trim();
+        if(!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,79}$/.test(branchName)||branchName.includes("..")||branchName.includes("//")||branchName.endsWith("/")||branchName.endsWith(".")||branchName.includes("@{")||branchName.includes("\\"))
+          throw new Error("Недопустимое имя ветки");
+        const {root}=this.mobileRoot(sessionId,chatId);
+        const gitRoot=this.gitRoot(root);
+        try{this.gitOutput(gitRoot,["check-ref-format","--branch",branchName],4096);}
+        catch{throw new Error("Недопустимое имя ветки");}
+        if(this.mobileGitStatus(sessionId,chatId).branches.includes(branchName))throw new Error("Такая локальная ветка уже существует");
+        if(!this.gitHasHead(gitRoot))throw new Error("Сначала создайте первый коммит в проекте");
+        const dataRoot=realpathSync.native(cfg.dataDir);
+        const worktreesRoot=resolve(dataRoot,"codex-mobile-worktrees");
+        if(existsSync(worktreesRoot)){
+          const existing=lstatSync(worktreesRoot);
+          if(existing.isSymbolicLink()||!existing.isDirectory())throw new Error("Папка мобильных рабочих копий недоступна");
+        }else mkdirSync(worktreesRoot);
+        const actualWorktreesRoot=realpathSync.native(worktreesRoot);
+        if(!isPathWithinRoot(dataRoot,actualWorktreesRoot)||isPathWithinRoot(gitRoot,actualWorktreesRoot))
+          throw new Error("Папка рабочих копий должна находиться вне проекта");
+        const branchSlug=branchName.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,64)||"worktree";
+        const worktreePath=resolve(actualWorktreesRoot,`${basename(gitRoot)}-${branchSlug}-${randomBytes(5).toString("hex")}`);
+        if(!isPathWithinRoot(actualWorktreesRoot,worktreePath)||existsSync(worktreePath))throw new Error("Не удалось подготовить отдельную папку рабочей копии");
+        this.gitMutation(gitRoot,["worktree","add","-b",branchName,worktreePath,"HEAD"],120_000);
+        let newSessionId:string;
+        try{
+          newSessionId=await acp.newSession(worktreePath);
+          if(!/^[a-z0-9_-]{8,128}$/i.test(newSessionId))throw new Error("Codex вернул недопустимый ID нового сеанса");
+        }
+        catch(error){
+          try{
+            const actual=realpathSync.native(worktreePath);
+            if(isPathWithinRoot(actualWorktreesRoot,actual)&&resolve(actual).toLowerCase()===resolve(worktreePath).toLowerCase()){
+              this.gitMutation(gitRoot,["worktree","remove","--force",actual],120_000);
+              this.gitMutation(gitRoot,["branch","-D","--",branchName]);
+            }
+          }catch{/* Preserve the original Codex error; cleanup is limited to the new generated path. */}
+          throw error;
+        }
+        const now=Date.now()/1000;
+        const created:CodexThreadSummary={...source,id:newSessionId,name:`${branchName} · рабочая копия`,cwd:worktreePath,
+          source:"appServer",createdAt:now,updatedAt:now,recencyAt:now,parentThreadId:sessionId};
+        this.telegramSessions.recordMobile(newSessionId,chatId,worktreePath,branchName);
+        this.ownThreads.set(newSessionId,created);
+        const known=this.knownThreads.get(chatId)??new Map<string,CodexThreadSummary>();
+        known.set(newSessionId,created);
+        this.knownThreads.set(chatId,known);
+        this.catalogues.delete(chatId);
+        this.archivedCatalogues.delete(chatId);
+        this.selected.set(chatId,newSessionId);
+        return {sessionId:newSessionId,branch:branchName,path:worktreePath};
+      }
       case "setModel":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
         if(!runtime)throw new Error("Сначала подключите сеанс к мобильному клиенту");
@@ -702,10 +760,10 @@ export class MiniAppAgent {
       throw new Error("Не удалось прочитать состояние Git");
     }
   }
-  private gitMutation(root:string,args:string[]):string{
+  private gitMutation(root:string,args:string[],timeout=15_000):string{
     try{
       return execFileSync("git",["--no-pager","-C",root,"-c","core.fsmonitor=false","-c","color.ui=false","--literal-pathspecs",...args],{
-        encoding:"utf8",timeout:15_000,maxBuffer:512*1024,windowsHide:true,stdio:["ignore","pipe","pipe"],
+        encoding:"utf8",timeout,maxBuffer:512*1024,windowsHide:true,stdio:["ignore","pipe","pipe"],
       });
     }catch(error){
       const failure=error as NodeJS.ErrnoException & {stderr?:Buffer|string};

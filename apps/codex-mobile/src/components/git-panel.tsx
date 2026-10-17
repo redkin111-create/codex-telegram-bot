@@ -1,14 +1,15 @@
 import { useEffect, useState } from "react";
-import { GitBranch, GitCommit, Plus, RefreshCw, X } from "lucide-react";
+import { FolderPlus, GitBranch, GitCommit, Plus, RefreshCw, X } from "lucide-react";
 import { readGitDiff, readGitStatus } from "../api.js";
 import type { MobileGitDiff, MobileGitStatus, MobileOperation } from "../types.js";
 import { Badge, Button, Card, Input } from "./ui/primitives.js";
 
-export function GitPanel({ sessionId, connected, onClose, onOperation }: {
+export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktreeCreated }: {
   sessionId: string;
   connected: boolean;
   onClose: () => void;
   onOperation: (op: MobileOperation, args: Record<string, unknown>) => Promise<unknown>;
+  onWorktreeCreated: (sessionId: string, path: string) => void | Promise<void>;
 }) {
   const [status, setStatus] = useState<MobileGitStatus>();
   const [diff, setDiff] = useState<MobileGitDiff>();
@@ -22,6 +23,8 @@ export function GitPanel({ sessionId, connected, onClose, onOperation }: {
   const [commitMessage, setCommitMessage] = useState("");
   const [branchName, setBranchName] = useState("");
   const [branchTarget, setBranchTarget] = useState("");
+  const [worktreeBranchName, setWorktreeBranchName] = useState("");
+  const [worktreeDialogOpen, setWorktreeDialogOpen] = useState(false);
 
   async function refresh() {
     setLoading(true);
@@ -48,8 +51,8 @@ export function GitPanel({ sessionId, connected, onClose, onOperation }: {
     finally { setLoadingDiffPath(""); }
   }
 
-  async function mutate(op: MobileOperation, args: Record<string, unknown>, message: string) {
-    if (!connected || busyAction) return;
+  async function mutate(op: MobileOperation, args: Record<string, unknown>, message: string): Promise<unknown | undefined> {
+    if (!connected || busyAction) return undefined;
     setBusyAction(op);
     setError("");
     setSuccess("");
@@ -60,8 +63,24 @@ export function GitPanel({ sessionId, connected, onClose, onOperation }: {
       if (op === "gitCommit") setCommitMessage("");
       if (op === "gitCreateBranch") setBranchName("");
       await refresh();
+      return result;
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Git не выполнил действие"); }
     finally { setBusyAction(""); }
+  }
+
+  async function createWorktree() {
+    const branch = worktreeBranchName.trim();
+    if (!branch || busyAction) return;
+    const result = await mutate("createWorktree", { branchName: branch }, "Отдельная рабочая копия создана") as { sessionId?: unknown; path?: unknown } | undefined;
+    if (typeof result?.sessionId !== "string" || typeof result.path !== "string") return;
+    try {
+      await onWorktreeCreated(result.sessionId, result.path);
+      setWorktreeDialogOpen(false);
+      setWorktreeBranchName("");
+    } catch (cause) {
+      setSuccess("");
+      setError(`Рабочая папка создана, но сеанс не удалось подключить: ${cause instanceof Error ? cause.message : "ошибка Codex"}`);
+    }
   }
 
   const patch = view === "staged" ? diff?.staged ?? "" : diff?.unstaged ?? "";
@@ -109,10 +128,21 @@ export function GitPanel({ sessionId, connected, onClose, onOperation }: {
             <Input value={branchName} onChange={(event) => setBranchName(event.target.value)} placeholder="Имя новой ветки" aria-label="Имя новой ветки" maxLength={120} />
             <Button type="submit" variant="outline" className="min-h-10 shrink-0" disabled={!connected || !branchName.trim() || Boolean(busyAction)}><Plus size={16} />{busyAction === "gitCreateBranch" ? "Создаю" : "Новая ветка"}</Button>
           </form>
+          <Card className="mt-4 space-y-3 p-4">
+            <div><h3 className="flex items-center gap-2 text-sm font-semibold"><FolderPlus size={16} className="text-accent" /> Отдельная рабочая копия</h3><p className="mt-2 text-xs leading-relaxed text-muted">Создаст отдельную папку, ветку и новый сеанс Codex на текущем коммите. Незакоммиченные файлы в неё не попадут.</p></div>
+            <Button type="button" variant="outline" className="w-full" disabled={!connected || Boolean(busyAction)} onClick={() => setWorktreeDialogOpen(true)}><FolderPlus size={15} /> Создать worktree</Button>
+          </Card>
           {!connected && <p className="mt-3 text-xs text-muted">Подключите сеанс, чтобы менять индекс, создавать ветки и коммиты.</p>}
           <p className="mt-3 text-[11px] leading-relaxed text-muted">Команды ограничены текущим проектом. Внешние diff-программы и textconv-фильтры выключены.</p>
         </>}
       </div>
     </section>
+    {worktreeDialogOpen && <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
+      <section role="alertdialog" aria-modal="true" aria-labelledby="worktree-confirm-title" className="safe-area-bottom w-full max-w-md space-y-4 rounded-2xl border border-border bg-elevated p-5 shadow-soft">
+        <div><h3 id="worktree-confirm-title" className="text-base font-semibold">Создать отдельную рабочую копию?</h3><p className="mt-2 text-xs leading-relaxed text-muted">Codex создаст ветку от текущего коммита и откроет новый сеанс в отдельной папке. Незакоммиченные изменения останутся в исходном сеансе.</p></div>
+        <label className="block space-y-1.5"><span className="text-xs text-muted">Имя новой ветки</span><Input aria-label="Имя ветки рабочей копии" value={worktreeBranchName} onChange={(event) => setWorktreeBranchName(event.target.value)} maxLength={80} placeholder="например mobile/experiment" disabled={Boolean(busyAction)} /></label>
+        <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={Boolean(busyAction)} onClick={() => setWorktreeDialogOpen(false)}>Отмена</Button><Button type="button" className="flex-1" disabled={!connected || !worktreeBranchName.trim() || Boolean(busyAction)} onClick={() => void createWorktree()}>{busyAction === "createWorktree" ? "Создаю…" : "Создать"}</Button></div>
+      </section>
+    </div>}
   </div>;
 }

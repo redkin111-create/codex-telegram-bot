@@ -93,7 +93,10 @@ const agent = {
     const args = job.args;
     if (job.op === "snapshot") {
       return {
-        projects: [{ path: projectOne, name: "codex-mobile" }, { path: projectTwo, name: "other-project" }],
+        projects: [...new Map([
+          [projectOne, "codex-mobile"], [projectTwo, "other-project"],
+          ...sessions.filter((session) => session.cwd !== projectOne && session.cwd !== projectTwo).map((session) => [session.cwd, session.title.split(" · ")[0] ?? session.title] as [string, string]),
+        ]).entries()].map(([path, name]) => ({ path, name })),
         sessions: sessions.map((session) => {
           const runtime = controlled.get(session.id);
           return { ...session, archived: false, busy: runtime?.busy ?? false, queue: runtime?.queue.length ?? 0 };
@@ -177,6 +180,19 @@ const agent = {
   async executeMobile(job: { op: string; userId: number; args: Record<string, unknown> }): Promise<unknown> {
     const args = job.args;
     const sessionId = String(args.sessionId ?? "");
+    if (job.op === "createWorktree") {
+      const source = sessions.find((session) => session.id === sessionId);
+      const branch = String(args.branchName ?? "");
+      if (!source) throw new Error("Сеанс не найден");
+      if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,79}$/.test(branch) || branch.includes("..") || branch.includes("//") || branch.endsWith("/")) throw new Error("Недопустимое имя ветки");
+      const id = randomUUID();
+      const path = source.cwd + "-worktrees/" + branch.replaceAll("/", "-");
+      sessions.unshift({ ...source, id, title: `${branch} · рабочая копия`, cwd: path, updatedAt: Date.now(), source: "appServer" });
+      history.set(id, []);
+      selected = id;
+      fixtureBranch = branch;
+      return { sessionId: id, branch, path };
+    }
     if (job.op === "forkThread") {
       const source = sessions.find((session) => session.id === sessionId);
       if (!source) throw new Error("Сеанс не найден");

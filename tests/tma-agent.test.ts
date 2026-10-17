@@ -485,6 +485,70 @@ test("mobile Git view reads bounded branch status and safe staged and unstaged d
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile worktree creation builds an isolated Git checkout and starts a thread in the shared ACP runtime",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-worktree-"));
+  const project=join(dir,"repo");
+  const sessionId="73737373-7373-4737-8737-737373737373";
+  const worktreeSessionId="84848484-8484-4484-8484-848484848484";
+  mkdirSync(project);
+  mkdirSync(join(dir,"data"));
+  const git=(...args:string[])=>execFileSync("git",["-C",project,...args],{stdio:"ignore",windowsHide:true});
+  git("init","-b","main");
+  git("config","user.name","Mobile Fixture");
+  git("config","user.email","mobile-fixture@example.invalid");
+  writeFileSync(join(project,"README.md"),"initial project state\n");
+  git("add","README.md");
+  git("commit","-m","initial project state");
+  const original={id:sessionId,name:"Main session",cwd:project,source:"cli",createdAt:1,updatedAt:2,recencyAt:2};
+  const runtime={sessionId,isBusy:false};
+  let startedCwd="";
+  let attachedCwd="";
+  let rejectNewSession=false;
+  const controller={list:()=>[],runtimeForSession:()=>undefined,async addAttach(_id:string,cwd:string){attachedCwd=cwd;}};
+  const acp=Object.assign(new EventEmitter(),{
+    isConnected:true,
+    listProjects:async()=>[{id:"p1",name:"repo",roots:[project]}],
+    listThreads:async(params?:{archived?:boolean})=>params?.archived?[]:[original],
+    availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],
+    currentModelId:"default",currentSubagents:()=>[],accountState:async()=>({}),
+    async newSession(cwd:string){startedCwd=cwd;if(rejectNewSession)throw new Error("Codex failed to start");return worktreeSessionId;},
+  }) as unknown as AcpClient;
+  const registry={
+    controller:()=>controller,get:()=>runtime,
+    runtimeForSession:(_owner:number,id:string)=>id===sessionId?runtime:undefined,
+  } as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:join(dir,"data"),workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
+    const created=await agent.executeMobile({op:"createWorktree",userId:101,args:{sessionId,branchName:"phone/experiment"}}) as {
+      sessionId:string;branch:string;path:string;
+    };
+    assert.equal(created.sessionId,worktreeSessionId);
+    assert.equal(created.branch,"phone/experiment");
+    assert.equal(startedCwd,created.path);
+    assert.notEqual(startedCwd,project);
+    const worktreeBranch=execFileSync("git",["-C",project,"worktree","list","--porcelain"],{encoding:"utf8",windowsHide:true});
+    assert.match(worktreeBranch,/branch refs\/heads\/phone\/experiment/);
+    const next=await agent.execute({id:"abcdef0123456789abcdef02",op:"snapshot",userId:101,args:{}}) as {
+      selected:string;sessions:Array<{id:string;cwd:string;title:string}>;
+    };
+    assert.equal(next.selected,worktreeSessionId);
+    assert.equal(next.sessions.find((session)=>session.id===worktreeSessionId)?.cwd,created.path);
+    assert.match(next.sessions.find((session)=>session.id===worktreeSessionId)?.title??"",/phone\/experiment/);
+    await agent.execute({id:"abcdef0123456789abcdef03",op:"select",userId:101,args:{sessionId:worktreeSessionId}});
+    assert.equal(attachedCwd,created.path,"the new thread can attach through the existing runtime controller");
+    await assert.rejects(agent.executeMobile({op:"createWorktree",userId:101,args:{sessionId,branchName:"../../outside"}}),/имя ветки|ветка/i);
+    await assert.rejects(agent.executeMobile({op:"createWorktree",userId:202,args:{sessionId,branchName:"phone/other"}}),/не разрешён/i);
+    rejectNewSession=true;
+    await assert.rejects(agent.executeMobile({op:"createWorktree",userId:101,args:{sessionId,branchName:"phone/failure"}}),/Codex failed to start/);
+    const remainingWorktrees=execFileSync("git",["-C",project,"worktree","list","--porcelain"],{encoding:"utf8",windowsHide:true});
+    assert.doesNotMatch(remainingWorktrees,/phone\/failure/);
+    const remainingBranch=execFileSync("git",["-C",project,"branch","--list","phone/failure"],{encoding:"utf8",windowsHide:true});
+    assert.equal(remainingBranch.trim(),"");
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("TMA can still send to a listed session omitted by a later catalogue refresh",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-tma-stale-session-"));
   const sessionId="01234567-89ab-7cde-8123-456789abcdef";
