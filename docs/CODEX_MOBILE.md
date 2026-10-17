@@ -38,7 +38,7 @@ controls. Do not describe the current app as a full Desktop replacement.
 | Prompting and queue | Send text/images, stop, queue, resume and remove queued prompts | Desktop-equivalent attachment types, edit/retry behavior and turn controls |
 | Approvals | Owner-scoped phone cards for the active session; allow/deny choices are checked server-side; no phone response falls back to Telegram after 45 seconds | More approval cases and parity checks for supported Codex builds |
 | Files and edits | Browse the authorized session folder, create text files in existing folders, read UTF-8 text, edit/save up to 512 KB with stale-file detection; hides common secret folders/files, skips symlinks and blocks writes while the connected Codex session is busy | Image/binary preview, full diff/review UI and Desktop-equivalent file-change navigation |
-| Terminal and Git | Git branch/status and staged/unstaged diff; stage/unstage one reported project path, commit staged changes, list local branches, create a branch and switch to an existing local branch while the Codex session is idle | Terminal/process controls, remote branches, richer Git operations and Desktop-equivalent diff/review |
+| Terminal and Git | Git branch/status, staged/unstaged diff and per-file diff review (including renames); stage/unstage one reported project path, commit staged changes, list local branches, create a branch and switch to an existing local branch while the Codex session is idle | Terminal/process controls, remote branches, conflict resolution and richer Desktop-equivalent review actions |
 | Models and modes | Choose a model, collaboration mode and reasoning level for a connected session | Verify error/rollback behavior across supported Codex versions |
 | Skills, MCP and subagents | Safe inventory view; only subagents owned by the paired user | Run/manage integrations and settings where the existing runtime supports it |
 | Usage and account | Current account identity and quota windows, when ACP exposes them | Saved-account management, account switching, refresh/error states and parity checks |
@@ -55,6 +55,7 @@ they have both server-side authorization tests and browser coverage.
 - Mobile app TypeScript check and production build: passed.
 - Full root test suite: 165/165 passed.
 - Focused branch-list/switch and API authorization checks: 2/2 passed.
+- Per-file Git diff filtering validates paths inside the authorized project and passes both names for a selected rename.
 - Mobile app `npm audit`: 0 vulnerabilities.
 - Root production dependency audit: one low-severity advisory remains in the
   existing `diff` dependency (GHSA-73rr-hh4g-fpgx); npm only offers a breaking
@@ -62,8 +63,9 @@ they have both server-side authorization tests and browser coverage.
 - Browser skill at 412×915: pairing, conversation/history, safe Markdown,
   tool output, screenshots, settings, approvals, file browser/editor, device
   revocation, Git status/diff, new file creation, save, duplicate-name rejection,
-  file-list refresh, stage/unstage, commit, branch creation and switching to an
-  existing local branch were exercised against fake data.
+  file-list refresh, stage/unstage, commit, branch creation, switching to an
+  existing local branch, per-file diff, rename diff and return to all files were
+  exercised against fake data.
 - No actual Codex service was started; no Tailscale or Telegram configuration
   was changed.
 

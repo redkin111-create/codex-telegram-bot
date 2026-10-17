@@ -62,8 +62,11 @@ export function readGitStatus(sessionId: string) {
   return jsonRequest<MobileGitStatus>(`/api/git/status?sessionId=${encodeURIComponent(sessionId)}`);
 }
 
-export function readGitDiff(sessionId: string) {
-  return jsonRequest<MobileGitDiff>(`/api/git/diff?sessionId=${encodeURIComponent(sessionId)}`);
+export function readGitDiff(sessionId: string, path?: string, previousPath?: string) {
+  const query = new URLSearchParams({ sessionId });
+  if (path !== undefined) query.set("path", path);
+  if (previousPath !== undefined) query.set("previousPath", previousPath);
+  return jsonRequest<MobileGitDiff>(`/api/git/diff?${query}`);
 }
 
 export function resolveApproval(id: string, sessionId: string, optionId: string, csrfToken: string) {

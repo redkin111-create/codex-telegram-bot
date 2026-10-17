@@ -330,11 +330,19 @@ test("Git status and diffs are exposed only for the paired owner's session", asy
     });
     assert.equal(switchAllowed.status, 200);
     assert.equal(f.calls.at(-1)?.op, "gitSwitchBranch");
+    const fileDiff = await fetch(f.origin + `/api/git/diff?sessionId=${allowedSession}&path=src%2Fmain.ts&previousPath=src%2Fold-main.ts`, {
+      headers: { origin: f.origin, cookie: login.sessionCookie },
+    });
+    assert.equal(fileDiff.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "gitDiff");
+    assert.equal(f.calls.at(-1)?.args.path, "src/main.ts");
+    assert.equal(f.calls.at(-1)?.args.previousPath, "src/old-main.ts");
+    const diffCallsBeforeForeignRead = f.calls.filter((call) => call.op === "gitDiff").length;
     const diff = await fetch(f.origin + `/api/git/diff?sessionId=${foreignSession}`, {
       headers: { origin: f.origin, cookie: login.sessionCookie },
     });
     assert.equal(diff.status, 403);
-    assert.equal(f.calls.filter((call) => call.op === "gitDiff").length, 0);
+    assert.equal(f.calls.filter((call) => call.op === "gitDiff").length, diffCallsBeforeForeignRead);
   } finally { await cleanup(f.server, f.dataDir); }
 });
 

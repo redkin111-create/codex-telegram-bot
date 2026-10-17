@@ -12,8 +12,10 @@ export function GitPanel({ sessionId, connected, onClose, onOperation }: {
 }) {
   const [status, setStatus] = useState<MobileGitStatus>();
   const [diff, setDiff] = useState<MobileGitDiff>();
+  const [diffScope, setDiffScope] = useState<{ path: string; previousPath?: string }>();
   const [view, setView] = useState<"unstaged" | "staged">("unstaged");
   const [loading, setLoading] = useState(true);
+  const [loadingDiffPath, setLoadingDiffPath] = useState("");
   const [busyAction, setBusyAction] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -25,7 +27,7 @@ export function GitPanel({ sessionId, connected, onClose, onOperation }: {
     setLoading(true);
     setError("");
     try {
-      const [nextStatus, nextDiff] = await Promise.all([readGitStatus(sessionId), readGitDiff(sessionId)]);
+      const [nextStatus, nextDiff] = await Promise.all([readGitStatus(sessionId), readGitDiff(sessionId, diffScope?.path, diffScope?.previousPath)]);
       setStatus(nextStatus);
       setBranchTarget((current) => nextStatus.branches.includes(current) ? current : nextStatus.branch);
       setDiff(nextDiff);
@@ -34,6 +36,17 @@ export function GitPanel({ sessionId, connected, onClose, onOperation }: {
   }
 
   useEffect(() => { void refresh(); }, [sessionId]);
+
+  async function loadDiff(path?: string, previousPath?: string) {
+    setLoadingDiffPath(path ?? "*");
+    setError("");
+    try {
+      const nextDiff = await readGitDiff(sessionId, path, previousPath);
+      setDiff(nextDiff);
+      setDiffScope(path ? { path, previousPath } : undefined);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось прочитать diff"); }
+    finally { setLoadingDiffPath(""); }
+  }
 
   async function mutate(op: MobileOperation, args: Record<string, unknown>, message: string) {
     if (!connected || busyAction) return;
@@ -73,6 +86,7 @@ export function GitPanel({ sessionId, connected, onClose, onOperation }: {
               const displayPath = change.previousPath ? `${change.previousPath} → ${change.path}` : change.path;
               return <li key={`${change.code}-${change.path}-${index}`} className="flex flex-wrap items-center gap-2 py-2 font-mono text-xs">
                 <span className="shrink-0 text-[#c7e89a]">{change.code}</span><span className="min-w-0 flex-1 break-all text-muted">{displayPath}</span>
+                <Button variant="ghost" className="min-h-9 px-2 text-[11px]" disabled={Boolean(loadingDiffPath)} aria-label={`Показать diff ${displayPath}`} onClick={() => void loadDiff(change.path, change.previousPath)}>{loadingDiffPath === change.path ? "Читаю" : "Diff"}</Button>
                 {needsStage && <Button variant="ghost" className="min-h-9 px-2 text-[11px]" disabled={!connected || Boolean(busyAction)} aria-label={`Добавить ${displayPath} в индекс`} onClick={() => void mutate("gitStage", { path: change.path }, "Файл добавлен в индекс")}>В индекс</Button>}
                 {needsUnstage && <Button variant="ghost" className="min-h-9 px-2 text-[11px]" disabled={!connected || Boolean(busyAction)} aria-label={`Убрать ${displayPath} из индекса`} onClick={() => void mutate("gitUnstage", { path: change.path, previousPath: change.previousPath }, "Файл убран из индекса")}>Снять</Button>}
               </li>;
@@ -84,8 +98,9 @@ export function GitPanel({ sessionId, connected, onClose, onOperation }: {
             </select>
             <Button type="submit" variant="outline" className="min-h-10 shrink-0" disabled={!connected || !branchTarget || branchTarget === status.branch || Boolean(busyAction)}><GitBranch size={16} />{busyAction === "gitSwitchBranch" ? "Переключаю" : "Переключить"}</Button>
           </form>}
-          <div className="mt-5 flex gap-2"><Button variant={view === "unstaged" ? "outline" : "ghost"} className="min-h-10 px-3" onClick={() => setView("unstaged")}>Рабочая папка</Button><Button variant={view === "staged" ? "outline" : "ghost"} className="min-h-10 px-3" onClick={() => setView("staged")}>Индекс</Button></div>
-          <Card className="mt-3 min-h-48 overflow-auto"><pre className="whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-relaxed text-[#dce3da] sm:p-4">{patch || (status.clean ? "Нет незакоммиченных изменений." : "Git не создал текстовый diff для этих изменений.")}</pre></Card>
+          <div className="mt-5 flex flex-wrap gap-2">{diffScope && <Button variant="ghost" className="min-h-10 px-3" onClick={() => void loadDiff()}>Все файлы</Button>}<Button variant={view === "unstaged" ? "outline" : "ghost"} className="min-h-10 px-3" onClick={() => setView("unstaged")}>Рабочая папка</Button><Button variant={view === "staged" ? "outline" : "ghost"} className="min-h-10 px-3" onClick={() => setView("staged")}>Индекс</Button></div>
+          <p className="mt-2 break-all text-[11px] text-muted">{diffScope ? `Diff: ${diffScope.previousPath ? `${diffScope.previousPath} → ` : ""}${diffScope.path}` : "Diff всех файлов"}</p>
+          <Card className="mt-2 min-h-48 overflow-auto"><pre className="whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-relaxed text-[#dce3da] sm:p-4">{loadingDiffPath ? "Читаю diff…" : patch || (status.clean ? "Нет незакоммиченных изменений." : "Git не создал текстовый diff для этих изменений.")}</pre></Card>
           <form className="mt-4 flex flex-col gap-2 sm:flex-row" onSubmit={(event) => { event.preventDefault(); void mutate("gitCommit", { message: commitMessage }, "Изменения сохранены коммитом"); }}>
             <Input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder="Сообщение коммита" aria-label="Сообщение коммита" maxLength={200} />
             <Button type="submit" className="min-h-10 shrink-0" disabled={!connected || stagedCount === 0 || !commitMessage.trim() || Boolean(busyAction)}><GitCommit size={16} />{busyAction === "gitCommit" ? "Сохраняю" : `Коммит (${stagedCount})`}</Button>

@@ -345,8 +345,15 @@ export function createMobileServer(options: MobileServerOptions): Server {
       }
       if (!options.agent.executeMobile) { json(res, 503, { error: "Git проекта недоступен" }); return; }
       try {
+        const args: Record<string, unknown> = { sessionId };
+        if (path === "/api/git/diff") {
+          const selectedPath = url.searchParams.get("path");
+          const previousPath = url.searchParams.get("previousPath");
+          if (selectedPath !== null) args.path = selectedPath;
+          if (previousPath !== null) args.previousPath = previousPath;
+        }
         const result = await options.agent.executeMobile({
-          op: path === "/api/git/status" ? "gitStatus" : "gitDiff", userId: device.ownerId, args: { sessionId },
+          op: path === "/api/git/status" ? "gitStatus" : "gitDiff", userId: device.ownerId, args,
         });
         json(res, 200, result);
       } catch (error) { json(res, 502, { error: safeError(error) }); }

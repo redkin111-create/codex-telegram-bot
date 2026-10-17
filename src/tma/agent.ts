@@ -340,7 +340,7 @@ export class MiniAppAgent {
       }
       case "gitDiff":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
-        return this.mobileGitDiff(sessionId,chatId);
+        return this.mobileGitDiff(sessionId,chatId,args);
       }
       case "gitStage":
       case "gitUnstage":
@@ -518,12 +518,16 @@ export class MiniAppAgent {
     const branches=this.gitOutput(gitRoot,["branch","--format=%(refname:short)"],128*1024).split(/\r?\n/).map(value=>value.trim()).filter(Boolean).slice(0,250);
     return {project:name,branch,branches,clean:changes.length===0,changes,checkedAt:Date.now()};
   }
-  private mobileGitDiff(sessionId:string,userId:number){
+  private mobileGitDiff(sessionId:string,userId:number,args:Record<string,unknown>={}){
     const {root,name}=this.mobileRoot(sessionId,userId);
     const gitRoot=this.gitRoot(root);
-    const safeArgs=["diff","--no-ext-diff","--no-textconv","--no-color","--unified=3"];
-    const unstaged=this.gitOutput(gitRoot,safeArgs);
-    const staged=this.gitOutput(gitRoot,[...safeArgs,"--cached"]);
+    const paths:string[]=[];
+    if(typeof args.path==="string")paths.push(this.mobileGitPath(root,args.path));
+    if(typeof args.previousPath==="string")paths.push(this.mobileGitPath(root,args.previousPath));
+    const pathArgs=paths.length?["--",...new Set(paths)]:[];
+    const safeArgs=["--literal-pathspecs","diff","--no-ext-diff","--no-textconv","--no-color","--unified=3"];
+    const unstaged=this.gitOutput(gitRoot,[...safeArgs,...pathArgs]);
+    const staged=this.gitOutput(gitRoot,[...safeArgs,"--cached",...pathArgs]);
     return {project:name,unstaged,staged,checkedAt:Date.now()};
   }
   private async project(path:string,userId:number):Promise<{name:string;cwd:string}>{

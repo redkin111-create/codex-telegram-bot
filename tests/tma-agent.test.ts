@@ -196,6 +196,13 @@ test("mobile Git view reads bounded branch status and safe staged and unstaged d
     assert.match(diff.staged,/answer = 2/);
     assert.match(diff.unstaged,/answer = 3/);
     assert.doesNotMatch(diff.unstaged,/--color/);
+    const mainDiff=await agent.executeMobile({op:"gitDiff",userId:101,args:{sessionId,path:"main.ts"}}) as {staged:string;unstaged:string};
+    assert.match(mainDiff.unstaged,/answer = 3/);
+    assert.doesNotMatch(mainDiff.staged,/rename from move\.me/);
+    await assert.rejects(agent.executeMobile({op:"gitDiff",userId:101,args:{sessionId,path:"..\\outside.txt"}}),/Недопустимый путь Git/);
+    const renameDiff=await agent.executeMobile({op:"gitDiff",userId:101,args:{sessionId,path:"renamed résumé.md",previousPath:"move.me"}}) as {staged:string;unstaged:string};
+    assert.match(renameDiff.staged,/rename from move\.me/);
+    assert.doesNotMatch(renameDiff.staged,/diff --git a\/main\.ts/);
     await agent.executeMobile({op:"gitUnstage",userId:101,args:{sessionId,path:"renamed résumé.md",previousPath:"move.me"}});
     let renameUnstaged=await agent.executeMobile({op:"gitStatus",userId:101,args:{sessionId}}) as {changes:Array<{code:string;path:string}>};
     assert.ok(renameUnstaged.changes.some((entry)=>entry.code==="D"&&entry.path==="move.me"));
