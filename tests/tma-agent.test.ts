@@ -161,12 +161,16 @@ test("mobile Git view reads bounded branch status and safe staged and unstaged d
   run("config","user.name","Codex Mobile Test");
   run("config","user.email","codex-mobile-test@example.invalid");
   writeFileSync(join(project,"main.ts"),"export const answer = 1;\n");
+  writeFileSync(join(project,"move.me"),"rename fixture\n");
   run("add","main.ts");
+  run("add","move.me");
   run("commit","-m","fixture base");
+  run("mv","move.me","renamed résumé.md");
   writeFileSync(join(project,"main.ts"),"export const answer = 2;\n");
   run("add","main.ts");
   writeFileSync(join(project,"main.ts"),"export const answer = 3;\n");
   writeFileSync(join(project,"notes.txt"),"untracked note\n");
+  writeFileSync(join(project,"résumé file.txt"),"unicode path\n");
   const sessionId="30303030-3030-4030-8030-303030303030";
   const acp=Object.assign(new EventEmitter(),{
     listProjects:async()=>[{id:"p1",name:"repo",roots:[project]}],
@@ -180,16 +184,52 @@ test("mobile Git view reads bounded branch status and safe staged and unstaged d
   try{
     await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
     const status=await agent.executeMobile({op:"gitStatus",userId:101,args:{sessionId}}) as {
-      branch:string;clean:boolean;changes:Array<{code:string;path:string}>;
+      branch:string;clean:boolean;changes:Array<{code:string;path:string;previousPath?:string}>;
     };
     assert.ok(status.branch);
     assert.equal(status.clean,false);
     assert.ok(status.changes.some((entry)=>entry.code==="MM"&&entry.path.includes("main.ts")));
     assert.ok(status.changes.some((entry)=>entry.code==="??"&&entry.path.includes("notes.txt")));
+    assert.ok(status.changes.some((entry)=>entry.path==="résumé file.txt"));
+    assert.ok(status.changes.some((entry)=>entry.code.startsWith("R")&&entry.path==="renamed résumé.md"&&entry.previousPath==="move.me"),JSON.stringify(status.changes));
     const diff=await agent.executeMobile({op:"gitDiff",userId:101,args:{sessionId}}) as {staged:string;unstaged:string};
     assert.match(diff.staged,/answer = 2/);
     assert.match(diff.unstaged,/answer = 3/);
     assert.doesNotMatch(diff.unstaged,/--color/);
+    await agent.executeMobile({op:"gitUnstage",userId:101,args:{sessionId,path:"renamed résumé.md",previousPath:"move.me"}});
+    let renameUnstaged=await agent.executeMobile({op:"gitStatus",userId:101,args:{sessionId}}) as {changes:Array<{code:string;path:string}>};
+    assert.ok(renameUnstaged.changes.some((entry)=>entry.code==="D"&&entry.path==="move.me"));
+    assert.ok(renameUnstaged.changes.some((entry)=>entry.code==="??"&&entry.path==="renamed résumé.md"));
+    await agent.executeMobile({op:"gitStage",userId:101,args:{sessionId,path:"move.me"}});
+    await agent.executeMobile({op:"gitStage",userId:101,args:{sessionId,path:"renamed résumé.md"}});
+    const renameRestaged=await agent.executeMobile({op:"gitStatus",userId:101,args:{sessionId}}) as {changes:Array<{code:string;path:string;previousPath?:string}>};
+    assert.ok(renameRestaged.changes.some((entry)=>entry.code.startsWith("R")&&entry.path==="renamed résumé.md"&&entry.previousPath==="move.me"));
+    await agent.executeMobile({op:"gitStage",userId:101,args:{sessionId,path:"notes.txt"}});
+    let afterStage=await agent.executeMobile({op:"gitStatus",userId:101,args:{sessionId}}) as {changes:Array<{path:string;indexStatus:string;worktreeStatus:string}>};
+    assert.ok(afterStage.changes.some((entry)=>entry.path.includes("notes.txt")&&entry.indexStatus==="A"&&entry.worktreeStatus===" "));
+    await agent.executeMobile({op:"gitUnstage",userId:101,args:{sessionId,path:"notes.txt"}});
+    let afterUnstage=await agent.executeMobile({op:"gitStatus",userId:101,args:{sessionId}}) as {changes:Array<{path:string;code:string}>};
+    assert.ok(afterUnstage.changes.some((entry)=>entry.path.includes("notes.txt")&&entry.code==="??"));
+    await agent.executeMobile({op:"gitStage",userId:101,args:{sessionId,path:"notes.txt"}});
+    const commit=await agent.executeMobile({op:"gitCommit",userId:101,args:{sessionId,message:"mobile fixture commit"}}) as {message:string;commit:string};
+    assert.equal(commit.message,"mobile fixture commit");
+    assert.ok(commit.commit.length>=7);
+    assert.equal(execFileSync("git",["-C",project,"log","-1","--pretty=%s"],{encoding:"utf8",windowsHide:true}).trim(),"mobile fixture commit");
+    await assert.rejects(agent.executeMobile({op:"gitCreateBranch",userId:101,args:{sessionId,name:"bad branch"}}),/not a valid branch name/i);
+    const branch=await agent.executeMobile({op:"gitCreateBranch",userId:101,args:{sessionId,name:"phone-flow"}}) as {branch:string};
+    assert.equal(branch.branch,"phone-flow");
+    assert.equal(execFileSync("git",["-C",project,"branch","--show-current"],{encoding:"utf8",windowsHide:true}).trim(),"phone-flow");
+    execFileSync("git",["-C",project,"branch","release/candidate"],{windowsHide:true});
+    const branchStatus=await agent.executeMobile({op:"gitStatus",userId:101,args:{sessionId}}) as {branches:string[]};
+    assert.ok(branchStatus.branches.includes("release/candidate"));
+    const switched=await agent.executeMobile({op:"gitSwitchBranch",userId:101,args:{sessionId,name:"release/candidate"}}) as {branch:string};
+    assert.equal(switched.branch,"release/candidate");
+    assert.equal(execFileSync("git",["-C",project,"branch","--show-current"],{encoding:"utf8",windowsHide:true}).trim(),"release/candidate");
+    await assert.rejects(agent.executeMobile({op:"gitSwitchBranch",userId:101,args:{sessionId,name:"missing"}}),/Не удалось найти ветку/i);
+    runtime.isBusy=true;
+    await assert.rejects(agent.executeMobile({op:"gitStage",userId:101,args:{sessionId,path:"main.ts"}}),/текущей задачи/);
+    await assert.rejects(agent.executeMobile({op:"gitSwitchBranch",userId:101,args:{sessionId,name:"phone-flow"}}),/текущей задачи/);
+    await assert.rejects(agent.executeMobile({op:"gitStage",userId:202,args:{sessionId,path:"main.ts"}}),/Пользователь не разрешён на ПК/);
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 

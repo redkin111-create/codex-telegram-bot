@@ -72,6 +72,10 @@ const history = new Map<string, Array<{ role: "user" | "assistant" | "tool"; tex
 const controlled = new Map<string, { busy: boolean; queue: Array<{ id: string; text: string }>; paused: boolean }>();
 let selected = firstSession;
 const fixtureSettings = { model: "fixture", mode: "code", reasoning: "medium" };
+const fixtureStaged = new Set<string>();
+let fixtureBranch = "feat/codex-mobile-fixture";
+let fixtureNotesCommitted = false;
+let fixtureRenameStaged = true;
 const fixtureFiles = new Map<string, string>([
   ["README.md", "# Fixture project\n\nRead-only history is followed by mobile file access.\n"],
   ["src/main.ts", "export function greet() {\n  return \"Hello from fixture\";\n}\n"],
@@ -208,13 +212,51 @@ const agent = {
       return { path, sha256: createHash("sha256").update(fixtureFiles.get(path)!).digest("hex"), savedAt: Date.now() };
     }
     if (job.op === "gitStatus") return {
-      project: "codex-mobile", branch: "feat/codex-mobile-fixture", clean: false,
-      changes: [{ code: " M", path: "src/main.ts" }, { code: "??", path: "notes/review.md" }], checkedAt: Date.now(),
+      project: "codex-mobile", branch: fixtureBranch, branches: [...new Set([fixtureBranch, "main", "release/candidate"])], clean: false,
+      changes: [
+        ...(!fixtureStaged.has("src/main.ts") ? [{ code: "M", indexStatus: " ", worktreeStatus: "M", path: "src/main.ts" }] : []),
+        ...(!fixtureNotesCommitted ? (!fixtureStaged.has("notes/review.md") ? [{ code: "??", indexStatus: "?", worktreeStatus: "?", path: "notes/review.md" }] : [{ code: "A", indexStatus: "A", worktreeStatus: " ", path: "notes/review.md" }]) : []),
+        ...(fixtureRenameStaged ? [{ code: "R", indexStatus: "R", worktreeStatus: " ", path: "src/renamed.ts", previousPath: "src/old-main.ts" }]
+          : fixtureStaged.has("src/old-main.ts") && fixtureStaged.has("src/renamed.ts")
+            ? [{ code: "R", indexStatus: "R", worktreeStatus: " ", path: "src/renamed.ts", previousPath: "src/old-main.ts" }]
+            : [{ code: fixtureStaged.has("src/old-main.ts") ? "D" : "D", indexStatus: fixtureStaged.has("src/old-main.ts") ? "D" : " ", worktreeStatus: fixtureStaged.has("src/old-main.ts") ? " " : "D", path: "src/old-main.ts" },
+              { code: fixtureStaged.has("src/renamed.ts") ? "A" : "??", indexStatus: fixtureStaged.has("src/renamed.ts") ? "A" : "?", worktreeStatus: fixtureStaged.has("src/renamed.ts") ? " " : "?", path: "src/renamed.ts" }]),
+      ], checkedAt: Date.now(),
     };
     if (job.op === "gitDiff") return {
-      project: "codex-mobile", unstaged: "diff --git a/src/main.ts b/src/main.ts\nindex 1111111..2222222 100644\n--- a/src/main.ts\n+++ b/src/main.ts\n@@ -1,3 +1,3 @@\n-export const answer = 42;\n+export const answer = 43;\n",
-      staged: "", checkedAt: Date.now(),
+      project: "codex-mobile",
+      unstaged: "diff --git a/src/main.ts b/src/main.ts\nindex 1111111..2222222 100644\n--- a/src/main.ts\n+++ b/src/main.ts\n@@ -1,3 +1,3 @@\n-export const answer = 42;\n+export const answer = 43;\n",
+      staged: fixtureStaged.has("notes/review.md") ? "diff --git a/notes/review.md b/notes/review.md\nnew file mode 100644\n--- /dev/null\n+++ b/notes/review.md\n@@ -0,0 +1 @@\n+Review fixture\n" : fixtureRenameStaged ? "diff --git a/src/old-main.ts b/src/renamed.ts\nsimilarity index 100%\nrename from src/old-main.ts\nrename to src/renamed.ts\n" : "", checkedAt: Date.now(),
     };
+    if (job.op === "gitStage") { fixtureStaged.add(String(args.path)); return { path: args.path, staged: true }; }
+    if (job.op === "gitUnstage") {
+      if (typeof args.previousPath === "string") {
+        fixtureRenameStaged = false;
+        fixtureStaged.delete("src/old-main.ts");
+        fixtureStaged.delete("src/renamed.ts");
+      }
+      else fixtureStaged.delete(String(args.path));
+      return { path: args.path, staged: false };
+    }
+    if (job.op === "gitCommit") {
+      if (!fixtureStaged.size) throw new Error("Нет подготовленных изменений для коммита");
+      const message = String(args.message ?? ""); fixtureStaged.clear(); fixtureNotesCommitted = true;
+      return { commit: "abc1234", message, branch: fixtureBranch };
+    }
+    if (job.op === "gitCreateBranch") {
+      const branch = String(args.name ?? "");
+      if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch) || branch.includes("..") || branch.includes("//") || branch.endsWith("/")) {
+        throw new Error(`fatal: '${branch}' is not a valid branch name`);
+      }
+      fixtureBranch = branch;
+      return { branch: fixtureBranch };
+    }
+    if (job.op === "gitSwitchBranch") {
+      const branch = String(args.name ?? "");
+      if (![fixtureBranch, "main", "release/candidate"].includes(branch)) throw new Error("Не удалось найти ветку в этом проекте");
+      fixtureBranch = branch;
+      return { branch: fixtureBranch };
+    }
     if (job.op === "setModel") fixtureSettings.model = String(args.modelId);
     else if (job.op === "setMode") fixtureSettings.mode = String(args.modeId);
     else if (job.op === "setReasoning") fixtureSettings.reasoning = String(args.effort);

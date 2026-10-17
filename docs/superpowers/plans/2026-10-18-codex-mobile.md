@@ -51,7 +51,7 @@
 
 ### Task 4: Coding workflow and integrations
 
-- Finish file edit edge cases, then add full diff/review, Git write actions and bounded terminal actions through existing runtime interfaces.
+- Finish file edit edge cases, then add full diff/review and bounded terminal actions through existing runtime interfaces. Git now has guarded per-path stage/unstage, staged commit, local branch listing, create-branch and existing-local-branch switching.
 - Add models/modes/reasoning, safe skills/MCP/subagent inventories and quota display. Saved-account management, Apps/plugins, tasks and voice remain open.
 - Keep changes allowlisted and require confirmation for destructive or permission-changing actions.
 - Add server tests and browser-check every action against fake filesystem/runtime fixtures.

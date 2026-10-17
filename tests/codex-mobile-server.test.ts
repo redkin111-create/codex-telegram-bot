@@ -300,6 +300,36 @@ test("Git status and diffs are exposed only for the paired owner's session", asy
     });
     assert.equal(status.status, 200);
     assert.equal((await status.json() as { op: string }).op, "gitStatus");
+    const writePayload = JSON.stringify({ op: "gitStage", args: { sessionId: allowedSession, path: "src/main.ts" } });
+    const noCsrf = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: writePayload,
+    });
+    assert.equal(noCsrf.status, 403);
+    const foreignWrite = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ op: "gitStage", args: { sessionId: foreignSession, path: "private.txt" } }),
+    });
+    assert.equal(foreignWrite.status, 403);
+    const stage = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: writePayload,
+    });
+    assert.equal(stage.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "gitStage");
+    const switchPayload = JSON.stringify({ op: "gitSwitchBranch", args: { sessionId: allowedSession, name: "release/candidate" } });
+    const switchNoCsrf = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: switchPayload,
+    });
+    assert.equal(switchNoCsrf.status, 403);
+    const switchForeign = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ op: "gitSwitchBranch", args: { sessionId: foreignSession, name: "release/candidate" } }),
+    });
+    assert.equal(switchForeign.status, 403);
+    const switchAllowed = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: switchPayload,
+    });
+    assert.equal(switchAllowed.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "gitSwitchBranch");
     const diff = await fetch(f.origin + `/api/git/diff?sessionId=${foreignSession}`, {
       headers: { origin: f.origin, cookie: login.sessionCookie },
     });

@@ -39,7 +39,7 @@ const sleep=(ms:number,signal:AbortSignal)=>new Promise<void>(resolve=>{
 });
 
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; }
-export type MobileLocalOperation = "capabilities" | "setModel" | "setMode" | "setReasoning" | "files" | "readFile" | "writeFile" | "createFile" | "gitStatus" | "gitDiff";
+export type MobileLocalOperation = "capabilities" | "setModel" | "setMode" | "setReasoning" | "files" | "readFile" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 export class MiniAppAgent {
   private readonly abort=new AbortController();
@@ -342,7 +342,45 @@ export class MiniAppAgent {
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
         return this.mobileGitDiff(sessionId,chatId);
       }
+      case "gitStage":
+      case "gitUnstage":
+      case "gitCommit":
+      case "gitCreateBranch":
+      case "gitSwitchBranch":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        this.requireIdleMobileRuntime(sessionId,chatId);
+        const {root,name}=this.mobileRoot(sessionId,chatId);
+        const gitRoot=this.gitRoot(root);
+        if(job.op==="gitStage"||job.op==="gitUnstage"){
+          const paths=[this.mobileGitPath(root,argumentString(args,"path",1200))];
+          if(job.op==="gitUnstage"&&typeof args.previousPath==="string")paths.push(this.mobileGitPath(root,args.previousPath));
+          const gitArgs=job.op==="gitStage"?["add","--all","--",...paths]:this.gitHasHead(gitRoot)?["reset","-q","HEAD","--",...paths]:["rm","--cached","--quiet","--ignore-unmatch","--",...paths];
+          this.gitMutation(gitRoot,gitArgs);
+          return {paths,staged:job.op==="gitStage"};
+        }
+        if(job.op==="gitCommit"){
+          const message=argumentString(args,"message",200).trim();
+          if(!message||/[\u0000-\u001f\u007f]/.test(message))throw new Error("Укажите короткое однострочное сообщение коммита");
+          this.gitMutation(gitRoot,["commit","-m",message]);
+          const commit=this.gitOutput(gitRoot,["rev-parse","--short","HEAD"],1024).trim();
+          return {project:name,commit,message,branch:this.mobileGitStatus(sessionId,chatId).branch};
+        }
+        const branch=argumentString(args,"name",120).trim();
+        if(!branch||/[\u0000-\u001f\u007f]/.test(branch))throw new Error("Укажите допустимое имя ветки");
+        this.gitMutation(gitRoot,["check-ref-format","--branch",branch]);
+        if(job.op==="gitCreateBranch")this.gitMutation(gitRoot,["switch","--create",branch]);
+        else{
+          if(!this.mobileGitStatus(sessionId,chatId).branches.includes(branch))throw new Error("Не удалось найти ветку в этом проекте");
+          this.gitMutation(gitRoot,["switch","--quiet","--",branch]);
+        }
+        return {project:name,branch};
+      }
     }
+  }
+  private requireIdleMobileRuntime(sessionId:string,userId:number):void{
+    const runtime=this.deps.registry.runtimeForSession(userId,sessionId);
+    if(!runtime)throw new Error("Сначала подключите сеанс к мобильному клиенту");
+    if(runtime.isBusy)throw new Error("Дождитесь завершения текущей задачи Codex перед изменением Git");
   }
   private mobileRoot(sessionId:string,userId:number):{root:string;name:string}{
     const thread=this.knownThreads.get(userId)?.get(sessionId);
@@ -417,7 +455,7 @@ export class MiniAppAgent {
   }
   private gitOutput(root:string,args:string[],maxBuffer=2*1024*1024):string{
     try{
-      return execFileSync("git",["--no-pager","-C",root,"-c","core.fsmonitor=false",...args],{
+      return execFileSync("git",["--no-pager","-C",root,"-c","core.fsmonitor=false","-c","core.quotePath=false",...args],{
         encoding:"utf8",timeout:8000,maxBuffer,windowsHide:true,stdio:["ignore","pipe","ignore"],
       });
     }catch(error){
@@ -426,17 +464,59 @@ export class MiniAppAgent {
       throw new Error("Не удалось прочитать состояние Git");
     }
   }
+  private gitMutation(root:string,args:string[]):string{
+    try{
+      return execFileSync("git",["--no-pager","-C",root,"-c","core.fsmonitor=false","-c","color.ui=false","--literal-pathspecs",...args],{
+        encoding:"utf8",timeout:15_000,maxBuffer:512*1024,windowsHide:true,stdio:["ignore","pipe","pipe"],
+      });
+    }catch(error){
+      const failure=error as NodeJS.ErrnoException & {stderr?:Buffer|string};
+      if(failure.code==="ENOENT")throw new Error("Git не установлен или не найден");
+      if(failure.code==="ETIMEDOUT")throw new Error("Команда Git превысила лимит времени");
+      const detail=Buffer.isBuffer(failure.stderr)?failure.stderr.toString("utf8"):typeof failure.stderr==="string"?failure.stderr:"";
+      const safe=detail.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g,"").trim().slice(0,500);
+      throw new Error(safe||"Git не выполнил действие");
+    }
+  }
+  private gitHasHead(root:string):boolean{
+    try{
+      execFileSync("git",["-C",root,"rev-parse","--verify","HEAD"],{
+        encoding:"utf8",timeout:5000,maxBuffer:4096,windowsHide:true,stdio:["ignore","ignore","ignore"],
+      });
+      return true;
+    }catch{return false;}
+  }
+  private mobileGitPath(root:string,rawPath:string):string{
+    if(isAbsolute(rawPath)||/^[a-z]:/i.test(rawPath)||rawPath.startsWith("\\\\"))throw new Error("Ожидался относительный путь внутри проекта");
+    const parts=rawPath.split(/[\\/]+/).filter(Boolean);
+    if(!parts.length||parts.some(part=>part==="."||part===".."||part.includes(":")||part.includes("\0")))throw new Error("Недопустимый путь Git");
+    if(parts.some(part=>this.isHiddenMobileFile(part)))throw new Error("Секретные и служебные пути нельзя менять с телефона");
+    const absolute=resolve(root,...parts);
+    if(!isPathWithinRoot(root,absolute))throw new Error("Путь Git выходит за пределы проекта");
+    return relative(root,absolute).split(sep).join("/");
+  }
   private mobileGitStatus(sessionId:string,userId:number){
     const {root,name}=this.mobileRoot(sessionId,userId);
     const gitRoot=this.gitRoot(root);
-    const lines=this.gitOutput(gitRoot,["status","--porcelain=v1","--branch","--untracked-files=normal"],512*1024).replace(/\r/g,"").split("\n").filter(Boolean);
-    const header=lines.shift()??"";
+    const tokens=this.gitOutput(gitRoot,["status","--porcelain=v1","--branch","--untracked-files=normal","-z"],512*1024).split("\0");
+    const first=(tokens.shift()??"").split(/\r?\n/);
+    const header=(first.shift()??"").replace(/\r$/g,"");
     const branch=header.startsWith("## ")?header.slice(3).split("...")[0]?.split(" [")[0]?.slice(0,160)??"":"";
-    const changes=lines.slice(0,250).map((line)=>({
-      code:line.slice(0,2).trim()||"??",
-      path:line.slice(3).replace(/^"|"$/g,"").slice(0,1200),
-    }));
-    return {project:name,branch,clean:changes.length===0,changes,checkedAt:Date.now()};
+    const lines=[...first,...tokens].filter(Boolean);
+    const changes:Array<{code:string;indexStatus:string;worktreeStatus:string;path:string;previousPath?:string}> = [];
+    for(let i=0;i<lines.length&&changes.length<250;i++){
+      const line=lines[i]!;
+      const code=line.slice(0,2);
+      const path=line.slice(3);
+      const renamed=/[RC]/.test(code);
+      const previousPath=renamed?lines[++i]:undefined;
+      changes.push({
+        code:code.trim()||"??",indexStatus:code[0]??" ",worktreeStatus:code[1]??" ",
+        path:path.slice(0,1200),previousPath:previousPath?.slice(0,1200),
+      });
+    }
+    const branches=this.gitOutput(gitRoot,["branch","--format=%(refname:short)"],128*1024).split(/\r?\n/).map(value=>value.trim()).filter(Boolean).slice(0,250);
+    return {project:name,branch,branches,clean:changes.length===0,changes,checkedAt:Date.now()};
   }
   private mobileGitDiff(sessionId:string,userId:number){
     const {root,name}=this.mobileRoot(sessionId,userId);
