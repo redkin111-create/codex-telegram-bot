@@ -7,6 +7,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFile as execFileCallback, execFileSync } from "node:child_process";
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { structuredPatch } from "diff";
 import type { AcpClient } from "../acp/client.js";
 import { mobileMcpResourceTemplateParameters, resolveMobileMcpResourceTemplate } from "../acp/mobile-mcp.js";
 import { CODEX_PINNED_THREAD_SECTION_ID, CODEX_PINNED_THREAD_SECTION_NAME, type CodexThreadSection, type CodexThreadSummary, type CodexThreadReadState, type CodexProjectSummary, type CodexRateLimitWindow, type CodexThreadGoalStatus, type CodexReviewTarget, type CodexMobileEditableTurn } from "../acp/codex-protocol.js";
@@ -34,6 +35,8 @@ const MAX_MOBILE_PTY_READ=64*1024;
 const MAX_MOBILE_CONFLICT_STAGE_BYTES=512*1024;
 const MAX_MOBILE_BINARY_CONFLICT_BYTES=10*1024*1024;
 const MAX_MOBILE_DOWNLOAD_BYTES=10*1024*1024;
+const MAX_MOBILE_GIT_UNTRACKED_DIFF_BYTES=512*1024;
+const MAX_MOBILE_GIT_DIFF_BYTES=2*1024*1024;
 const MOBILE_PTY_IDLE_MS=30*60*1000;
 import { normalizeMobileIntegrations, normalizeMobileMcpServers, normalizePluginInstallResult, type MobileMcpResourceSummary } from "../mobile/integrations.js";
 import { normalizeMobileMarketplaces } from "../mobile/marketplaces.js";
@@ -2029,7 +2032,7 @@ export class MiniAppAgent {
   private mobileGitStatus(sessionId:string,userId:number){
     const {root,name}=this.mobileRoot(sessionId,userId);
     const gitRoot=this.gitRoot(root);
-    const tokens=this.gitOutput(gitRoot,["status","--porcelain=v1","--branch","--untracked-files=normal","-z"],512*1024).split("\0");
+    const tokens=this.gitOutput(gitRoot,["status","--porcelain=v1","--branch","--untracked-files=all","-z"],512*1024).split("\0");
     const first=(tokens.shift()??"").split(/\r?\n/);
     const header=(first.shift()??"").replace(/\r$/g,"");
     const branch=header.startsWith("## ")?header.slice(3).split("...")[0]?.split(" [")[0]?.slice(0,160)??"":"";
@@ -2041,6 +2044,7 @@ export class MiniAppAgent {
       const path=line.slice(3);
       const renamed=/[RC]/.test(code);
       const previousPath=renamed?lines[++i]:undefined;
+      if(this.isHiddenMobileGitPath(path)||(previousPath&&this.isHiddenMobileGitPath(previousPath)))continue;
       changes.push({
         code:code.trim()||"??",indexStatus:code[0]??" ",worktreeStatus:code[1]??" ",
         path:path.slice(0,1200),previousPath:previousPath?.slice(0,1200),
@@ -2055,17 +2059,87 @@ export class MiniAppAgent {
     const upstream=upstreamCandidate&&remoteBranches.includes(upstreamCandidate)?upstreamCandidate:undefined;
     return {project:name,branch,branches,remoteBranches,remotes,...(upstream?{upstream}:{}),clean:changes.length===0,changes,checkedAt:Date.now()};
   }
+  private isHiddenMobileGitPath(path:string):boolean{
+    return path.split(/[\\/]+/).some(part=>this.isHiddenMobileFile(part));
+  }
   private mobileGitDiff(sessionId:string,userId:number,args:Record<string,unknown>={}){
     const {root,name}=this.mobileRoot(sessionId,userId);
     const gitRoot=this.gitRoot(root);
     const paths:string[]=[];
     if(typeof args.path==="string")paths.push(this.mobileGitPath(root,args.path));
     if(typeof args.previousPath==="string")paths.push(this.mobileGitPath(root,args.previousPath));
-    const pathArgs=paths.length?["--",...new Set(paths)]:[];
+    const status=this.mobileGitStatus(sessionId,userId);
+    const relevantChanges=paths.length
+      ?status.changes.filter(change=>paths.includes(change.path)||(change.previousPath&&paths.includes(change.previousPath)))
+      :status.changes;
+    const diffPaths=paths.length?[...new Set(paths)]:[...new Set(relevantChanges.flatMap(change=>[change.path,...(change.previousPath?[change.previousPath]:[])]))];
     const safeArgs=["--literal-pathspecs","diff","--no-ext-diff","--no-textconv","--no-color","--unified=3"];
-    const unstaged=this.gitOutput(gitRoot,[...safeArgs,...pathArgs]);
-    const staged=this.gitOutput(gitRoot,[...safeArgs,"--cached",...pathArgs]);
-    return {project:name,unstaged,staged,checkedAt:Date.now()};
+    const readDiff=(cached:boolean):string=>{
+      const chunks:string[]=[];
+      let totalBytes=0;
+      for(let offset=0;offset<diffPaths.length;offset+=16){
+        const pathArgs=["--",...diffPaths.slice(offset,offset+16)];
+        const output=this.gitOutput(gitRoot,[...safeArgs,...(cached?["--cached"]:[]),...pathArgs],MAX_MOBILE_GIT_DIFF_BYTES);
+        totalBytes+=Buffer.byteLength(output,"utf8");
+        if(totalBytes>MAX_MOBILE_GIT_DIFF_BYTES)throw new Error("Diff больше 2 МБ. Откройте отдельный файл.");
+        chunks.push(output);
+      }
+      return chunks.join("");
+    };
+    const unstaged=readDiff(false);
+    const staged=readDiff(true);
+    const untracked=relevantChanges.filter(change=>change.code==="??");
+    const untrackedDiffs:string[]=[];
+    let untrackedBytes=Buffer.byteLength(unstaged,"utf8");
+    for(const change of untracked){
+      const diff=this.mobileGitUntrackedDiff(root,change.path);
+      untrackedBytes+=Buffer.byteLength(diff,"utf8");
+      if(untrackedBytes>MAX_MOBILE_GIT_DIFF_BYTES)throw new Error("Новые файлы занимают больше 2 МБ. Откройте их diff по одному.");
+      untrackedDiffs.push(diff);
+    }
+    return {project:name,unstaged:[unstaged,...untrackedDiffs].filter(Boolean).join("\n"),staged,checkedAt:Date.now()};
+  }
+  private mobileGitUntrackedDiff(root:string,rawPath:string):string{
+    const entry=this.mobileProjectEntry(root,rawPath);
+    if(entry.kind!=="file")throw new Error("Diff нового файла доступен только для обычных файлов");
+    if(/[\u0000-\u001f\u007f]/.test(entry.path))throw new Error("Имя файла нельзя безопасно показать в diff");
+    if(entry.size>MAX_MOBILE_GIT_UNTRACKED_DIFF_BYTES)throw new Error("Новый файл больше 512 КБ и не открывается в Git diff");
+    const before=lstatSync(entry.absolute);
+    if(before.isSymbolicLink()||!before.isFile()||!isPathWithinRoot(root,realpathSync.native(dirname(entry.absolute))))
+      throw new Error("Новый файл изменился. Обновите Git и повторите просмотр.");
+    const descriptor=openSync(entry.absolute,"r");
+    try{
+      const opened=fstatSync(descriptor);
+      if(!opened.isFile()||opened.dev!==before.dev||opened.ino!==before.ino||opened.size>MAX_MOBILE_GIT_UNTRACKED_DIFF_BYTES)
+        throw new Error("Новый файл изменился. Обновите Git и повторите просмотр.");
+      const bytes=Buffer.alloc(MAX_MOBILE_GIT_UNTRACKED_DIFF_BYTES+1);
+      let length=0;
+      while(length<bytes.length){
+        const count=readSync(descriptor,bytes,length,bytes.length-length,length);
+        if(count===0)break;
+        length+=count;
+      }
+      if(length>MAX_MOBILE_GIT_UNTRACKED_DIFF_BYTES)throw new Error("Новый файл больше 512 КБ и не открывается в Git diff");
+      const after=fstatSync(descriptor);
+      const current=lstatSync(entry.absolute);
+      if(current.isSymbolicLink()||!current.isFile()||current.dev!==opened.dev||current.ino!==opened.ino||
+        current.size!==opened.size||current.mtimeMs!==opened.mtimeMs||current.ctimeMs!==opened.ctimeMs||
+        after.size!==opened.size||after.mtimeMs!==opened.mtimeMs||after.ctimeMs!==opened.ctimeMs||
+        !isPathWithinRoot(root,realpathSync.native(dirname(entry.absolute)))||length!==opened.size)
+        throw new Error("Новый файл изменился во время чтения. Обновите Git и повторите просмотр.");
+      const path=entry.path;
+      const header=[`diff --git a/${path} b/${path}`,`new file mode ${(opened.mode&0o111)?"100755":"100644"}`];
+      if(bytes.subarray(0,length).includes(0))return [...header,`Binary files /dev/null and b/${path} differ`].join("\n");
+      let text:string;
+      try{text=new TextDecoder("utf-8",{fatal:true}).decode(bytes.subarray(0,length));}
+      catch{return [...header,`Binary files /dev/null and b/${path} differ`].join("\n");}
+      const patch=structuredPatch("/dev/null",`b/${path}`,"",text,"","",{context:3});
+      const hunks=patch.hunks.flatMap(hunk=>[
+        `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`,
+        ...hunk.lines,
+      ]);
+      return [...header,"--- /dev/null",`+++ b/${path}`,...hunks].join("\n");
+    }finally{closeSync(descriptor);}
   }
   private gitConflictBlobSize(root:string,objectId:string):number{
     const sizeText=this.gitOutput(root,["cat-file","-s",objectId],1024).trim();

@@ -1676,11 +1676,14 @@ test("mobile Git view reads bounded branch status and safe staged and unstaged d
   run("config","user.email","codex-mobile-test@example.invalid");
   writeFileSync(join(project,"main.ts"),"export const answer = 1;\n");
   writeFileSync(join(project,"move.me"),"rename fixture\n");
+  writeFileSync(join(project,".env"),"TOKEN=fixture-secret-before\n");
   run("add","main.ts");
   run("add","move.me");
+  run("add",".env");
   run("commit","-m","fixture base");
   run("mv","move.me","renamed résumé.md");
   writeFileSync(join(project,"main.ts"),"export const answer = 2;\n");
+  writeFileSync(join(project,".env"),"TOKEN=fixture-secret-after\n");
   run("add","main.ts");
   writeFileSync(join(project,"main.ts"),"export const answer = 3;\n");
   writeFileSync(join(project,"notes.txt"),"untracked note\n");
@@ -1706,6 +1709,7 @@ test("mobile Git view reads bounded branch status and safe staged and unstaged d
     assert.ok(status.changes.some((entry)=>entry.code==="??"&&entry.path.includes("notes.txt")));
     assert.ok(status.changes.some((entry)=>entry.path==="résumé file.txt"));
     assert.ok(status.changes.some((entry)=>entry.code.startsWith("R")&&entry.path==="renamed résumé.md"&&entry.previousPath==="move.me"),JSON.stringify(status.changes));
+    assert.equal(status.changes.some((entry)=>entry.path===".env"),false);
     const diff=await agent.executeMobile({op:"gitDiff",userId:101,args:{sessionId}}) as {staged:string;unstaged:string};
     assert.match(diff.staged,/answer = 2/);
     assert.match(diff.unstaged,/answer = 3/);
@@ -1713,6 +1717,13 @@ test("mobile Git view reads bounded branch status and safe staged and unstaged d
     const mainDiff=await agent.executeMobile({op:"gitDiff",userId:101,args:{sessionId,path:"main.ts"}}) as {staged:string;unstaged:string};
     assert.match(mainDiff.unstaged,/answer = 3/);
     assert.doesNotMatch(mainDiff.staged,/rename from move\.me/);
+    const newFileDiff=await agent.executeMobile({op:"gitDiff",userId:101,args:{sessionId,path:"notes.txt"}}) as {staged:string;unstaged:string};
+    assert.match(newFileDiff.unstaged,/diff --git a\/notes\.txt b\/notes\.txt/);
+    assert.match(newFileDiff.unstaged,/\+untracked note/);
+    assert.equal(newFileDiff.staged,"");
+    const allFilesDiff=await agent.executeMobile({op:"gitDiff",userId:101,args:{sessionId}}) as {staged:string;unstaged:string};
+    assert.match(allFilesDiff.unstaged,/diff --git a\/notes\.txt b\/notes\.txt/);
+    assert.doesNotMatch(allFilesDiff.unstaged,/fixture-secret-after|\.env/);
     await assert.rejects(agent.executeMobile({op:"gitDiff",userId:101,args:{sessionId,path:"..\\outside.txt"}}),/Недопустимый путь Git/);
     const renameDiff=await agent.executeMobile({op:"gitDiff",userId:101,args:{sessionId,path:"renamed résumé.md",previousPath:"move.me"}}) as {staged:string;unstaged:string};
     assert.match(renameDiff.staged,/rename from move\.me/);

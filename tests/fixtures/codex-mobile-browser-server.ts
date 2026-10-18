@@ -878,9 +878,13 @@ const agent = {
       const selectedPath = String(args.path ?? "");
       const renameSelected = selectedPath === "src/renamed.ts" || args.previousPath === "src/old-main.ts";
       const mainDiff = "diff --git a/src/main.ts b/src/main.ts\nindex 1111111..2222222 100644\n--- a/src/main.ts\n+++ b/src/main.ts\n@@ -1,3 +1,3 @@\n-export const answer = 42;\n+export const answer = 43;\n";
+      const notesDiff = "diff --git a/notes/review.md b/notes/review.md\nnew file mode 100644\n--- /dev/null\n+++ b/notes/review.md\n@@ -0,0 +1 @@\n+Review fixture\n";
       return {
         project: "codex-mobile",
-        unstaged: (!selectedPath || selectedPath === "src/main.ts") ? mainDiff : "",
+        unstaged: [
+          (!selectedPath || selectedPath === "src/main.ts") ? mainDiff : "",
+          !fixtureNotesCommitted && !fixtureStaged.has("notes/review.md") && (!selectedPath || selectedPath === "notes/review.md") ? notesDiff : "",
+        ].filter(Boolean).join("\n"),
         staged: !selectedPath
           ? fixtureStaged.has("notes/review.md") ? "diff --git a/notes/review.md b/notes/review.md\nnew file mode 100644\n--- /dev/null\n+++ b/notes/review.md\n@@ -0,0 +1 @@\n+Review fixture\n" : fixtureRenameStaged ? "diff --git a/src/old-main.ts b/src/renamed.ts\nsimilarity index 100%\nrename from src/old-main.ts\nrename to src/renamed.ts\n" : ""
           : renameSelected && fixtureRenameStaged ? "diff --git a/src/old-main.ts b/src/renamed.ts\nsimilarity index 100%\nrename from src/old-main.ts\nrename to src/renamed.ts\n" : selectedPath === "notes/review.md" && fixtureStaged.has("notes/review.md") ? "diff --git a/notes/review.md b/notes/review.md\nnew file mode 100644\n--- /dev/null\n+++ b/notes/review.md\n@@ -0,0 +1 @@\n+Review fixture\n" : "",
