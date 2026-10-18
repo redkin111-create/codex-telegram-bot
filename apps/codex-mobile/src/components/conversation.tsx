@@ -4,6 +4,7 @@ import { FileText, GitFork, ImagePlus, LoaderCircle, MessageSquare, Mic, Minimiz
 import "../../../../apps/mini-app/public/photo-input.js";
 import type { HistoryEntry, MobileActivity, MobileAttachment, MobileCapabilities, MobileEditableTurn, MobileEditableTurns, MobileLiveEvent, MobileQueue, MobileRealtimeVoices, MobileSession } from "../types.js";
 import { imageUrl } from "../api.js";
+import { splitCodeReviewComments } from "../lib/review-comments.js";
 import { SafeMarkdown } from "../markdown.js";
 import { isMobileSkillNameSafe, prependMobileSkill } from "../skill-prompt.js";
 import { Badge, Button, Input, Textarea } from "./ui/primitives.js";
@@ -327,7 +328,12 @@ export function Conversation({
           <pre className="max-h-80 overflow-auto border-t border-border p-3 font-mono text-xs leading-5 text-[#d3dbd1]">{entry.text}</pre>
         </details> : <article key={`${entry.timestamp ?? "m"}-${index}`} className={`max-w-[94%] rounded-2xl border px-4 py-3 ${entry.role === "user" ? "ml-auto border-[#46533d] bg-[#20291b]" : "mr-auto border-border bg-panel"}`}>
           <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-[#859084]">{entry.role === "user" ? "Вы" : entry.role === "system" ? "Система" : "Codex"}{entry.timestamp ? <time className="font-normal normal-case tracking-normal">{new Date(entry.timestamp).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" })}</time> : null}</div>
-          <SafeMarkdown text={entry.text} />
+          {entry.role === "assistant" ? <div className="space-y-3">{splitCodeReviewComments(entry.text).map((segment, segmentIndex) => segment.type === "comment" ? <section key={`review-${segmentIndex}`} className="rounded-xl border border-[#5f4d2d] bg-[#292316] p-3" aria-label={`Комментарий ревью: ${segment.file}`}>
+            <div className="flex flex-wrap items-center gap-2"><span className="text-[10px] font-semibold uppercase tracking-wide text-[#f0d995]">Замечание ревью</span>{segment.priority !== undefined && <Badge className="border-[#735d35] text-[#f0d995]">P{segment.priority}</Badge>}</div>
+            <h3 className="mt-2 break-words text-sm font-semibold text-[#f4e4b2]">{segment.title}</h3>
+            <p className="mt-1 break-all font-mono text-[11px] text-[#c8b783]">{segment.file}{segment.start !== undefined ? `:${segment.start}${segment.end !== undefined && segment.end !== segment.start ? `–${segment.end}` : ""}` : ""}</p>
+            <div className="mt-2 text-xs leading-5 text-[#e7dfc9]"><SafeMarkdown text={segment.body} /></div>
+          </section> : segment.text ? <SafeMarkdown key={`text-${segmentIndex}`} text={segment.text} /> : null)}</div> : <SafeMarkdown text={entry.text} />}
         </article>)}
         {events.filter((event) => event.kind === "transcript" && event.text && event.role).map((event) => <article key={`voice-${event.id}`} className={`max-w-[94%] rounded-2xl border px-4 py-3 ${event.role === "user" ? "ml-auto border-[#46533d] bg-[#20291b]" : "mr-auto border-border bg-panel"}`}>
           <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-[#859084]">{event.role === "user" ? "Вы · голос" : "Codex · голос"}<time className="font-normal normal-case tracking-normal">{new Date(event.at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}</time></div>
