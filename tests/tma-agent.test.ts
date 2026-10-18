@@ -21,6 +21,48 @@ test("mobile-only agent can use existing runtime logic without an outbound TMA t
   finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile background process controls are limited to an owned thread and a process returned for that thread",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-background-terminals-"));
+  const sessionId="96969696-9696-4969-8969-969696969696";
+  const foreignId="97979797-9797-4979-8979-979797979797";
+  const threads=[
+    {id:sessionId,name:"Owned fixture",cwd:dir,source:"appServer",createdAt:1,updatedAt:2,recencyAt:2},
+    {id:foreignId,name:"Foreign fixture",cwd:dir,source:"appServer",createdAt:1,updatedAt:1,recencyAt:1},
+  ];
+  const listCalls:string[]=[];
+  const terminateCalls:Array<{threadId:string;processId:string}> = [];
+  const acp=Object.assign(new EventEmitter(),{
+    isConnected:true,
+    listProjects:async()=>[{id:"project",name:"Fixture",roots:[dir]}],
+    listThreads:async()=>threads,
+    listAllThreads:async()=>threads,
+    async listMobileBackgroundTerminals(threadId:string){listCalls.push(threadId);return [{itemId:"item-1",processId:"42"}];},
+    async terminateMobileBackgroundTerminal(threadId:string,processId:string){if(threadId!==sessionId||processId!=="42")throw new Error("Фоновый процесс не найден в выбранном сеансе");terminateCalls.push({threadId,processId});},
+    availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],
+    currentModelId:"default",currentModeId:"code",accountState:async()=>({}),
+  }) as unknown as AcpClient;
+  const registry={controller:()=>({list:()=>[]}),get:()=>({sessionId,isBusy:true}),runtimeForSession:()=>({sessionId,isBusy:true})} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101","202"])} as AppConfig;
+  const owners=new TelegramSessionRegistry(dir);
+  owners.recordMobile(sessionId,101,dir,"Fixture");
+  owners.recordMobile(foreignId,202,dir,"Fixture");
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
+    const listed=await agent.executeMobile({op:"listBackgroundTerminals" as never,userId:101,args:{sessionId}}) as {
+      items:Array<{itemId:string;processId:string}>;
+    };
+    assert.deepEqual(listed.items,[{itemId:"item-1",processId:"42"}]);
+    await assert.rejects(agent.executeMobile({op:"stopBackgroundTerminal" as never,userId:202,args:{sessionId,processId:"42"}}),/Доступ к сеансу запрещён/);
+    await assert.rejects(agent.executeMobile({op:"stopBackgroundTerminal" as never,userId:101,args:{sessionId,processId:"999"}}),/не найден/i);
+    assert.deepEqual(terminateCalls,[]);
+    const stopped=await agent.executeMobile({op:"stopBackgroundTerminal" as never,userId:101,args:{sessionId,processId:"42"}}) as {stopped:boolean};
+    assert.deepEqual(stopped,{stopped:true,processId:"42"});
+    assert.deepEqual(terminateCalls,[{threadId:sessionId,processId:"42"}]);
+    assert.ok(listCalls.every((threadId)=>threadId===sessionId));
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile native search finds older sessions without exposing another owner's session",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-search-"));
   const ownedId="91919191-9191-4191-8191-919191919191";

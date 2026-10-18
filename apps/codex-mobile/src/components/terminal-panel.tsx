@@ -3,7 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as XtermTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { LoaderCircle, Play, ShieldAlert, Terminal as TerminalIcon, X } from "lucide-react";
-import type { MobileOperation } from "../types.js";
+import type { MobileBackgroundTerminal, MobileOperation } from "../types.js";
 import { Button, Card, Textarea } from "./ui/primitives.js";
 
 interface TerminalResult {
@@ -43,12 +43,101 @@ export function TerminalPanel({ sessionId, cwd, connected, onClose, onOperation 
           <p className="break-all font-mono text-xs text-text">{cwd}</p>
           <p className="text-xs leading-relaxed text-muted">Команды выполняются на компьютере от имени текущего пользователя. Терминал может запускать программы и менять файлы проекта.</p>
         </Card>
+        <BackgroundProcessPanel sessionId={sessionId} connected={connected} onOperation={onOperation} />
         <InteractiveTerminal sessionId={sessionId} connected={connected} onOperation={onOperation} />
       </div>
       <div className={mode === "command" ? "min-h-0 flex-1 overflow-y-auto p-3 sm:p-4" : "hidden"}>
         <OneShotTerminal sessionId={sessionId} cwd={cwd} connected={connected} onOperation={onOperation} />
       </div>
     </section>
+  </>;
+}
+
+function BackgroundProcessPanel({ sessionId, connected, onOperation }: {
+  sessionId: string;
+  connected: boolean;
+  onOperation: (op: MobileOperation, args: Record<string, unknown>) => Promise<unknown>;
+}) {
+  const [items, setItems] = useState<MobileBackgroundTerminal[]>();
+  const [loading, setLoading] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [pending, setPending] = useState<MobileBackgroundTerminal>();
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const requestVersion = useRef(0);
+
+  async function refresh() {
+    if (!connected) return;
+    const version = ++requestVersion.current;
+    setLoading(true);
+    setError("");
+    try {
+      const result = await onOperation("listBackgroundTerminals", { sessionId }) as { items?: unknown };
+      if (!Array.isArray(result?.items)) throw new Error("Codex вернул неверный список фоновых процессов");
+      if (version !== requestVersion.current) return;
+      setItems(result.items.filter((item): item is MobileBackgroundTerminal => Boolean(item) &&
+        typeof item === "object" && typeof (item as MobileBackgroundTerminal).itemId === "string" &&
+        typeof (item as MobileBackgroundTerminal).processId === "string"));
+    } catch (cause) {
+      if (version !== requestVersion.current) return;
+      setItems(undefined);
+      setError(cause instanceof Error ? cause.message : "Не удалось получить список фоновых процессов");
+    } finally {
+      if (version === requestVersion.current) setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    requestVersion.current += 1;
+    setItems(undefined);
+    setLoading(false);
+    setError("");
+    setNotice("");
+    if (connected) void refresh();
+    return () => { requestVersion.current += 1; };
+    // The session and connection state identify when the native list must be reloaded.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, connected]);
+
+  async function stop() {
+    if (!pending || stopping) return;
+    setStopping(true);
+    setError("");
+    setNotice("");
+    try {
+      await onOperation("stopBackgroundTerminal", { sessionId, processId: pending.processId });
+      setPending(undefined);
+      setNotice(`Фоновый процесс ${pending.processId} остановлен`);
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Не удалось остановить фоновый процесс");
+    } finally { setStopping(false); }
+  }
+
+  return <>
+    <Card className="shrink-0 space-y-3 p-3" aria-label="Фоновые процессы Codex">
+      <div className="flex items-center justify-between gap-2">
+        <div><h3 className="text-sm font-semibold">Фоновые процессы Codex</h3><p className="mt-1 text-[11px] text-muted">Показывает идентификаторы фоновых процессов в этом сеансе.</p></div>
+        <Button type="button" variant="outline" className="min-h-9 shrink-0 px-3 text-xs" disabled={!connected || loading} onClick={() => void refresh()}>{loading ? <LoaderCircle size={14} className="animate-spin" /> : null}Обновить</Button>
+      </div>
+      {!connected ? <p className="text-xs text-muted">Подключите сеанс Codex, чтобы проверить фоновые процессы.</p>
+        : loading && items === undefined ? <p role="status" className="text-xs text-muted">Загружаю список…</p>
+          : error && items === undefined ? <p role="alert" className="text-xs text-[#ffc3bd]">{error}</p>
+            : items?.length ? <ul className="space-y-2">{items.map((item) => <li key={item.processId} className="flex items-center justify-between gap-3 rounded-xl border border-border bg-[#111613] p-3">
+              <div className="min-w-0"><p className="text-xs font-medium">Процесс Codex</p><p className="mt-1 break-all font-mono text-[11px] text-muted">ID: {item.processId}</p></div>
+              <Button type="button" variant="danger" className="min-h-9 shrink-0 px-3 text-xs" disabled={stopping || loading} aria-label={`Остановить процесс ${item.processId}`} onClick={() => setPending(item)}>Остановить</Button>
+            </li>)}</ul>
+              : <p role="status" className="text-xs text-muted">Фоновых процессов нет.</p>}
+      {error && items !== undefined && <p role="alert" className="text-xs text-[#ffc3bd]">{error}</p>}
+      {notice && <p role="status" className="text-xs text-accent">{notice}</p>}
+    </Card>
+    {pending && <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
+      <section role="alertdialog" aria-modal="true" aria-labelledby="background-process-confirm-title" className="safe-area-bottom w-full max-w-md space-y-4 rounded-2xl border border-[#733b39] bg-elevated p-5 shadow-soft">
+        <div><h3 id="background-process-confirm-title" className="flex items-center gap-2 text-base font-semibold"><ShieldAlert size={17} className="text-[#f2c66d]" />Остановить процесс Codex?</h3><p className="mt-2 text-sm leading-relaxed text-muted">Codex завершит выбранную фоновую команду в этом сеансе. Другие процессы и сеансы не затрагиваются.</p></div>
+        <p className="break-all rounded-lg bg-[#0c100d] p-3 font-mono text-xs text-text">ID процесса: {pending.processId}</p>
+        <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={stopping} onClick={() => setPending(undefined)}>Отмена</Button><Button type="button" variant="danger" className="flex-1" disabled={!connected || stopping} onClick={() => void stop()}>{stopping ? <LoaderCircle size={15} className="animate-spin" /> : null}Остановить</Button></div>
+      </section>
+    </div>}
   </>;
 }
 

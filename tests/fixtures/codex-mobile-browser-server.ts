@@ -92,6 +92,10 @@ const fixtureSkills = [
 ];
 const fixtureTerminals = new Map<string, { sessionId: string; output: string; pendingInput: string; exited: boolean; exitCode: number | null; }>();
 const fixtureTerminalBySession = new Map<string, string>();
+const fixtureBackgroundProcesses = new Map<string, Array<{ itemId: string; processId: string }>>([
+  [firstSession, [{ itemId: "fixture-command-item", processId: "4242" }]],
+]);
+let fixtureBackgroundTerminalFailure = false;
 const fixtureFiles = new Map<string, string>([
   ["README.md", "# Fixture project\n\nRead-only history is followed by mobile file access.\n"],
   ["src/main.ts", "export function greet() {\n  return \"Hello from fixture\";\n}\n"],
@@ -219,6 +223,18 @@ const agent = {
       feed.status(sessionId, "working", "Ревью Codex выполняется (тест)");
       feed.publish(sessionId, { kind: "text", text: "Ревью Codex запущено тестовой средой" });
       return { started: true, reviewThreadId: sessionId, turnId: "fixture-review-turn" };
+    }
+    if (job.op === "listBackgroundTerminals") {
+      if (fixtureBackgroundTerminalFailure) throw new Error("Тестовая ошибка Codex: связь потеряна");
+      if (!sessions.some((entry) => entry.id === sessionId)) throw new Error("Сеанс не найден");
+      return { items: (fixtureBackgroundProcesses.get(sessionId) ?? []).map((item) => ({ ...item })) };
+    }
+    if (job.op === "stopBackgroundTerminal") {
+      const items = fixtureBackgroundProcesses.get(sessionId) ?? [];
+      const processId = String(args.processId ?? "");
+      if (!items.some((item) => item.processId === processId)) throw new Error("Фоновый процесс не найден в выбранном сеансе");
+      fixtureBackgroundProcesses.set(sessionId, items.filter((item) => item.processId !== processId));
+      return { stopped: true, processId };
     }
     if (job.op === "listMoreThreads") {
       const archived = args.archived === true;
@@ -571,6 +587,12 @@ process.stdin.on("data", (chunk: string) => {
           options: [{ optionId: "accept", name: "Разрешить один раз" }, { optionId: "decline", name: "Отклонить" }],
           reason: "Нужен доступ для выполнения команды проверки.",
         }).then((result) => process.stdout.write(JSON.stringify({ fixtureApprovalResult: result }) + "\n"));
+      } else if (command.command === "backgroundTerminalsError") {
+        fixtureBackgroundTerminalFailure = true;
+        process.stdout.write("Fixture background terminal errors enabled.\n");
+      } else if (command.command === "backgroundTerminalsReset") {
+        fixtureBackgroundTerminalFailure = false;
+        process.stdout.write("Fixture background terminal errors disabled.\n");
       }
     } catch { process.stdout.write("Fixture control command was ignored.\n"); }
   }

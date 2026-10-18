@@ -164,6 +164,11 @@ export interface CodexThreadListResponse {
   nextCursor?: string | null;
 }
 
+export interface CodexBackgroundTerminal {
+  itemId: string;
+  processId: string;
+}
+
 // ── turns ────────────────────────────────────────────────────────────────────
 
 export type CodexUserInput =

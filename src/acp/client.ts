@@ -57,6 +57,7 @@ import type {
   CodexThreadListParams,
   CodexThreadListResponse,
   CodexThreadSummary,
+  CodexBackgroundTerminal,
 } from "./codex-protocol.js";
 import type {
   ContentBlock,
@@ -288,6 +289,48 @@ export class AcpClient extends EventEmitter {
     } catch {
       throw new AcpError("Codex вернул небезопасную ссылку входа; разрешены только HTTPS-ссылки");
     }
+  }
+
+  /** List Codex shell processes that are still running for one authorized thread. */
+  async listMobileBackgroundTerminals(threadId: string): Promise<CodexBackgroundTerminal[]> {
+    if (!/^[a-z0-9_-]{8,128}$/i.test(threadId)) throw new Error("Неверный сеанс Codex для списка фоновых процессов");
+    const byProcessId = new Map<string, CodexBackgroundTerminal>();
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 100; page++) {
+      const params = { threadId, limit: 100, ...(cursor ? { cursor } : {}) };
+      const response = await this.request("thread/backgroundTerminals/list", params) as {
+        data?: unknown;
+        nextCursor?: unknown;
+      };
+      if (!Array.isArray(response?.data)) throw new AcpError("Codex вернул неверный список фоновых процессов");
+      for (const value of response.data) {
+        if (!value || typeof value !== "object") continue;
+        const item = value as Record<string, unknown>;
+        if (typeof item.itemId !== "string" || !/^[a-z0-9_-]{1,200}$/i.test(item.itemId) ||
+            typeof item.processId !== "string" || !/^[a-z0-9._-]{1,128}$/i.test(item.processId)) continue;
+        byProcessId.set(item.processId, { itemId: item.itemId, processId: item.processId });
+      }
+      const next = typeof response.nextCursor === "string" && response.nextCursor.length <= 2048
+        ? response.nextCursor : undefined;
+      if (!next || next === cursor || seenCursors.has(next)) break;
+      seenCursors.add(next);
+      cursor = next;
+    }
+    return [...byProcessId.values()];
+  }
+
+  /** Terminate only a process Codex still reports as belonging to this thread. */
+  async terminateMobileBackgroundTerminal(threadId: string, processId: string): Promise<void> {
+    if (!/^[a-z0-9_-]{8,128}$/i.test(threadId) || !/^[a-z0-9._-]{1,128}$/i.test(processId)) {
+      throw new Error("Укажите фоновый процесс из списка сеанса Codex");
+    }
+    const processes = await this.listMobileBackgroundTerminals(threadId);
+    if (!processes.some((process) => process.processId === processId)) {
+      throw new AcpError("Фоновый процесс не найден в выбранном сеансе");
+    }
+    const result = await this.request("thread/backgroundTerminals/terminate", { threadId, processId }) as { terminated?: unknown };
+    if (result?.terminated !== true) throw new AcpError("Codex не подтвердил остановку фонового процесса");
   }
 
   /** Read only the MCP connections already associated with one Codex thread. */
