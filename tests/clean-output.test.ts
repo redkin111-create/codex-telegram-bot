@@ -249,6 +249,23 @@ test("Codex permission approval grants only the requested profile for the curren
   assert.deepEqual(response, { permissions: requested, scope: "turn", strictAutoReview: false });
 });
 
+test("mobile permission approval can grant the requested profile for the session", async () => {
+  const requested = { network: { enabled: true }, fileSystem: { write: ["C:\\test\\output"] } };
+  let prompt: RequestPermissionParams | undefined;
+  const response = await decidePermissionsApproval(
+    { threadId: "thread-1", itemId: "item-session", reason: "Собрать отчёт", permissions: requested },
+    false,
+    async (params) => {
+      prompt = params;
+      return { outcome: { outcome: "selected", optionId: "codex-mobile-permissions-session-allow" } };
+    },
+  );
+
+  assert.deepEqual(prompt?.options.map((option) => option.optionId), ["grant", "deny"]);
+  assert.deepEqual(prompt?.mobileOptions?.map((option) => option.optionId), ["codex-mobile-permissions-session-allow"]);
+  assert.deepEqual(response, { permissions: requested, scope: "session", strictAutoReview: false });
+});
+
 test("session-scoped mobile approval follows Codex availability without changing Telegram choices", async () => {
   const captured: RequestPermissionParams[] = [];
   const decide = (method: string, params: Record<string, unknown>, optionId: string) => decideApproval(

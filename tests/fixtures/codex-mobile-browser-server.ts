@@ -964,13 +964,30 @@ process.stdin.on("data", (chunk: string) => {
   for (const line of lines) {
     try {
       const command = JSON.parse(line) as { command?: string };
-      if (command.command === "approval" || command.command === "approvalNoSession") {
+      if (command.command === "approval" || command.command === "approvalNoSession" || command.command === "permissionApproval") {
+        const permissionApproval = command.command === "permissionApproval";
         void mobileApprovals.handle({
           sessionId: firstSession,
-          toolCall: { title: "git status", kind: "execute" },
-          options: [{ optionId: "accept", name: "Разрешить один раз" }, { optionId: "decline", name: "Отклонить" }],
-          ...(command.command === "approval" ? { mobileOptions: [{ optionId: "codex-mobile-session-allow", name: "Разрешить для сеанса" }] } : {}),
-          reason: "Нужен доступ для выполнения команды проверки.",
+          toolCall: permissionApproval
+            ? { title: "Дополнительный доступ", kind: "write" }
+            : { title: "git status", kind: "execute" },
+          options: permissionApproval
+            ? [{ optionId: "grant", name: "Разрешить один раз" }, { optionId: "deny", name: "Отклонить" }]
+            : [{ optionId: "accept", name: "Разрешить один раз" }, { optionId: "decline", name: "Отклонить" }],
+          ...((command.command === "approval" || permissionApproval) ? {
+            mobileOptions: [permissionApproval
+              ? { optionId: "codex-mobile-permissions-session-allow", name: "Разрешить для сеанса" }
+              : { optionId: "codex-mobile-session-allow", name: "Разрешить для сеанса" }],
+          } : {}),
+          ...(permissionApproval ? {
+            permissions: {
+              network: { enabled: true },
+              fileSystem: { write: ["C:\\fixture\\codex-mobile\\output"] },
+            },
+          } : {}),
+          reason: permissionApproval
+            ? "Codex запрашивает файловые и сетевые права."
+            : "Нужен доступ для выполнения команды проверки.",
         }).then((result) => process.stdout.write(JSON.stringify({ fixtureApprovalResult: result }) + "\n"));
       } else if (command.command === "backgroundTerminalsError") {
         fixtureBackgroundTerminalFailure = true;

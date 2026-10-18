@@ -11,7 +11,7 @@ export type PermissionHandler = (params: RequestPermissionParams) => Promise<Per
 
 export interface PermissionsRequestApprovalResponse {
   permissions: Record<string, unknown>;
-  scope: "turn";
+  scope: "turn" | "session";
   strictAutoReview: false;
 }
 
@@ -41,13 +41,17 @@ export async function decidePermissionsApproval(
         kind: fileSystem ? (writes ? "edit" : "read") : network ? "fetch" : "other",
       },
       options,
+      mobileOptions: [{ optionId: "codex-mobile-permissions-session-allow", name: "Разрешить для сеанса" }],
       permissions: requested,
       reason: typeof params.reason === "string" ? params.reason : undefined,
       cwd: typeof params.cwd === "string" ? params.cwd : undefined,
     });
-    return outcome.outcome.outcome === "selected" && outcome.outcome.optionId === "grant"
-      ? grantPermissions(requested)
-      : denyPermissions();
+    if (outcome.outcome.outcome !== "selected") return denyPermissions();
+    if (outcome.outcome.optionId === "grant") return grantPermissions(requested);
+    if (outcome.outcome.optionId === "codex-mobile-permissions-session-allow") {
+      return grantPermissions(requested, "session");
+    }
+    return denyPermissions();
   } catch {
     return denyPermissions();
   }
@@ -113,8 +117,11 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-function grantPermissions(permissions: Record<string, unknown>): PermissionsRequestApprovalResponse {
-  return { permissions, scope: "turn", strictAutoReview: false };
+function grantPermissions(
+  permissions: Record<string, unknown>,
+  scope: PermissionsRequestApprovalResponse["scope"] = "turn",
+): PermissionsRequestApprovalResponse {
+  return { permissions, scope, strictAutoReview: false };
 }
 
 function denyPermissions(): PermissionsRequestApprovalResponse {
