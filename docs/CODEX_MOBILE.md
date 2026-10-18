@@ -400,9 +400,18 @@ reference](https://tailscale.com/docs/reference/tailscale-cli/serve) for the
 
 This route alone does not complete MCP OAuth from Android. Codex requires the
 browser to reach its OAuth callback listener; the mobile server does not yet
-provide a reviewed callback bridge. Keep the callback step unclaimed until a
-loopback-only design is implemented and tested. See the [Codex app-server
-OAuth instructions](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md).
+provide a reviewed callback bridge. There is also a network-boundary issue in
+the current Codex implementation: when `mcp_oauth_callback_url` contains a
+non-loopback host, its temporary callback listener selects `0.0.0.0` as the
+bind address. A fixed callback port does not change that. A bridge that relies
+on this behavior would expose a listener on the laptop's network interfaces,
+so it is not enabled or claimed as complete. The upstream
+[`callback_bind_host` and listener setup](https://github.com/openai/codex/blob/main/codex-rs/rmcp-client/src/perform_oauth_login.rs#L3116-L3135)
+must support a separately configured loopback bind address, or an equivalent
+network restriction must be reviewed and verified, before Android MCP OAuth
+can be completed safely. The app-server still owns the OAuth state and token
+exchange; the mobile client must not implement a second OAuth client. See the
+[Codex app-server OAuth instructions](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md).
 
 1. Keep the service disabled while developing; verify pairing, revocation and
    file/session access locally against test fixtures.
