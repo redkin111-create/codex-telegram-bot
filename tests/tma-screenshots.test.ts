@@ -72,6 +72,7 @@ test("image index does not expose symlinks or absolute screenshots outside a wor
     const result=await index.scan(sid,file,cwd);
     assert.deepEqual(result,[]);
     assert.equal(await index.authorized(sid,file,cwd,privateFile),undefined);
+    assert.deepEqual((await index.olderPage(sid,file,cwd)).images,[]);
   }finally{rmSync(cwd,{recursive:true,force:true});rmSync(outside,{recursive:true,force:true});}
 });
 
@@ -156,5 +157,38 @@ test("screenshot index keeps references beyond the previous 64-image cap",async(
     assert.equal(images.length,80);
     assert.equal(images[0]?.name,"capture-001.png");
     assert.equal(images.at(-1)?.name,"capture-080.png");
+  }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+test("older screenshot pages include every image beyond the recent 256-image window",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"tma-screenshot-pages-"));
+  try{
+    const cwd=join(dir,"toy");
+    mkdirSync(cwd);
+    const file=join(dir,"rollout.jsonl");
+    const lines:string[]=[];
+    for(let n=1;n<=400;n++){
+      const path=join(cwd,`capture-${String(n).padStart(3,"0")}.png`);
+      writeFileSync(path,screenshot);
+      lines.push(record(path));
+    }
+    writeFileSync(file,lines.join(""));
+    const index=new TmaScreenshotIndex();
+    const recent=await index.scan(sid,file,cwd);
+    assert.equal(recent.length,256);
+    const older=[] as Awaited<ReturnType<TmaScreenshotIndex["olderPage"]>>["images"];
+    let cursor:number|undefined;
+    for(let page=0;page<5;page++){
+      const result=await index.olderPage(sid,file,cwd,cursor);
+      older.push(...result.images);
+      cursor=result.nextCursor;
+      if(cursor===undefined)break;
+    }
+    const all=new Map([...recent,...older].map((image)=>[image.path,image]));
+    assert.equal(all.size,400);
+    assert.equal(all.has(join(cwd,"capture-001.png")),true);
+    assert.equal(all.has(join(cwd,"capture-400.png")),true);
+    assert.equal(cursor,undefined,"all older pages should have a terminal cursor");
+    await assert.rejects(index.olderPage(sid,file,cwd,-1),/указатель страницы скриншотов/);
   }finally{rmSync(dir,{recursive:true,force:true});}
 });

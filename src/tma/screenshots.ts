@@ -22,8 +22,15 @@ const MAX_SCAN=8*1024*1024;
 const MAX_LINE=4*1024*1024;
 const MAX_REFERENCES=256;
 const MAX_IMAGES=MAX_REFERENCES;
+const OLDER_PAGE_SIZE=80;
+const OLDER_CHUNK_SIZE=256*1024;
 const MAX_BYTES=3*1024*1024;
 const EXTENSIONS=new Set([".png",".jpg",".jpeg",".webp",".gif"]);
+
+export interface ScreenshotPage {
+  images:ScreenshotRef[];
+  nextCursor?:number;
+}
 
 export class TmaScreenshotIndex {
   private readonly sessions=new Map<string,Cursor>();
@@ -102,5 +109,104 @@ export class TmaScreenshotIndex {
   async authorized(id:string,jsonl:string,cwd:string,path:string):Promise<ScreenshotRef|undefined>{
     const images=await this.scan(id,jsonl,cwd);
     return images.find(img=>img.path===path);
+  }
+
+  /** Return an older, workspace-validated page without retaining an unbounded index. */
+  async olderPage(id:string,jsonl:string,cwd:string,beforeOffset?:number):Promise<ScreenshotPage>{
+    let fileSize:number;
+    try{fileSize=(await stat(jsonl)).size;}catch{return {images:[]};}
+    const limit=beforeOffset??fileSize;
+    if(!Number.isSafeInteger(limit)||limit<0||limit>fileSize)throw new Error("Некорректный указатель страницы скриншотов");
+    if(limit===0)return {images:[]};
+
+    const recent=await this.scan(id,jsonl,cwd);
+    const known=new Set(recent.map(image=>image.path));
+    const groups:Array<{offset:number;paths:string[]}>=[];
+    const retained=new Set<string>();
+    let retainedCount=0;
+    let hasEarlier=false;
+    const addLine=(line:Buffer,offset:number)=>{
+      if(line.length===0||line.length>MAX_LINE)return;
+      const paths=watchImagePathsFromEvents([line.toString("utf8")],cwd)
+        .filter(path=>EXTENSIONS.has(extname(path).toLowerCase())&&!known.has(path)&&!retained.has(path))
+        .slice(-OLDER_PAGE_SIZE);
+      if(paths.length===0)return;
+      groups.push({offset,paths});
+      for(const path of paths)retained.add(path);
+      retainedCount+=paths.length;
+      while(retainedCount>OLDER_PAGE_SIZE&&groups.length>1){
+        const oldest=groups.shift()!;
+        retainedCount-=oldest.paths.length;
+        for(const path of oldest.paths)retained.delete(path);
+        hasEarlier=true;
+      }
+    };
+
+    const handle=await open(jsonl,"r");
+    let readOffset=0;
+    let pending=Buffer.alloc(0);
+    let pendingOffset=0;
+    let droppingLongLine=false;
+    try{
+      while(readOffset<limit){
+        const chunkOffset=readOffset;
+        const length=Math.min(OLDER_CHUNK_SIZE,limit-readOffset);
+        const chunk=Buffer.allocUnsafe(length);
+        let count=0;
+        while(count<length){
+          const result=await handle.read(chunk,count,length-count,chunkOffset+count);
+          if(!result.bytesRead)break;
+          count+=result.bytesRead;
+        }
+        if(count===0)break;
+        readOffset+=count;
+        const validChunk=chunk.subarray(0,count);
+        let raw:Buffer;
+        let origin:number;
+        if(droppingLongLine){
+          const newline=validChunk.indexOf(10);
+          if(newline<0)continue;
+          droppingLongLine=false;
+          raw=validChunk.subarray(newline+1);
+          origin=chunkOffset+newline+1;
+        }else{
+          raw=pending.length?Buffer.concat([pending,validChunk]):validChunk;
+          origin=pending.length?pendingOffset:chunkOffset;
+        }
+        pending=Buffer.alloc(0);
+        let start=0;
+        for(let newline=raw.indexOf(10);newline>=0;newline=raw.indexOf(10,start)){
+          addLine(raw.subarray(start,newline),origin+start);
+          start=newline+1;
+        }
+        const rest=raw.subarray(start);
+        if(rest.length>MAX_LINE)droppingLongLine=true;
+        else if(rest.length){pending=Buffer.from(rest);pendingOffset=origin+start;}
+      }
+      if(limit===fileSize&&!droppingLongLine&&pending.length>0)addLine(pending,pendingOffset);
+    }finally{await handle.close();}
+
+    const images=await this.validate(groups.flatMap(group=>group.paths),cwd);
+    const orderedPaths=new Set(groups.flatMap(group=>group.paths));
+    const ordered=images.filter(image=>orderedPaths.has(image.path));
+    return {images:ordered,...(hasEarlier&&groups.length?{nextCursor:groups[0]!.offset}:{})};
+  }
+
+  private async validate(candidates:string[],cwd:string):Promise<ScreenshotRef[]>{
+    let canonicalRoot:string;
+    try{canonicalRoot=await realpath(cwd);}catch{return [];}
+    const images:ScreenshotRef[]=[];
+    for(const candidate of candidates){
+      if(!EXTENSIONS.has(extname(candidate).toLowerCase()))continue;
+      try{
+        const actual=await realpath(candidate);
+        const rel=relative(canonicalRoot,actual);
+        if(!rel||rel===".."||rel.startsWith(".."+sep)||isAbsolute(rel))continue;
+        const meta=await stat(actual);
+        if(!meta.isFile()||meta.size<8||meta.size>MAX_BYTES)continue;
+        images.push({path:candidate,name:basename(actual),mtimeMs:meta.mtimeMs,size:meta.size});
+      }catch{/* not written yet, inaccessible or unsafe */}
+    }
+    return images;
   }
 }

@@ -25,12 +25,13 @@ const projectTwo = "C:\\fixture\\other-project";
 const screenshotPath = "C:\\fixture\\codex-mobile\\screenshots\\sample.png";
 const fixtureScreenshots = [
   { path: screenshotPath, name: "sample.png", mtimeMs: 1, size: 68 },
-  ...Array.from({ length: 79 }, (_, index) => {
+  ...Array.from({ length: 399 }, (_, index) => {
     const n = index + 2;
-    const name = `capture-${String(n).padStart(2, "0")}.png`;
+    const name = `capture-${String(n).padStart(3, "0")}.png`;
     return { path: `C:\\fixture\\codex-mobile\\screenshots\\${name}`, name, mtimeMs: n, size: 68 };
   }),
 ];
+const recentFixtureScreenshots = fixtureScreenshots.slice(-256);
 const fixturePinnedSection = { id: "01984de2-8f74-7c91-a3b2-5c5e937cf318", name: "Закреплённые", builtIn: true };
 const fixtureSectionsAvailable = process.env.CODEX_MOBILE_FIXTURE_SECTIONS_UNAVAILABLE !== "1";
 const fixtureCompactionUnconfirmed = process.env.CODEX_MOBILE_FIXTURE_COMPACTION_UNCONFIRMED === "1";
@@ -207,11 +208,11 @@ const agent = {
     const sessionId = typeof args.sessionId === "string" ? args.sessionId : "";
     if (job.op === "history") {
       const entries = history.get(sessionId) ?? [];
-      return { entries: entries.filter((entry) => args.includeTools === true || entry.role !== "tool"), images: sessionId === firstSession ? fixtureScreenshots : [], project: projectOne };
+      return { entries: entries.filter((entry) => args.includeTools === true || entry.role !== "tool"), images: sessionId === firstSession ? recentFixtureScreenshots : [], project: projectOne };
     }
     if (job.op === "activity") {
       return { busy: controlled.get(sessionId)?.busy ?? false, queue: controlled.get(sessionId)?.queue.length ?? 0,
-        images: sessionId === firstSession ? fixtureScreenshots : [] };
+        images: sessionId === firstSession ? recentFixtureScreenshots : [] };
     }
     if (job.op === "image") {
       return { mime: "image/png", name: "Тестовый скриншот Codex.png",
@@ -285,6 +286,14 @@ const agent = {
   async executeMobile(job: { op: string; userId: number; args: Record<string, unknown> }): Promise<unknown> {
     const args = job.args;
     const sessionId = String(args.sessionId ?? "");
+    if (job.op === "listOlderScreenshots") {
+      if (job.userId !== ownerId || !sessions.some((session) => session.id === sessionId)) throw new Error("Доступ к сеансу запрещён");
+      if (sessionId !== firstSession) return { images: [] };
+      const older = fixtureScreenshots.slice(0, 144);
+      if (args.beforeOffset === 64) return { images: older.slice(0, 64) };
+      if (args.beforeOffset !== undefined) throw new Error("Некорректный указатель страницы скриншотов");
+      return { images: older.slice(-80), nextCursor: 64 };
+    }
     if (job.op === "searchHistory") {
       if (job.userId !== ownerId || !sessions.some((session) => session.id === sessionId)) throw new Error("Доступ к сеансу запрещён");
       const query = typeof args.query === "string" ? args.query.trim().toLowerCase() : "";

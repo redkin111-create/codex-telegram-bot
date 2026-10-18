@@ -995,6 +995,28 @@ test("full conversation search requires the paired device, same Origin, CSRF and
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
+test("older screenshot pages require an authenticated device and an owned session", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const url = f.origin + "/api/operations";
+    const body = (sessionId = allowedSession) => JSON.stringify({ op: "listOlderScreenshots", args: { sessionId } });
+    const anonymous = await fetch(url, { method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: body() });
+    assert.equal(anonymous.status, 401);
+    const noCsrf = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: body() });
+    assert.equal(noCsrf.status, 403);
+    const wrongOrigin = await fetch(url, { method: "POST", headers: { origin: "https://attacker.example", cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body() });
+    assert.equal(wrongOrigin.status, 403);
+    const foreign = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body(foreignSession) });
+    assert.equal(foreign.status, 403);
+    assert.equal(f.calls.filter((call) => call.op === "listOlderScreenshots").length, 0);
+    const accepted = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body() });
+    assert.equal(accepted.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "listOlderScreenshots");
+    assert.deepEqual(f.calls.at(-1)?.args, { sessionId: allowedSession });
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
 test("unfiltered session pages require the paired device, allowed Origin and CSRF", async () => {
   const f = await startFixture();
   try {

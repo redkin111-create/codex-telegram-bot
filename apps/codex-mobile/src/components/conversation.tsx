@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
-import { FileText, GitFork, ImagePlus, LoaderCircle, MessageSquare, Mic, Minimize2, Paperclip, Pencil, Play, Plug, Search, Send, Sparkles, Square, Trash2, Wrench, X } from "lucide-react";
+import { FileText, GitFork, ImagePlus, LoaderCircle, MessageSquare, Minimize2, Paperclip, Pencil, Play, Plug, Search, Send, Sparkles, Square, Trash2, Wrench, X } from "lucide-react";
 import "../../../../apps/mini-app/public/photo-input.js";
-import type { HistoryEntry, MobileActivity, MobileAttachment, MobileCapabilities, MobileEditableTurn, MobileEditableTurns, MobileHistorySearch, MobileLiveEvent, MobileQueue, MobileRealtimeVoices, MobileSession } from "../types.js";
+import type { HistoryEntry, MobileActivity, MobileAttachment, MobileCapabilities, MobileEditableTurn, MobileEditableTurns, MobileHistorySearch, MobileLiveEvent, MobileQueue, MobileScreenshotPage, MobileSession } from "../types.js";
 import { imageUrl } from "../api.js";
 import { splitCodeReviewComments } from "../lib/review-comments.js";
 import { SafeMarkdown } from "../markdown.js";
 import { isMobileSkillNameSafe, prependMobileSkill } from "../skill-prompt.js";
+import { ScreenshotsGallery } from "./screenshots-gallery.js";
 import { Badge, Button, Input, Textarea } from "./ui/primitives.js";
-import { RealtimeVoiceControl } from "./realtime-voice.js";
 
 export interface PromptImage { name: string; mimeType: string; data: string; preview: string; }
 export type FollowUpMode = "queue" | "steer";
@@ -16,7 +16,7 @@ export type FollowUpMode = "queue" | "steer";
 export function Conversation({
   session, history, activity, events, queue, connected, connecting, loading, streamConnected,
   error, includeTools, onToggleTools, onConnect, onCancel, onFork, forking, onCreateSideChat, sideChatting, onReturnToParent, onCompact, compacting, onSend, onQueueRemove, onQueueResume, onQueueOpen, onLoadSkills, onLoadApps,
-  onLoadEditableTurns, onEditAndRetry, onTranscribeAudio, onLoadRealtimeVoices, onStartRealtime, onStopRealtime, onUploadAttachment, onRemoveAttachment, onOpenReviewLocation, onSearchHistory,
+  onLoadEditableTurns, onEditAndRetry, onUploadAttachment, onRemoveAttachment, onOpenReviewLocation, onSearchHistory, onLoadOlderScreenshots,
 }: {
   session?: MobileSession;
   history: HistoryEntry[];
@@ -47,14 +47,11 @@ export function Conversation({
   onLoadApps: () => Promise<MobileCapabilities["apps"]>;
   onLoadEditableTurns: () => Promise<MobileEditableTurns>;
   onEditAndRetry: (turnId: string, text: string, expectedLatestTurnId: string) => Promise<void>;
-  onTranscribeAudio: (file: File) => Promise<string>;
-  onLoadRealtimeVoices: () => Promise<MobileRealtimeVoices>;
-  onStartRealtime: (offerSdp: string, voice?: string) => Promise<string>;
-  onStopRealtime: () => Promise<void>;
   onUploadAttachment: (sessionId: string, file: File) => Promise<MobileAttachment>;
   onRemoveAttachment: (sessionId: string, id: string) => Promise<{ removed: boolean }>;
   onOpenReviewLocation: (location: { path: string; line?: number }) => void;
   onSearchHistory: (query: string, beforeOffset?: number, revision?: string) => Promise<MobileHistorySearch>;
+  onLoadOlderScreenshots: (sessionId: string, beforeOffset?: number) => Promise<MobileScreenshotPage>;
 }) {
   const activeSessionId = useRef(session?.id);
   activeSessionId.current = session?.id;
@@ -92,8 +89,6 @@ export function Conversation({
   const [editText, setEditText] = useState("");
   const [editError, setEditError] = useState("");
   const [editNotice, setEditNotice] = useState("");
-  const [transcribing, setTranscribing] = useState(false);
-  const [voiceError, setVoiceError] = useState("");
   const [historySearchOpen, setHistorySearchOpen] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
   const [fullHistoryQuery, setFullHistoryQuery] = useState("");
@@ -352,19 +347,6 @@ export function Conversation({
     }
   }
 
-  async function transcribeVoice(file?: File) {
-    if (!file) return;
-    setTranscribing(true);
-    setVoiceError("");
-    try {
-      const transcript = (await onTranscribeAudio(file)).trim();
-      if (!transcript) throw new Error("Речь не распознана. Попробуйте другое аудио.");
-      setText((current) => current.trim() ? `${current}\n${transcript}` : transcript);
-    } catch (cause) {
-      setVoiceError(cause instanceof Error ? cause.message : "Не удалось распознать речь");
-    } finally { setTranscribing(false); }
-  }
-
   async function submit() {
     if (!text.trim() && images.length === 0 && attachments.length === 0) return;
     if (followUpMode === "steer" && turnBusy && attachments.length > 0) {
@@ -489,13 +471,9 @@ export function Conversation({
             <Button type="button" variant="ghost" className="mt-2 min-h-9 px-2 text-xs" onClick={() => onOpenReviewLocation({ path: segment.file, ...(segment.start === undefined ? {} : { line: segment.start }) })}>Открыть diff</Button>
           </section> : segment.text ? <SafeMarkdown key={`text-${segmentIndex}`} text={segment.text} /> : null)}</div> : <SafeMarkdown text={entry.text} />}
         </article>)}
-        {events.filter((event) => event.kind === "transcript" && event.text && event.role).map((event) => <article key={`voice-${event.id}`} className={`max-w-[94%] rounded-2xl border px-4 py-3 ${event.role === "user" ? "ml-auto border-[#46533d] bg-[#20291b]" : "mr-auto border-border bg-panel"}`}>
-          <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-[#859084]">{event.role === "user" ? "Вы · голос" : "Codex · голос"}<time className="font-normal normal-case tracking-normal">{new Date(event.at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}</time></div>
-          <SafeMarkdown text={event.text!} />
-        </article>)}
       </div>
 
-      {(activity?.images.length ?? 0) > 0 && <section className="mx-auto mt-6 max-w-4xl"><h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted">Скриншоты сеанса</h2><div className="grid grid-cols-2 gap-3 sm:grid-cols-3">{activity!.images.map((image) => <button type="button" key={image.path} onClick={() => setOpenImage({ path: image.path, name: image.name })} aria-label={"Открыть скриншот " + image.name} className="overflow-hidden rounded-xl border border-border bg-panel text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"><img src={imageUrl(session.id, image.path)} alt={image.name} loading="lazy" className="aspect-video w-full object-cover" /><span className="block truncate px-2 py-1.5 text-xs text-muted">{image.name}</span></button>)}</div></section>}
+      {session && <ScreenshotsGallery key={session.id} sessionId={session.id} images={activity?.images ?? []} onLoadOlder={onLoadOlderScreenshots} onOpenImage={setOpenImage} />}
     </div>
 
     {queueOpen && <section className="mx-3 mb-3 rounded-2xl border border-border bg-panel p-3 sm:mx-5 md:mx-8" aria-label="Очередь задач">
@@ -506,8 +484,6 @@ export function Conversation({
     {error && <p className="mx-3 mb-2 rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd] sm:mx-5 md:mx-8" role="alert">{error}</p>}
     {imageError && <p className="mx-3 mb-2 rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd] sm:mx-5 md:mx-8" role="alert">{imageError}</p>}
     {attachmentError && <p className="mx-3 mb-2 rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd] sm:mx-5 md:mx-8" role="alert">{attachmentError}</p>}
-    {voiceError && <p className="mx-3 mb-2 rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd] sm:mx-5 md:mx-8" role="alert">{voiceError}</p>}
-    {transcribing && <p className="mx-3 mb-2 flex items-center gap-2 rounded-xl border border-border bg-panel px-3 py-2 text-xs text-muted sm:mx-5 md:mx-8" role="status"><LoaderCircle size={14} className="animate-spin" />Распознаю речь. Текст появится в черновике.</p>}
     {compactNotice && <p className={`mx-3 mb-2 rounded-xl border px-3 py-2 text-sm sm:mx-5 md:mx-8 ${compactNotice.startsWith("Статус неизвестен") || compactNotice.includes("не подтвердил") ? "border-[#735c35] bg-[#302719] text-[#f0d995]" : "border-[#46533d] bg-[#20291b] text-[#d5f49c]"}`} role="status">{compactNotice}</p>}
     {editNotice && <p className="mx-3 mb-2 rounded-xl border border-[#46533d] bg-[#20291b] px-3 py-2 text-sm text-[#d5f49c] sm:mx-5 md:mx-8" role="status">{editNotice}</p>}
 
@@ -536,7 +512,6 @@ export function Conversation({
             })}</ul> : <p className="py-2 text-xs text-muted">Нет подключённых приложений, доступных для этого сеанса.</p>}
         {!appPickerLoading && !appPickerError && availableApps.some((app) => !app.callable || !app.accessible || !app.enabled) && <p className="mt-2 text-[10px] leading-4 text-muted">Недоступные приложения можно подключить в настройках Codex на компьютере.</p>}
       </section>}
-      {session && <RealtimeVoiceControl key={session.id} connected={connected && !session.archived} blocked={turnBusy} ephemeral={session.ephemeral === true} events={events} onLoadVoices={onLoadRealtimeVoices} onStart={onStartRealtime} onStop={onStopRealtime} />}
       {images.length > 0 && <div className="mx-auto mb-2 flex max-w-4xl gap-2 overflow-x-auto">{images.map((image, index) => <div key={`${image.name}-${index}`} className="relative h-16 w-20 shrink-0 overflow-hidden rounded-lg border border-border"><img src={image.preview} alt={image.name} className="h-full w-full object-cover" /><button type="button" aria-label={`Убрать ${image.name}`} className="absolute right-1 top-1 rounded-full bg-black/75 px-1.5 text-xs" onClick={() => setImages((current) => current.filter((_, i) => i !== index))}>×</button></div>)}</div>}
       {attachments.length > 0 && <ul className="mx-auto mb-2 flex max-w-4xl flex-wrap gap-2" aria-label="Прикреплённые файлы">{attachments.map((file) => <li key={file.id} className="flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-border bg-panel px-2.5 py-1.5 text-xs"><FileText size={14} className="shrink-0 text-accent" /><span className="max-w-[min(64vw,20rem)] truncate" title={file.name}>{file.name}</span><span className="shrink-0 text-[10px] text-muted">{(file.size / 1024).toFixed(file.size < 10_240 ? 1 : 0)} КБ</span><button type="button" className="min-h-7 min-w-7 rounded-md text-muted hover:bg-elevated" aria-label={`Убрать файл ${file.name}`} disabled={uploadingAttachments} onClick={() => void removeDocument(file.id)}><X size={13} /></button></li>)}</ul>}
       {selectedAppIds.length > 0 && <ul className="mx-auto mb-2 flex max-w-4xl flex-wrap gap-2" aria-label="Выбранные приложения">{selectedAppIds.map((id) => {
@@ -558,19 +533,13 @@ export function Conversation({
           <span className="sr-only">Прикрепить текстовый файл, PDF или ZIP</span>
           <input type="file" className="sr-only" accept=".txt,.md,.markdown,.json,.json5,.jsonl,.csv,.tsv,.log,.xml,.yaml,.yml,.toml,.ini,.cfg,.conf,.ts,.tsx,.js,.jsx,.mjs,.py,.go,.rs,.java,.kt,.html,.css,.sql,.sh,.ps1,.patch,.diff,.pdf,.zip,text/*,application/pdf,application/zip" multiple disabled={!connected || attachments.length >= 5 || uploadingAttachments} onChange={(event) => { void attachDocuments(event.target.files); event.target.value = ""; }} />
         </label>
-        <label className={`flex min-h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-border bg-[#1b211c] text-muted ${connected && !transcribing ? "cursor-pointer hover:text-accent" : "cursor-not-allowed opacity-45"}`} aria-label="Распознать речь из аудио">
-          {transcribing ? <LoaderCircle size={18} className="animate-spin" /> : <Mic size={18} />}
-          <span className="sr-only">Выбрать аудио для распознавания</span>
-          <input type="file" className="sr-only" accept="audio/*" capture="user" disabled={!connected || transcribing} onChange={(event) => { void transcribeVoice(event.target.files?.[0]); event.target.value = ""; }} />
-        </label>
         <div className="min-w-0 flex-1"><Textarea value={text} onChange={(event) => setText(event.target.value)} onKeyDown={submitOnEnter} placeholder={!connected ? "Подключите сеанс, чтобы отправить задачу" : turnBusy && followUpMode === "steer" ? "Направление для текущей задачи…" : turnBusy ? "Следующая задача в очереди…" : "Задача для Codex…"} disabled={!connected} rows={2} className="min-h-[48px] max-h-40 resize-none py-3" aria-label="Сообщение Codex" /></div>
-        <Button type="submit" className="min-h-12 w-12 shrink-0 px-0" disabled={!connected || (!text.trim() && images.length === 0 && attachments.length === 0) || preparing || transcribing || uploadingAttachments || (followUpMode === "steer" && turnBusy && attachments.length > 0)} aria-label={followUpMode === "steer" && turnBusy ? "Направить текущую задачу" : "Отправить задачу"}>{preparing || transcribing || uploadingAttachments ? <LoaderCircle className="animate-spin" size={18} /> : <Send size={18} />}</Button>
+        <Button type="submit" className="min-h-12 w-12 shrink-0 px-0" disabled={!connected || (!text.trim() && images.length === 0 && attachments.length === 0) || preparing || uploadingAttachments || (followUpMode === "steer" && turnBusy && attachments.length > 0)} aria-label={followUpMode === "steer" && turnBusy ? "Направить текущую задачу" : "Отправить задачу"}>{preparing || uploadingAttachments ? <LoaderCircle className="animate-spin" size={18} /> : <Send size={18} />}</Button>
       </div>
       <div className="mx-auto mt-2 flex max-w-4xl items-center justify-between text-[10px] text-[#758077]">
         <span>{connected ? "Enter отправляет · Shift+Enter переносит строку" : "История доступна без подключения"}</span>
         <div className="flex items-center gap-2"><button type="button" className="min-h-8 rounded-lg px-2 text-xs text-muted hover:bg-elevated" onClick={() => { setQueueOpen((value) => !value); onQueueOpen(); }}>Очередь {queue.items.length}</button><button type="button" className="min-h-8 rounded-lg px-2 text-xs text-muted hover:bg-elevated" aria-pressed={includeTools} onClick={onToggleTools}>{includeTools ? "Скрыть инструменты" : "Показать инструменты"}</button>{queue.busy && <span className="flex items-center gap-1"><LoaderCircle size={11} className="animate-spin" />Работает</span>}</div>
       </div>
-      {connected && <p className="mx-auto mt-1 max-w-4xl text-[10px] leading-4 text-[#758077]">Если STT настроен на ПК, аудио отправится в этот сервис. Распознанный текст попадёт в черновик и не отправится автоматически.</p>}
     </form>
     {openImage && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90 p-3 sm:p-8" role="dialog" aria-modal="true" aria-label={openImage.name} onMouseDown={(event) => { if (event.target === event.currentTarget) setOpenImage(undefined); }}>
       <Button variant="outline" className="absolute right-4 top-4 z-10 min-h-11 px-4" aria-label="Закрыть скриншот" onClick={() => setOpenImage(undefined)}>Закрыть</Button>
