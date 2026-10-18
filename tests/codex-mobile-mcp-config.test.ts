@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listMobileMcpConfig, restartMobileCodex, setMobileMcpConfigEnabled } from "../src/mobile/mcp-config.js";
+import { addMobileMcpConfigServer, listMobileMcpConfig, restartMobileCodex, setMobileMcpConfigEnabled } from "../src/mobile/mcp-config.js";
 
 function withConfigFixture(run: (paths: { root: string; global: string; workspace: string }) => void | Promise<void>) {
   const previous = process.env.CODEX_HOME;
@@ -56,6 +56,85 @@ test("mobile MCP toggle reuses Codex config writer and preserves unrelated setti
     const enabled = setMobileMcpConfigEnabled(root, "review", true);
     assert.equal(enabled.enabled, true);
     assert.equal(readFileSync(workspace, "utf8").includes("enabled = false"), false);
+  });
+});
+
+test("mobile MCP add writes a workspace stdio server without exposing secrets", async () => {
+  await withConfigFixture(({ root, workspace }) => {
+    mkdirSync(join(root, ".codex"));
+    writeFileSync(workspace, "[features]\nvoice = true\n");
+    const added = addMobileMcpConfigServer(root, {
+      name: "local_review",
+      scope: "workspace",
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "@example/review-mcp"],
+      env: { REVIEW_TOKEN: "do-not-return-this" },
+    });
+    assert.deepEqual(added, { name: "local_review", scope: "workspace", enabled: true, transport: "stdio", restartRequired: true });
+    const text = readFileSync(workspace, "utf8");
+    assert.match(text, /\[features\]\nvoice = true/);
+    assert.match(text, /\[mcp_servers\.local_review\]/);
+    assert.match(text, /args = \["-y", "@example\/review-mcp"\]/);
+    assert.match(text, /env = \{ REVIEW_TOKEN = "do-not-return-this" \}/);
+    assert.deepEqual(listMobileMcpConfig(root), [
+      { name: "local_review", scope: "workspace", enabled: true, transport: "stdio" },
+    ]);
+    assert.equal(JSON.stringify(added).includes("do-not-return-this"), false);
+  });
+});
+
+test("mobile MCP add writes an HTTPS global server with bearer token environment name", async () => {
+  await withConfigFixture(({ root, global }) => {
+    const added = addMobileMcpConfigServer(root, {
+      name: "remote_docs",
+      scope: "global",
+      transport: "http",
+      url: "https://mcp.example.test/mcp?tenant=demo",
+      bearerTokenEnvVar: "DOCS_MCP_TOKEN",
+    });
+    assert.deepEqual(added, { name: "remote_docs", scope: "global", enabled: true, transport: "http", restartRequired: true });
+    const text = readFileSync(global, "utf8");
+    assert.match(text, /url = "https:\/\/mcp\.example\.test\/mcp\?tenant=demo"/);
+    assert.match(text, /bearer_token_env_var = "DOCS_MCP_TOKEN"/);
+    assert.equal(JSON.stringify(added).includes("tenant=demo"), false);
+  });
+});
+
+test("mobile MCP add validates names, transport data, URL safety, and duplicate names", async () => {
+  await withConfigFixture(({ root, workspace }) => {
+    mkdirSync(join(root, ".codex"));
+    writeFileSync(workspace, "[mcp_servers.exists]\ncommand = \"safe\"\n");
+    const base = { scope: "workspace" as const, transport: "stdio" as const, command: "node" };
+    assert.throws(() => addMobileMcpConfigServer(root, { ...base, name: "../escape" }), /имя MCP-сервера/i);
+    assert.throws(() => addMobileMcpConfigServer(root, { ...base, name: "exists" }), /уже существует/i);
+    assert.throws(() => addMobileMcpConfigServer(root, { scope: "global", transport: "http", name: "plain", url: "http://192.0.2.10/mcp" }), /HTTPS|локальн/i);
+    assert.throws(() => addMobileMcpConfigServer(root, { scope: "global", transport: "http", name: "creds", url: "https://user:pass@mcp.example.test/mcp" }), /адрес MCP/i);
+    assert.throws(() => addMobileMcpConfigServer(root, { ...base, name: "bad_env", env: { "NOT-AN-ENV": "x" } }), /переменн/i);
+    assert.throws(() => addMobileMcpConfigServer(root, { ...base, name: "bad_arg", args: ["ok\n[mcp_servers.evil]"] }), /аргумент/i);
+  });
+});
+
+test("mobile MCP add rejects workspace config directory and global config file symlink escapes", async () => {
+  await withConfigFixture(({ root }) => {
+    const outside = join(root, "outside");
+    const project = join(root, "project");
+    mkdirSync(outside);
+    mkdirSync(project);
+    symlinkSync(outside, join(project, ".codex"), "junction");
+    assert.throws(() => addMobileMcpConfigServer(project, {
+      name: "escaped", scope: "workspace", transport: "stdio", command: "node",
+    }), /за пределы проекта|ссылк|внутри проекта/i);
+  });
+
+  await withConfigFixture(({ root, global }) => {
+    const outside = join(root, "outside-config.toml");
+    writeFileSync(outside, "[mcp_servers.keep]\ncommand = \"safe\"\n");
+    symlinkSync(outside, global, "file");
+    assert.throws(() => addMobileMcpConfigServer(root, {
+      name: "unsafe_global", scope: "global", transport: "stdio", command: "node",
+    }), /обычным файлом/i);
+    assert.equal(readFileSync(outside, "utf8").includes("unsafe_global"), false);
   });
 });
 

@@ -324,6 +324,30 @@ test("MCP config and shared Codex restart operations require paired session owne
     assert.equal(changed.status, 200);
     assert.equal(f.calls.at(-1)?.op, "setMcpConfigEnabled");
 
+    const addBody = body("addMcpConfigServer", allowedSession, {
+      name: "from_phone", scope: "workspace", transport: "stdio", command: "node", args: ["server.js"], env: { TOKEN: "fixture-secret" },
+    });
+    const addWithoutCsrf = await fetch(f.origin + "/api/operations", { method: "POST", headers, body: addBody });
+    assert.equal(addWithoutCsrf.status, 403);
+    const addWrongOrigin = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { ...headers, origin: "https://attacker.example", "x-csrf-token": login.csrfToken }, body: addBody,
+    });
+    assert.equal(addWrongOrigin.status, 403);
+    const beforeForeignAdd = f.calls.length;
+    const foreignAdd = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { ...headers, "x-csrf-token": login.csrfToken },
+      body: body("addMcpConfigServer", foreignSession, { name: "foreign", scope: "workspace", transport: "stdio", command: "node" }),
+    });
+    assert.equal(foreignAdd.status, 403);
+    assert.equal(f.calls.length, beforeForeignAdd);
+    const added = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { ...headers, "x-csrf-token": login.csrfToken }, body: addBody,
+    });
+    assert.equal(added.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "addMcpConfigServer");
+    assert.equal(f.calls.at(-1)?.userId, 101);
+    assert.doesNotMatch(await added.text(), /fixture-secret/);
+
     const restart = await fetch(f.origin + "/api/operations", {
       method: "POST", headers: { ...headers, "x-csrf-token": login.csrfToken },
       body: body("restartCodex"),

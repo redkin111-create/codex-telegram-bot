@@ -1012,8 +1012,18 @@ test("mobile MCP config is session scoped and restart refuses shared runtime wor
     assert.deepEqual(listed,[{name:"fixture",scope:"workspace",enabled:true,transport:"stdio"}]);
     assert.deepEqual(await agent.executeMobile({op:"setMcpConfigEnabled" as never,userId:101,args:{sessionId,name:"fixture",enabled:false}}),
       {name:"fixture",scope:"workspace",enabled:false,transport:"stdio",restartRequired:true});
+    const added=await agent.executeMobile({op:"addMcpConfigServer" as never,userId:101,args:{
+      sessionId,name:"mobile_added",scope:"workspace",transport:"stdio",command:"node",args:["server.js"],env:{MOBILE_TOKEN:"hidden-from-response"},
+    }}) as Record<string,unknown>;
+    assert.deepEqual(added,{name:"mobile_added",scope:"workspace",enabled:true,transport:"stdio",restartRequired:true});
+    assert.equal(JSON.stringify(added).includes("hidden-from-response"),false);
+    assert.match(readFileSync(join(project,".codex","config.toml"),"utf8"),/\[mcp_servers\.mobile_added\]/);
     assert.doesNotMatch(JSON.stringify(listed),/fixture-server|config\.toml/);
     await assert.rejects(agent.executeMobile({op:"setMcpConfigEnabled" as never,userId:202,args:{sessionId,name:"fixture",enabled:true}}),/Доступ к сеансу запрещён/);
+    await assert.rejects(agent.executeMobile({op:"addMcpConfigServer" as never,userId:202,args:{
+      sessionId,name:"foreign_add",scope:"workspace",transport:"stdio",command:"node",
+    }}),/Доступ к сеансу запрещён/);
+    assert.doesNotMatch(readFileSync(join(project,".codex","config.toml"),"utf8"),/foreign_add/);
     await assert.rejects(agent.executeMobile({op:"restartCodex" as never,userId:101,args:{sessionId}}),/ожидающие запросы/);
     assert.equal(restarts,0);
     pending=false;

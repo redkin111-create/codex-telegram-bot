@@ -127,7 +127,8 @@ const fixtureSkills = [
   { name: "disabled-helper", description: "Отключённый навык.", enabled: false, scope: "repo" as const, canToggle: true, invokable: false },
   { name: "managed-skill", description: "Управляется политикой.", enabled: true, scope: "admin" as const, canToggle: false, invokable: true },
 ];
-const fixtureMcpConfig = [
+type FixtureMcpConfigEntry = { name: string; scope: "global" | "workspace"; enabled: boolean; transport: "http" | "stdio" };
+const fixtureMcpConfig: FixtureMcpConfigEntry[] = [
   { name: "fixture-git", scope: "workspace" as const, enabled: true, transport: "stdio" as const },
   { name: "fixture-search", scope: "global" as const, enabled: false, transport: "http" as const },
 ];
@@ -619,6 +620,16 @@ const agent = {
       return { name: skill.name, enabled: skill.enabled };
     }
     if (job.op === "listMcpConfig") return fixtureMcpConfig.map((server) => ({ ...server }));
+    if (job.op === "addMcpConfigServer") {
+      if (job.userId !== ownerId || !sessions.some((session) => session.id === sessionId)) throw new Error("Доступ к сеансу запрещён");
+      const name = typeof args.name === "string" ? args.name : "";
+      const scope = args.scope === "global" ? "global" : args.scope === "workspace" ? "workspace" : undefined;
+      const transport = args.transport === "http" ? "http" : args.transport === "stdio" ? "stdio" : undefined;
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(name) || !scope || !transport || fixtureMcpConfig.some((server) => server.name === name)) throw new Error("Проверьте имя MCP-сервера и выбранное подключение");
+      const entry: FixtureMcpConfigEntry = { name, scope, enabled: true, transport };
+      fixtureMcpConfig.push(entry);
+      return { ...entry, restartRequired: true };
+    }
     if (job.op === "setMcpConfigEnabled") {
       const server = fixtureMcpConfig.find((entry) => entry.name === args.name);
       if (!server || typeof args.enabled !== "boolean") throw new Error("MCP-сервер недоступен для изменения");
