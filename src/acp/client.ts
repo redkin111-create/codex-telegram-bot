@@ -15,7 +15,7 @@ import { codexLaunchInfo, codexSpawn } from "../app/codex-cli.js";
 import { createLogger } from "../logger.js";
 import { killPid } from "../sessions/process.js";
 import { AcpError, isAccountExhaustedError, isContextExhaustedError, isTransientAcpError, toAcpError } from "./errors.js";
-import { normalizeMobileMcpToolResult, validateMobileMcpArguments } from "./mobile-mcp.js";
+import { normalizeMobileMcpResourceResult, normalizeMobileMcpToolResult, validateMobileMcpArguments } from "./mobile-mcp.js";
 import { decideApproval, decidePermissionsApproval } from "./approvals.js";
 import { handleServerRequest, type ServerHandlerOptions } from "./server-handlers.js";
 import { JsonRpcTransport } from "./transport.js";
@@ -494,6 +494,37 @@ export class AcpClient extends EventEmitter {
       throw new AcpError("Codex не смог выполнить MCP-инструмент");
     }
     return normalizeMobileMcpToolResult(response);
+  }
+
+  /** Read one MCP resource only after confirming it still belongs to the live thread catalog. */
+  async readMobileMcpResource(
+    threadId: string,
+    serverName: string,
+    uri: string,
+  ): Promise<ReturnType<typeof normalizeMobileMcpResourceResult>> {
+    if (!threadId.trim() || threadId.length > 128 || /[\u0000-\u001f\u007f]/.test(threadId) ||
+        !serverName.trim() || serverName.length > 120 || /[\u0000-\u001f\u007f]/.test(serverName) ||
+        !uri.trim() || uri.length > 2048 || /[\u0000-\u001f\u007f]/.test(uri)) {
+      throw new Error("Выберите ресурс из текущего сеанса Codex");
+    }
+    const servers = await this.listMobileMcpServers(threadId);
+    const server = servers.find((entry) => entry.name === serverName);
+    if (!server || server.runtimeStatus !== "connected") {
+      throw new Error("Сервер MCP не подключён к выбранному сеансу Codex");
+    }
+    if (!server.resources?.some((entry) => {
+      return entry !== null && typeof entry === "object" && !Array.isArray(entry) &&
+        (entry as Record<string, unknown>).uri === uri;
+    })) {
+      throw new Error("MCP-ресурс не найден в текущем каталоге сеанса Codex");
+    }
+    let response: unknown;
+    try {
+      response = await this.request("mcpServer/resource/read", { threadId, server: serverName, uri });
+    } catch {
+      throw new AcpError("Codex не смог прочитать MCP-ресурс");
+    }
+    return normalizeMobileMcpResourceResult(response);
   }
 
   /** Read the current skill inventory for one authorized project directory. */

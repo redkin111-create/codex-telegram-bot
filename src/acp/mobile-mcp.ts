@@ -2,6 +2,7 @@ type JsonRecord = Record<string, unknown>;
 
 const MAX_ARGUMENT_BYTES = 32 * 1024;
 const MAX_RESULT_CHARS = 24_000;
+const MAX_RESOURCE_CHARS = 64_000;
 const MAX_SCHEMA_BYTES = 8 * 1024;
 const SCHEMA_TYPES = new Set(["object", "array", "string", "integer", "number", "boolean", "null"]);
 
@@ -18,6 +19,12 @@ export interface MobileMcpInputSchema {
 export interface MobileMcpToolResult {
   text: string;
   isError: boolean;
+  truncated: boolean;
+  omittedContentBlocks: number;
+}
+
+export interface MobileMcpResourceReadResult {
+  text: string;
   truncated: boolean;
   omittedContentBlocks: number;
 }
@@ -147,4 +154,36 @@ export function normalizeMobileMcpToolResult(value: unknown): MobileMcpToolResul
     truncated: combined.length > MAX_RESULT_CHARS,
     omittedContentBlocks,
   };
+}
+
+/** Keep only bounded text from MCP resources; URIs, blobs and call metadata stay local. */
+export function normalizeMobileMcpResourceResult(value: unknown): MobileMcpResourceReadResult {
+  const response = record(value);
+  const blocks = Array.isArray(response?.contents) ? response.contents : [];
+  const pieces: string[] = [];
+  let omittedContentBlocks = 0;
+  let remaining = MAX_RESOURCE_CHARS;
+  let truncated = false;
+  for (const raw of blocks.slice(0, 100)) {
+    const block = record(raw);
+    if (typeof block?.text !== "string") {
+      omittedContentBlocks++;
+      continue;
+    }
+    const separator = pieces.length ? "\n\n" : "";
+    if (remaining <= separator.length) {
+      truncated = true;
+      break;
+    }
+    const text = block.text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ");
+    const available = remaining - separator.length;
+    pieces.push(text.slice(0, available));
+    remaining -= separator.length + Math.min(text.length, available);
+    if (text.length > available) {
+      truncated = true;
+      break;
+    }
+  }
+  omittedContentBlocks += Math.max(0, blocks.length - 100);
+  return { text: pieces.join("\n\n"), truncated, omittedContentBlocks };
 }

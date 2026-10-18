@@ -562,6 +562,10 @@ const agent = {
       if (!input || typeof input !== "object" || typeof input.query !== "string") throw new Error("Fixture MCP ждёт строку query");
       return { text: `Fixture MCP result: ${input.query}\n<script>alert(1)</script>`, isError: false, truncated: false, omittedContentBlocks: 0 };
     }
+    if (job.op === "readMcpResource") {
+      if (!fixtureMcpAuthorized || args.sessionId !== firstSession || args.resourceId !== "fixture-resource-account-notes") throw new Error("Fixture MCP-ресурс недоступен в выбранном сеансе");
+      return { text: "Fixture resource content\n<img src=x onerror=alert(1)>", truncated: false, omittedContentBlocks: 0 };
+    }
     if (job.op === "capabilities") {
       fixtureCapabilitiesCalls++;
       if (fixtureCapabilitiesFailOnCall > 0 && fixtureCapabilitiesCalls === fixtureCapabilitiesFailOnCall) {
@@ -582,7 +586,8 @@ const agent = {
             type: "object", required: ["query"], properties: { query: { type: "string", description: "Search phrase" } },
           } },
           { name: "host_info", description: "Text only: <script>alert(1)</script>.", inputSchema: { type: "object", properties: {} } },
-        ], toolCount: 2, resourceCount: 1, resourceTemplateCount: 0, discoveryFailed: false,
+        ], resources: fixtureMcpAuthorized ? [{ id: "fixture-resource-account-notes", name: "Account notes", description: "Text-only fixture resource.", mimeType: "text/plain" }] : [],
+        toolCount: 2, resourceCount: 1, resourceTemplateCount: 0, discoveryFailed: false,
       }],
       plugins: [{ id: "reviewer@official", name: "Review helper", marketplace: "Fixture official",
         description: "Показывает результаты ревью изменений.", capabilities: ["review", "summaries"], sourceType: "remote",

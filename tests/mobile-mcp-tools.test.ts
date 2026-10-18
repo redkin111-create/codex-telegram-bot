@@ -87,3 +87,36 @@ test("mobile MCP tool call refuses a disconnected server before invoking it", as
     assert.equal(called, false);
   } finally { client.stop(); }
 });
+
+test("mobile MCP resource reads revalidate the live resource and omit URI and binary content", async () => {
+  const client = new AcpClient({ codexCliPath: "codex", workspace: "C:\\work", trustAllTools: false });
+  const calls: Array<{ method: string; params: unknown }> = [];
+  const internal = client as unknown as { request: (method: string, params: unknown) => Promise<unknown> };
+  internal.request = async (method, params) => {
+    calls.push({ method, params });
+    if (method === "mcpServerStatus/list") return { data: [{
+      name: "fixture-mcp", runtimeStatus: "connected", resources: [
+        { uri: "fixture://private/account", name: "Account notes", mimeType: "text/plain" },
+      ],
+    }] };
+    if (method === "mcpServer/resource/read") return { contents: [
+      { uri: "fixture://private/account", mimeType: "text/plain", text: "Fixture notes" },
+      { uri: "fixture://private/image", mimeType: "image/png", blob: "private-binary" },
+    ], originCallId: "private-call-id" };
+    throw new Error(`Unexpected ACP method: ${method}`);
+  };
+  const api = client as unknown as {
+    readMobileMcpResource?: (threadId: string, server: string, uri: string) => Promise<unknown>;
+  };
+  try {
+    assert.equal(typeof api.readMobileMcpResource, "function");
+    const result = await api.readMobileMcpResource!("thread-1", "fixture-mcp", "fixture://private/account");
+    assert.deepEqual(result, { text: "Fixture notes", truncated: false, omittedContentBlocks: 1 });
+    assert.doesNotMatch(JSON.stringify(result), /fixture:\/\/|private-binary|originCallId/i);
+    await assert.rejects(api.readMobileMcpResource!("thread-1", "fixture-mcp", "fixture://private/not-listed"), /не найден/i);
+    assert.equal(calls.filter((entry) => entry.method === "mcpServer/resource/read").length, 1);
+    assert.deepEqual(calls[1], { method: "mcpServer/resource/read", params: {
+      threadId: "thread-1", server: "fixture-mcp", uri: "fixture://private/account",
+    } });
+  } finally { client.stop(); }
+});

@@ -504,6 +504,7 @@ test("mobile capability inventory is redacted and settings reuse the owner's exi
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-capabilities-"));
   const sessionId="10101010-1010-4010-8010-101010101010";
   let inventoryRefreshes=0;
+  const mcpResourceReads:Array<{threadId:string;server:string;uri:string}>=[];
   const runtime={
     sessionId,model:"fixture-model",agent:"code",reasoning:"medium" as ReasoningEffort,
     async setModelPref(value:string){this.model=value;return {ok:true};},
@@ -512,7 +513,8 @@ test("mobile capability inventory is redacted and settings reuse the owner's exi
   };
   const acp=Object.assign(new EventEmitter(),{
     listProjects:async()=>[{id:"p1",name:"toy",roots:[dir]}],
-    listThreads:async()=>[{id:sessionId,name:"Mobile settings",cwd:dir,source:"cli",recencyAt:2}],
+    listThreads:async(params?:{archived?:boolean})=>params?.archived?[]:[{id:sessionId,name:"Mobile settings",cwd:dir,source:"cli",recencyAt:2}],
+    hasInflightPrompt:()=>false,
     refreshInventories:async()=>{inventoryRefreshes++;},
     accountState:async()=>({account:{type:"chatgpt",email:"owner@example.invalid",planType:"Plus"},
       rateLimits:{primary:{usedPercent:12,windowDurationMins:300,resetsAt:123}}}),
@@ -520,7 +522,13 @@ test("mobile capability inventory is redacted and settings reuse the owner's exi
     availableModes:[{id:"code",name:"Code",description:"Code mode"}],
     currentModelId:"fixture-model",currentModeId:"code",
     availableSkills:[{name:"fixture-skill",description:"Safe text",path:"C:\\private\\skill\\SKILL.md",enabled:true}],
-    availableMcpServers:[{name:"fixture-mcp",tools:{run:{token:"must not escape"}}}],
+    availableMcpServers:[{name:"fixture-mcp",runtimeStatus:"connected",tools:{run:{token:"must not escape"}},resources:[{
+      uri:"fixture://private/account",name:"Account notes",description:"Safe fixture notes",mimeType:"text/plain",
+    }]}],
+    async readMobileMcpResource(threadId:string,server:string,uri:string){
+      mcpResourceReads.push({threadId,server,uri});
+      return {text:"Private notes",truncated:false,omittedContentBlocks:0};
+    },
     currentSubagents:()=>[
       {sessionId:"own-agent",agentName:"Own agent",status:{type:"running"}},
       {sessionId:"other-agent",agentName:"Other agent",status:{type:"running"}},
@@ -530,6 +538,7 @@ test("mobile capability inventory is redacted and settings reuse the owner's exi
   }) as unknown as AcpClient;
   Object.defineProperty(acp,"isConnected",{value:true});
   const registry={
+    hasPendingWork:()=>false,
     controller:()=>({list:()=>[]}),
     get:()=>runtime,
     runtimeForSession:()=>runtime,
@@ -540,14 +549,20 @@ test("mobile capability inventory is redacted and settings reuse the owner's exi
   try{
     await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
     const capabilities=await agent.executeMobile({op:"capabilities",userId:101,args:{sessionId}}) as {
-      skills:Array<{name:string}>;mcpServers:Array<{toolCount:number}>;subagents:Array<{id:string}>;limits:Array<{primary?:{usedPercent:number}}>;
+      skills:Array<{name:string}>;mcpServers:Array<{toolCount:number;resources?:Array<{id:string;name:string}>}>;subagents:Array<{id:string}>;limits:Array<{primary?:{usedPercent:number}}>;
     };
     assert.equal(inventoryRefreshes,1);
     assert.equal(capabilities.skills[0]?.name,"fixture-skill");
     assert.equal(capabilities.mcpServers[0]?.toolCount,1);
+    assert.deepEqual(capabilities.mcpServers[0]?.resources?.map(({name})=>name),["Account notes"]);
     assert.deepEqual(capabilities.subagents.map((entry)=>entry.id),["own-agent"]);
     assert.equal(capabilities.limits[0]?.primary?.usedPercent,12);
-    assert.doesNotMatch(JSON.stringify(capabilities),/C:\\\\private|must not escape/);
+    assert.doesNotMatch(JSON.stringify(capabilities),/C:\\\\private|must not escape|fixture:\/\//);
+    const resourceId=capabilities.mcpServers[0]!.resources![0]!.id;
+    const resourceResult=await agent.executeMobile({op:"readMcpResource",userId:101,args:{sessionId,resourceId}}) as {text:string};
+    assert.equal(resourceResult.text,"Private notes");
+    assert.deepEqual(mcpResourceReads,[{threadId:sessionId,server:"fixture-mcp",uri:"fixture://private/account"}]);
+    await assert.rejects(agent.executeMobile({op:"readMcpResource",userId:101,args:{sessionId:"99999999-9999-4999-8999-999999999999",resourceId}}),/Доступ к сеансу запрещён/);
     await agent.executeMobile({op:"setModel",userId:101,args:{sessionId,modelId:"fixture-model"}});
     await agent.executeMobile({op:"setMode",userId:101,args:{sessionId,modeId:"code"}});
     await agent.executeMobile({op:"setReasoning",userId:101,args:{sessionId,effort:"high"}});

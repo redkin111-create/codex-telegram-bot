@@ -31,7 +31,7 @@ const MAX_MOBILE_TERMINAL_OUTPUT=64*1024;
 const MAX_MOBILE_PTY_BUFFER=512*1024;
 const MAX_MOBILE_PTY_READ=64*1024;
 const MOBILE_PTY_IDLE_MS=30*60*1000;
-import { normalizeMobileIntegrations, normalizeMobileMcpServers, normalizePluginInstallResult } from "../mobile/integrations.js";
+import { normalizeMobileIntegrations, normalizeMobileMcpServers, normalizePluginInstallResult, type MobileMcpResourceSummary } from "../mobile/integrations.js";
 import { normalizeMobileMarketplaces } from "../mobile/marketplaces.js";
 import { gitRemoteTarget } from "../mobile/git-remotes.js";
 import { SttService } from "../app/stt.js";
@@ -152,8 +152,11 @@ interface MobilePtyRecord {
   output:string;outputStart:number;totalChars:number;exited:boolean;exitCode:number|null;closed:boolean;
   expiry?:NodeJS.Timeout;dataSubscription?:{dispose():void};exitSubscription?:{dispose():void};
 }
+interface MobileMcpResourceRef {
+  ownerId:number;sessionId:string;serverName:string;uri:string;expiresAt:number;
+}
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; stt?:Pick<SttService,"enabled"|"transcribe">; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 const MOBILE_GLOBAL_OPERATIONS=new Set<MobileLocalOperation>(["listThreadSections","createThreadSection","renameThreadSection","deleteThreadSection"]);
 export class MiniAppAgent {
@@ -191,6 +194,7 @@ export class MiniAppAgent {
   /** Never launch duplicate deep scans for the same JSONL revision. */
   private readonly historyInflight = new Map<string, Promise<unknown>>();
   private readonly mobilePtys=new Map<string,MobilePtyRecord>();
+  private readonly mobileMcpResources=new Map<string,MobileMcpResourceRef>();
   private loopPromise:Promise<void>|undefined;
   constructor(private readonly deps:AgentDeps,gatewayUrl?:string,secret?:string){
     this.stt=deps.stt??new SttService({apiUrl:deps.cfg.sttApiUrl,apiKey:deps.cfg.sttApiKey,model:deps.cfg.sttModel,language:deps.cfg.sttLanguage});
@@ -890,6 +894,8 @@ export class MiniAppAgent {
         for(const skill of skills)skillNameCounts.set(skill.name,(skillNameCounts.get(skill.name)??0)+1);
         const integrations=normalizeMobileIntegrations(rawIntegrations?.pluginCatalog,rawIntegrations?.installedPlugins,
           rawIntegrations?.apps,rawIntegrations?.installedApps);
+        const resourceRefs=this.issueMobileMcpResourceRefs(chatId,sessionId,
+          acp.isConnected&&integrationThread&&mcpServersAvailable?mcpInventory:[]);
         let goal:Awaited<ReturnType<AcpClient["getThreadGoal"]>>;
         let goalAvailable=false;
         if(sessionId&&acp.isConnected){
@@ -920,7 +926,9 @@ export class MiniAppAgent {
           skills:skills.slice(0,100).map(s=>({name:s.name.slice(0,160),description:s.description?.slice(0,500),
             enabled:s.enabled!==false,scope:s.scope,canToggle:(s.scope==="user"||s.scope==="repo")&&skillNameCounts.get(s.name)===1,
             invokable:s.enabled!==false&&skillNameCounts.get(s.name)===1})),
-          mcpServersAvailable,mcpServers:normalizeMobileMcpServers(mcpInventory),
+          mcpServersAvailable,mcpServers:normalizeMobileMcpServers(mcpInventory).map(server=>({
+            ...server,resources:resourceRefs.get(server.name)??[],
+          })),
           plugins:integrations.plugins,pluginCatalogAvailable:integrations.pluginCatalogAvailable,
           marketplaces:normalizeMobileMarketplaces(rawIntegrations?.pluginCatalog,rawIntegrations?.installedPlugins),
           apps:integrations.apps,appsAvailable:integrations.appsAvailable,
@@ -976,6 +984,21 @@ export class MiniAppAgent {
         const argumentsValue=args.arguments===undefined?{}:args.arguments;
         if(!argumentsValue||typeof argumentsValue!=="object"||Array.isArray(argumentsValue))throw new Error("Аргументы MCP-инструмента должны быть JSON-объектом");
         return await acp.callMobileMcpTool(sessionId,server,tool,argumentsValue);
+      }
+      case "readMcpResource":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        if(await this.isArchivedThread(sessionId,chatId))throw new Error("Нельзя читать MCP-ресурс из архивного сеанса");
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        this.requireIdleMobileRuntime(sessionId,chatId);
+        if(acp.hasInflightPrompt()||registry.hasPendingWork())throw new Error("Дождитесь завершения всех задач Codex и очистите очередь перед чтением MCP-ресурса");
+        if(typeof acp.readMobileMcpResource!=="function")throw new Error("Эта версия Codex не поддерживает чтение MCP-ресурсов");
+        const resourceId=argumentString(args,"resourceId",64);
+        const resource=this.mobileMcpResources.get(resourceId);
+        if(!resource||resource.expiresAt<Date.now()||resource.ownerId!==chatId||resource.sessionId!==sessionId){
+          this.mobileMcpResources.delete(resourceId);
+          throw new Error("Ссылка на MCP-ресурс устарела. Обновите настройки Codex.");
+        }
+        return await acp.readMobileMcpResource(sessionId,resource.serverName,resource.uri);
       }
       case "installPlugin":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
@@ -1258,6 +1281,51 @@ export class MiniAppAgent {
         return {project:name,branch};
       }
     }
+  }
+  private issueMobileMcpResourceRefs(
+    ownerId:number,
+    sessionId:string,
+    inventory:unknown,
+  ):Map<string,MobileMcpResourceSummary[]>{
+    const result=new Map<string,MobileMcpResourceSummary[]>();
+    if(!sessionId)return result;
+    const now=Date.now();
+    for(const [id,ref] of this.mobileMcpResources){
+      if(ref.expiresAt<=now||(ref.ownerId===ownerId&&ref.sessionId===sessionId))this.mobileMcpResources.delete(id);
+    }
+    if(!Array.isArray(inventory))return result;
+    const clean=(value:unknown,max:number)=>typeof value==="string"
+      ? value.replace(/[\u0000-\u001f\u007f]/g," ").trim().slice(0,max)||undefined
+      : undefined;
+    let issued=0;
+    for(const rawServer of inventory.slice(0,100)){
+      if(!rawServer||typeof rawServer!=="object"||Array.isArray(rawServer))continue;
+      const serverRecord=rawServer as Record<string,unknown>;
+      const serverName=clean(serverRecord.name,120);
+      if(!serverName||!Array.isArray(serverRecord.resources))continue;
+      const summaries:MobileMcpResourceSummary[]=[];
+      for(const [index,rawResource] of serverRecord.resources.slice(0,50).entries()){
+        if(issued>=500)break;
+        if(!rawResource||typeof rawResource!=="object"||Array.isArray(rawResource))continue;
+        const resource=rawResource as Record<string,unknown>;
+        const uri=resource.uri;
+        if(typeof uri!=="string"||!uri.trim()||uri.length>2048||/[\u0000-\u001f\u007f]/.test(uri))continue;
+        const id=randomUUID();
+        this.mobileMcpResources.set(id,{ownerId,sessionId,serverName,uri,expiresAt:now+10*60_000});
+        const name=clean(resource.name,160)??`Ресурс ${index+1}`;
+        const description=clean(resource.description,300);
+        const mimeType=clean(resource.mimeType,100);
+        summaries.push({id,name,...(description?{description}:{}),...(mimeType?{mimeType}:{})});
+        issued++;
+      }
+      if(summaries.length)result.set(serverName,summaries);
+    }
+    while(this.mobileMcpResources.size>3000){
+      const oldest=this.mobileMcpResources.keys().next().value;
+      if(oldest===undefined)break;
+      this.mobileMcpResources.delete(oldest);
+    }
+    return result;
   }
   private requireIdleMobileRuntime(sessionId:string,userId:number):void{
     const runtime=this.deps.registry.runtimeForSession(userId,sessionId);

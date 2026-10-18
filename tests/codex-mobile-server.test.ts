@@ -656,6 +656,29 @@ test("MCP tool calls require a paired owner, exact Origin, CSRF and an owned ses
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
+test("MCP resource reads require a paired owner, exact Origin, CSRF and an owned session", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const url = f.origin + "/api/operations";
+    const body = (sessionId = allowedSession) => JSON.stringify({ op: "readMcpResource", args: {
+      sessionId, resourceId: "fixture-resource-reference",
+    } });
+    const anonymous = await fetch(url, { method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: body() });
+    assert.equal(anonymous.status, 401);
+    const noCsrf = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: body() });
+    assert.equal(noCsrf.status, 403);
+    const wrongOrigin = await fetch(url, { method: "POST", headers: { origin: "https://attacker.example", cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body() });
+    assert.equal(wrongOrigin.status, 403);
+    const foreign = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body(foreignSession) });
+    assert.equal(foreign.status, 403);
+    const approved = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body() });
+    assert.equal(approved.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "readMcpResource");
+    assert.equal(f.calls.at(-1)?.userId, 101);
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
 test("MCP OAuth requests require the paired device, same Origin, CSRF and an owned session", async () => {
   const f = await startFixture();
   try {

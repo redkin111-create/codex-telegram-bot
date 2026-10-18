@@ -33,6 +33,13 @@ export interface MobileMcpToolSummary {
   inputSchema?: MobileMcpInputSchema;
 }
 
+export interface MobileMcpResourceSummary {
+  id: string;
+  name: string;
+  description?: string;
+  mimeType?: string;
+}
+
 export interface MobileMcpServerSummary {
   name: string;
   status: "notStarted" | "starting" | "connected" | "authenticationRequired" | "failed" | "cancelled" | "disabled" | "unknown";
@@ -40,6 +47,7 @@ export interface MobileMcpServerSummary {
   serverName?: string;
   serverVersion?: string;
   tools: MobileMcpToolSummary[];
+  resources?: MobileMcpResourceSummary[];
   toolCount: number;
   resourceCount: number;
   resourceTemplateCount: number;
