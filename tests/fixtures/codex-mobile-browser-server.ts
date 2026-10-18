@@ -22,6 +22,10 @@ const olderArchivedFixtureSession = "77777777-7777-4777-8777-777777777777";
 const projectOne = "C:\\fixture\\codex-mobile";
 const projectTwo = "C:\\fixture\\other-project";
 const screenshotPath = "C:\\fixture\\codex-mobile\\screenshots\\sample.png";
+const fixturePinnedSection = { id: "01984de2-8f74-7c91-a3b2-5c5e937cf318", name: "Закреплённые", builtIn: true };
+const fixtureSectionsAvailable = process.env.CODEX_MOBILE_FIXTURE_SECTIONS_UNAVAILABLE !== "1";
+const fixtureSections = [{ id: "88888888-8888-4888-8888-888888888888", name: "В работе" }];
+type FixtureSession = { id: string; title: string; cwd: string; updatedAt: number; source: string; section?: { id: string; name: string; builtIn?: boolean } };
 
 class FixtureFeed {
   readonly epoch = randomUUID().replaceAll("-", "");
@@ -59,14 +63,14 @@ const instanceDir = await mkdtemp(join(tmpdir(), "codex-mobile-browser-"));
 const dataDir = join(instanceDir, "data");
 const auth = new MobileAuthStore(dataDir, { allowedOwners: new Set([String(ownerId)]) });
 const feed = new FixtureFeed();
-const sessions = [
-  { id: firstSession, title: "Разобрать приложение", cwd: projectOne, updatedAt: Date.now(), source: "appServer" },
+const sessions: FixtureSession[] = [
+  { id: firstSession, title: "Разобрать приложение", cwd: projectOne, updatedAt: Date.now(), source: "appServer", section: fixtureSections[0] },
   { id: secondSession, title: "Проверить API", cwd: projectOne, updatedAt: Date.now() - 10_000, source: "cli" },
   { id: "33333333-3333-4333-8333-333333333333", title: "Другой проект", cwd: projectTwo, updatedAt: Date.now() - 20_000, source: "vscode" },
   { id: "55555555-5555-4555-8555-555555555555", title: "Legacy Codex architecture", cwd: projectOne, updatedAt: Date.now() - 40_000, source: "cli" },
   { id: "66666666-6666-4666-8666-666666666666", title: "Legacy Codex integration", cwd: projectOne, updatedAt: Date.now() - 50_000, source: "appServer" },
 ];
-const archivedSessions = [
+const archivedSessions: FixtureSession[] = [
   { id: archivedFixtureSession, title: "Старый архивный сеанс", cwd: projectOne, updatedAt: Date.now() - 30_000, source: "appServer" },
   { id: olderArchivedFixtureSession, title: "Ещё один архивный сеанс", cwd: projectOne, updatedAt: Date.now() - 60_000, source: "cli" },
 ];
@@ -104,6 +108,7 @@ let fixtureEditUnavailable = false;
 let fixtureEditFailure = false;
 let fixtureTranscriptionFailure = false;
 let fixtureDeleteFailure = false;
+let fixtureSectionDeleteFailure = false;
 const fixtureFiles = new Map<string, string>([
   ["README.md", "# Fixture project\n\nRead-only history is followed by mobile file access.\n"],
   ["src/main.ts", "export function greet() {\n  return \"Hello from fixture\";\n}\n"],
@@ -147,9 +152,11 @@ const agent = {
         ]).entries()].map(([path, name]) => ({ path, name })),
         sessions: sessions.slice(0, 3).map((session) => {
           const runtime = controlled.get(session.id);
-          return { ...session, archived: false, busy: runtime?.busy ?? false, queue: runtime?.queue.length ?? 0 };
+          return { ...session, section: session.section ?? null, archived: false, busy: runtime?.busy ?? false, queue: runtime?.queue.length ?? 0 };
         }),
-        archivedSessions: archivedSessions.slice(0, 1).map((session) => ({ ...session, archived: true, busy: false, queue: 0 })),
+        archivedSessions: archivedSessions.slice(0, 1).map((session) => ({ ...session, section: session.section ?? null, archived: true, busy: false, queue: 0 })),
+        sectionsAvailable: fixtureSectionsAvailable,
+        sections: fixtureSectionsAvailable ? [{ ...fixturePinnedSection }, ...fixtureSections.map((section) => ({ ...section, builtIn: false }))] : [],
         archiveAvailable: true,
         selected, controlled: [...controlled].map(([id, runtime]) => ({ id, busy: runtime.busy, queue: runtime.queue.length, paused: runtime.paused })),
         online: true, model: "fixture", models: [{ id: "fixture", name: "Fixture" }],
@@ -228,6 +235,38 @@ const agent = {
   async executeMobile(job: { op: string; userId: number; args: Record<string, unknown> }): Promise<unknown> {
     const args = job.args;
     const sessionId = String(args.sessionId ?? "");
+    if (job.op === "listThreadSections") return fixtureSections.map((section) => ({ ...section }));
+    if (job.op === "createThreadSection") {
+      const name = String(args.name ?? "").trim();
+      if (!name || name.length > 64) throw new Error("Название раздела должно содержать от 1 до 64 безопасных символов");
+      const section = { id: randomUUID(), name };
+      fixtureSections.push(section);
+      return section;
+    }
+    if (job.op === "renameThreadSection") {
+      const section = fixtureSections.find((item) => item.id === args.sectionId);
+      if (!section) throw new Error("Раздел не найден");
+      section.name = String(args.name ?? "").trim();
+      return { ...section };
+    }
+    if (job.op === "deleteThreadSection") {
+      if (fixtureSectionDeleteFailure) throw new Error("Тестовая ошибка Codex: раздел занят другим окном");
+      const index = fixtureSections.findIndex((item) => item.id === args.sectionId);
+      if (index < 0) throw new Error("Раздел не найден");
+      fixtureSections.splice(index, 1);
+      for (const session of [...sessions, ...archivedSessions]) if (session.section?.id === args.sectionId) session.section = undefined;
+      return { sectionId: args.sectionId, deleted: true };
+    }
+    if (job.op === "moveThreadToSection") {
+      const session = [...sessions, ...archivedSessions].find((item) => item.id === sessionId);
+      if (!session) throw new Error("Сеанс не найден");
+      const section = args.sectionId === null ? undefined : args.sectionId === fixturePinnedSection.id
+        ? { ...fixturePinnedSection }
+        : fixtureSections.find((item) => item.id === args.sectionId);
+      if (args.sectionId !== null && !section) throw new Error("Раздел не найден");
+      session.section = section;
+      return { sessionId, sectionId: args.sectionId ?? null };
+    }
     if (job.op === "transcribeAudio") return voiceAgent.executeMobile(job as unknown as MobileLocalJob);
     if (job.op === "latestEditableTurn") {
       if (sessionId !== firstSession) throw new Error("Сеанс не найден");
@@ -677,6 +716,12 @@ process.stdin.on("data", (chunk: string) => {
       } else if (command.command === "deleteThreadReset") {
         fixtureDeleteFailure = false;
         process.stdout.write("Fixture Codex deletion error disabled.\n");
+      } else if (command.command === "sectionDeleteError") {
+        fixtureSectionDeleteFailure = true;
+        process.stdout.write("Fixture Codex section deletion error enabled.\n");
+      } else if (command.command === "sectionDeleteReset") {
+        fixtureSectionDeleteFailure = false;
+        process.stdout.write("Fixture Codex section deletion error disabled.\n");
       }
     } catch { process.stdout.write("Fixture control command was ignored.\n"); }
   }

@@ -872,6 +872,60 @@ test("foreign session identifiers are denied before history reaches the existing
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
+test("section inventory is authenticated and section changes require Origin, CSRF and owned sessions", async () => {
+  const f = await startFixture();
+  try {
+    const url = f.origin + "/api/operations";
+    const anonymous = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, "content-type": "application/json" },
+      body: JSON.stringify({ op: "listThreadSections", args: {} }),
+    });
+    assert.equal(anonymous.status, 401);
+
+    const login = await pair(f.origin, f.auth);
+    const list = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ op: "listThreadSections", args: {} }),
+    });
+    assert.equal(list.status, 200);
+    assert.equal((await list.json() as { op: string }).op, "listThreadSections");
+
+    const createPayload = JSON.stringify({ op: "createThreadSection", args: { name: "На проверку" } });
+    const noCsrf = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: createPayload,
+    });
+    assert.equal(noCsrf.status, 403);
+    const badOrigin = await fetch(url, {
+      method: "POST", headers: { origin: "https://attacker.invalid", cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: createPayload,
+    });
+    assert.equal(badOrigin.status, 403);
+    assert.equal(f.calls.some((call) => call.op === "createThreadSection"), false);
+
+    const created = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: createPayload,
+    });
+    assert.equal(created.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "createThreadSection");
+    assert.equal(f.calls.at(-1)?.userId, 101);
+    assert.equal(f.calls.at(-1)?.args.sessionId, undefined);
+
+    const beforeMove = f.calls.filter((call) => call.op === "moveThreadToSection").length;
+    const foreignMove = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ op: "moveThreadToSection", args: { sessionId: foreignSession, sectionId: "section-1" } }),
+    });
+    assert.equal(foreignMove.status, 403);
+    assert.equal(f.calls.filter((call) => call.op === "moveThreadToSection").length, beforeMove);
+    const ownedMove = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ op: "moveThreadToSection", args: { sessionId: allowedSession, sectionId: "section-1" } }),
+    });
+    assert.equal(ownedMove.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "moveThreadToSection");
+    assert.equal(f.calls.at(-1)?.args.sessionId, allowedSession);
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
 test("mutations require both an allowed Origin and the device CSRF token", async () => {
   const f = await startFixture();
   try {

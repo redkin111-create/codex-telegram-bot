@@ -11,6 +11,7 @@ import { MiniAppAgent, type MobilePtyFactory, type MobilePtyOptions, type Mobile
 import type { AppConfig } from "../src/config.js";
 import type { AcpClient } from "../src/acp/client.js";
 import type { RuntimeRegistry } from "../src/bot/registry.js";
+import { CODEX_PINNED_THREAD_SECTION_ID } from "../src/acp/codex-protocol.js";
 import { TelegramSessionRegistry } from "../src/sessions/telegram-registry.js";
 
 test("mobile-only agent can use existing runtime logic without an outbound TMA transport",()=>{
@@ -1330,4 +1331,64 @@ test("TMA can still send to a listed session omitted by a later catalogue refres
     Date.now=originalNow;
     rmSync(dir,{recursive:true,force:true});
   }
+});
+
+test("mobile section management uses Codex metadata APIs and cannot move a foreign session",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-sections-"));
+  const sessionId="abcdefab-cdef-4abc-8def-abcdefabcdef";
+  const foreignId="12345678-1234-4234-8234-123456789abc";
+  const sections=[{id:"section-1",name:"Inbox"}];
+  let sectionListFails=false;
+  const moved:Array<{threadId:string;sectionId:string|null}>=[];
+  const threads=[
+    {id:sessionId,name:"Owned",cwd:dir,source:"appServer",createdAt:1,updatedAt:2,recencyAt:2,section:sections[0]},
+    {id:foreignId,name:"Private",cwd:dir,source:"appServer",createdAt:1,updatedAt:1,recencyAt:1},
+  ];
+  const acp=Object.assign(new EventEmitter(),{
+    isConnected:true,
+    listProjects:async()=>[{id:"project",name:"Fixture",roots:[dir]}],
+    listThreads:async(params?:{archived?:boolean})=>params?.archived?[]:threads,
+    listAllThreads:async(params?:{archived?:boolean})=>params?.archived?[]:threads,
+    async listThreadSections(){if(sectionListFails)throw new Error("Method not found");return sections.map((section)=>({...section}));},
+    async createThreadSection(name:string){const section={id:"section-2",name};sections.push(section);return section;},
+    async renameThreadSection(sectionId:string,name:string){const section=sections.find((item)=>item.id===sectionId);if(!section)throw new Error("section missing");section.name=name;return {...section};},
+    async deleteThreadSection(sectionId:string){const index=sections.findIndex((item)=>item.id===sectionId);if(index<0)throw new Error("section missing");sections.splice(index,1);},
+    async moveThreadToSection(threadId:string,sectionId:string|null){moved.push({threadId,sectionId});const thread=threads.find((item)=>item.id===threadId);if(thread)thread.section=sectionId===CODEX_PINNED_THREAD_SECTION_ID?{id:CODEX_PINNED_THREAD_SECTION_ID,name:"Pinned"}:sectionId?sections.find((item)=>item.id===sectionId):undefined;},
+    availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],currentModelId:"default",currentModeId:"code",
+  }) as unknown as AcpClient;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101"])} as AppConfig;
+  const owners=new TelegramSessionRegistry(dir);
+  owners.record(sessionId,101,dir,"Fixture");
+  owners.record(foreignId,202,dir,"Fixture");
+  const agent=new MiniAppAgent({cfg,acp,registry:{get:()=>({sessionId:""}),runtimeForSession:()=>undefined,controller:()=>({list:()=>[]})} as unknown as RuntimeRegistry});
+  const perform=(op:string,userId:number,args:Record<string,unknown>={})=>agent.executeMobile({op,userId,args} as never);
+  try{
+    const initial=await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}}) as {sections:Array<{id:string;name:string;builtIn?:boolean}>;sectionsAvailable:boolean};
+    assert.equal(initial.sectionsAvailable,true);
+    assert.deepEqual(initial.sections[0],{id:CODEX_PINNED_THREAD_SECTION_ID,name:"Закреплённые",builtIn:true});
+    assert.deepEqual(await perform("listThreadSections",101),[{id:"section-1",name:"Inbox"}]);
+    const created=await perform("createThreadSection",101,{name:"  Review  "}) as {id:string;name:string};
+    assert.deepEqual(created,{id:"section-2",name:"Review"});
+    const renamed=await perform("renameThreadSection",101,{sectionId:created.id,name:"Ship"}) as {id:string;name:string};
+    assert.deepEqual(renamed,{id:"section-2",name:"Ship"});
+    assert.deepEqual(await perform("moveThreadToSection",101,{sessionId,sectionId:created.id}),{sessionId,sectionId:created.id,pinned:false});
+    assert.deepEqual(moved,[{threadId:sessionId,sectionId:created.id}]);
+    assert.deepEqual(await perform("moveThreadToSection",101,{sessionId,sectionId:CODEX_PINNED_THREAD_SECTION_ID}),{sessionId,sectionId:CODEX_PINNED_THREAD_SECTION_ID,pinned:true});
+    assert.deepEqual(moved[1],{threadId:sessionId,sectionId:CODEX_PINNED_THREAD_SECTION_ID});
+    const pinnedSnapshot=await agent.execute({id:"abcdef0123456789abcdef02",op:"snapshot",userId:101,args:{}}) as {sessions:Array<{id:string;section?:{id:string;name:string;builtIn?:boolean}} >};
+    assert.deepEqual(pinnedSnapshot.sessions.find((item)=>item.id===sessionId)?.section,{id:CODEX_PINNED_THREAD_SECTION_ID,name:"Закреплённые",builtIn:true});
+    await assert.rejects(perform("renameThreadSection",101,{sectionId:CODEX_PINNED_THREAD_SECTION_ID,name:"Fake pinned"}),/нельзя переименовать/i);
+    await assert.rejects(perform("deleteThreadSection",101,{sectionId:CODEX_PINNED_THREAD_SECTION_ID}),/нельзя удалить/i);
+    await assert.rejects(perform("moveThreadToSection",101,{sessionId:foreignId,sectionId:created.id}),/Доступ к переписке запрещён|не найдена/i);
+    await assert.rejects(perform("moveThreadToSection",202,{sessionId,sectionId:created.id}),/не разрешён/i);
+    await assert.rejects(perform("createThreadSection",101,{name:"\u0001bad"}),/название раздела/i);
+    await assert.rejects(perform("moveThreadToSection",101,{sessionId,sectionId:"missing-section"}),/раздел не найден/i);
+    await perform("moveThreadToSection",101,{sessionId,sectionId:null});
+    await perform("deleteThreadSection",101,{sectionId:created.id});
+    assert.deepEqual(sections,[{id:"section-1",name:"Inbox"}]);
+    sectionListFails=true;
+    const unsupported=await agent.execute({id:"abcdef0123456789abcdef03",op:"snapshot",userId:101,args:{}}) as {sections:Array<unknown>;sectionsAvailable:boolean};
+    assert.equal(unsupported.sectionsAvailable,false);
+    assert.deepEqual(unsupported.sections,[]);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });

@@ -14,8 +14,9 @@ const RASTER_IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "im
 const MUTATING_OPERATIONS = new Set<TmaOperation>([
   "create", "select", "send", "cancel", "queue", "queueRemove", "queueResume",
 ]);
-const MOBILE_MUTATING_OPERATIONS = new Set<MobileLocalOperation>(["editAndRetry", "transcribeAudio", "setModel", "setMode", "setReasoning", "setGoal", "clearGoal", "setSkillEnabled", "mcpOAuthLogin", "steer", "forkThread", "compactThread", "reviewThread", "archiveThread", "unarchiveThread", "renameThread", "deleteThread", "installPlugin", "uninstallPlugin", "createWorktree", "terminalExec", "terminalStart", "terminalInput", "terminalResize", "terminalStop", "stopBackgroundTerminal", "writeFile", "createFile", "gitStage", "gitUnstage", "gitCommit", "gitCreateBranch", "gitSwitchBranch", "gitTrackRemoteBranch", "gitFetch", "gitPush"]);
-const MOBILE_READ_OPERATIONS = new Set<MobileLocalOperation>(["searchThreads", "listMoreThreads", "latestEditableTurn", "readImage", "terminalRead", "listBackgroundTerminals"]);
+const MOBILE_MUTATING_OPERATIONS = new Set<MobileLocalOperation>(["createThreadSection", "renameThreadSection", "deleteThreadSection", "moveThreadToSection", "editAndRetry", "transcribeAudio", "setModel", "setMode", "setReasoning", "setGoal", "clearGoal", "setSkillEnabled", "mcpOAuthLogin", "steer", "forkThread", "compactThread", "reviewThread", "archiveThread", "unarchiveThread", "renameThread", "deleteThread", "installPlugin", "uninstallPlugin", "createWorktree", "terminalExec", "terminalStart", "terminalInput", "terminalResize", "terminalStop", "stopBackgroundTerminal", "writeFile", "createFile", "gitStage", "gitUnstage", "gitCommit", "gitCreateBranch", "gitSwitchBranch", "gitTrackRemoteBranch", "gitFetch", "gitPush"]);
+const MOBILE_GLOBAL_MUTATING_OPERATIONS = new Set<MobileLocalOperation>(["createThreadSection", "renameThreadSection", "deleteThreadSection"]);
+const MOBILE_READ_OPERATIONS = new Set<MobileLocalOperation>(["listThreadSections", "searchThreads", "listMoreThreads", "latestEditableTurn", "readImage", "terminalRead", "listBackgroundTerminals"]);
 
 export interface MobileAgent {
   canReadSession(id: string, userId: number): Promise<boolean>;
@@ -414,6 +415,12 @@ export function createMobileServer(options: MobileServerOptions): Server {
         return;
       }
       if (MOBILE_MUTATING_OPERATIONS.has(body.op as MobileLocalOperation)) {
+        if (MOBILE_GLOBAL_MUTATING_OPERATIONS.has(body.op as MobileLocalOperation)) {
+          if (!options.agent.executeMobile) { json(res, 503, { error: "Настройки Codex недоступны" }); return; }
+          try { json(res, 200, await options.agent.executeMobile({ op: body.op as MobileLocalOperation, userId: device.ownerId, args })); }
+          catch (error) { json(res, 502, { error: safeError(error) }); }
+          return;
+        }
         if (typeof args.sessionId !== "string" || !safeSessionId(args.sessionId) || !await options.agent.canReadSession(args.sessionId, device.ownerId)) {
           json(res, 403, { error: "Доступ к сеансу запрещён" }); return;
         }

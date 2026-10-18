@@ -442,6 +442,26 @@ export default function App() {
     await refreshSnapshot(true);
   }
 
+  async function createThreadSection(name: string) {
+    await operation("createThreadSection", { name });
+    await refreshSnapshot();
+  }
+
+  async function renameThreadSection(sectionId: string, name: string) {
+    await operation("renameThreadSection", { sectionId, name });
+    await refreshSnapshot();
+  }
+
+  async function deleteThreadSection(sectionId: string) {
+    await operation("deleteThreadSection", { sectionId });
+    await refreshSnapshot();
+  }
+
+  async function moveSessionToSection(sessionId: string, sectionId: string | null) {
+    await operation("moveThreadToSection", { sessionId, sectionId });
+    await refreshSnapshot();
+  }
+
   async function send(text: string, images: PromptImage[], mode: FollowUpMode) {
     if (!selectedId) return;
     const fingerprint = JSON.stringify([selectedId, mode, text, images.map((image) => [image.name, image.mimeType, image.data.length])]);
@@ -565,7 +585,9 @@ export default function App() {
         showArchived={showArchived} onArchivedChange={setShowArchived} onLoadMore={() => void loadMoreSearch()} selectedId={selectedId}
         open={workspaceOpen} connectedIds={connectedIds} onProjectChange={setSelectedProject} onSearchChange={setSearch}
         onSelect={selectWorkspaceSession} onCreate={() => void createSession()} onClose={() => setWorkspaceOpen(false)}
-        onArchive={archiveSession} onUnarchive={unarchiveSession} onRename={renameSession} onDelete={deleteSession} />
+        onArchive={archiveSession} onUnarchive={unarchiveSession} onRename={renameSession} onDelete={deleteSession}
+        onCreateSection={createThreadSection} onRenameSection={renameThreadSection} onDeleteSection={deleteThreadSection}
+        onMoveSession={moveSessionToSection} />
       <Conversation session={selectedSession} history={history} activity={activity} events={events} queue={queue}
         connected={connected} connecting={connecting} loading={loading} streamConnected={streamConnected}
         error={error} includeTools={includeTools} onToggleTools={() => setIncludeTools((value) => !value)}

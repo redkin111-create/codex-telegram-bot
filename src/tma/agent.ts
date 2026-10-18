@@ -8,7 +8,7 @@ import { execFile as execFileCallback, execFileSync } from "node:child_process";
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { AcpClient } from "../acp/client.js";
-import type { CodexThreadSummary, CodexProjectSummary, CodexRateLimitWindow, CodexThreadGoalStatus, CodexReviewTarget } from "../acp/codex-protocol.js";
+import { CODEX_PINNED_THREAD_SECTION_ID, CODEX_PINNED_THREAD_SECTION_NAME, type CodexThreadSection, type CodexThreadSummary, type CodexProjectSummary, type CodexRateLimitWindow, type CodexThreadGoalStatus, type CodexReviewTarget } from "../acp/codex-protocol.js";
 import { REASONING_LEVELS, textPrompt, type ReasoningEffort } from "../app/types.js";
 import type { RuntimeRegistry } from "../bot/registry.js";
 import { isVisibleThreadForChat, threadSourceKind } from "../bot/catalog.js";
@@ -37,6 +37,12 @@ import { SttService } from "../app/stt.js";
 const log=createLogger("tma:agent");
 const MAX_IMG=3*1024*1024;
 const MAX_MOBILE_AUDIO=5*1024*1024;
+function mobileThreadSection(section?:CodexThreadSection|null){
+  if(!section)return null;
+  return section.id===CODEX_PINNED_THREAD_SECTION_ID
+    ? {id:section.id,name:"Закреплённые",builtIn:true}
+    : {id:section.id,name:section.name,builtIn:false};
+}
 const MOBILE_AUDIO_TYPES:Record<string,{extension:string;kind:string}>={
   "audio/webm":{extension:".webm",kind:"webm"},"audio/ogg":{extension:".ogg",kind:"ogg"},
   "audio/mpeg":{extension:".mp3",kind:"mp3"},"audio/mp4":{extension:".mp4",kind:"mp4"},
@@ -130,8 +136,9 @@ interface MobilePtyRecord {
   expiry?:NodeJS.Timeout;dataSubscription?:{dispose():void};exitSubscription?:{dispose():void};
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; stt?:Pick<SttService,"enabled"|"transcribe">; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "editAndRetry" | "transcribeAudio" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "mcpOAuthLogin" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "editAndRetry" | "transcribeAudio" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "mcpOAuthLogin" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
+const MOBILE_GLOBAL_OPERATIONS=new Set<MobileLocalOperation>(["listThreadSections","createThreadSection","renameThreadSection","deleteThreadSection"]);
 export class MiniAppAgent {
   private readonly abort=new AbortController();
   private readonly stt:Pick<SttService,"enabled"|"transcribe">;
@@ -364,9 +371,61 @@ export class MiniAppAgent {
     const chatId=job.userId,args=job.args;
     if(!cfg.allowedUsers.has(String(chatId)))throw new Error("Пользователь не разрешён на ПК");
     const sessionId=typeof args.sessionId==="string"?args.sessionId:"";
-    if(job.op!=="capabilities"&&job.op!=="searchThreads"&&job.op!=="listMoreThreads"&&!sessionId)throw new Error("Сначала выберите сеанс Codex");
+    if(job.op!=="capabilities"&&job.op!=="searchThreads"&&job.op!=="listMoreThreads"&&!MOBILE_GLOBAL_OPERATIONS.has(job.op)&&!sessionId)throw new Error("Сначала выберите сеанс Codex");
     const runtime=sessionId?registry.runtimeForSession(chatId,sessionId):undefined;
     switch(job.op){
+      case "listThreadSections":{
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        if(typeof acp.listThreadSections!=="function")throw new Error("Эта версия Codex не поддерживает разделы сеансов");
+        return await acp.listThreadSections();
+      }
+      case "createThreadSection":{
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        if(typeof acp.createThreadSection!=="function")throw new Error("Эта версия Codex не поддерживает разделы сеансов");
+        const name=argumentString(args,"name",80).trim();
+        if(!name||name.length>64||/[\u0000-\u001f\u007f]/.test(name))throw new Error("Название раздела должно содержать от 1 до 64 безопасных символов");
+        return await acp.createThreadSection(name);
+      }
+      case "renameThreadSection":{
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        if(typeof acp.renameThreadSection!=="function"||typeof acp.listThreadSections!=="function")throw new Error("Эта версия Codex не поддерживает разделы сеансов");
+        const sectionId=argumentString(args,"sectionId",80);
+        if(sectionId===CODEX_PINNED_THREAD_SECTION_ID)throw new Error("Встроенный раздел закреплённых нельзя переименовать");
+        const name=argumentString(args,"name",80).trim();
+        if(!name||name.length>64||/[\u0000-\u001f\u007f]/.test(name))throw new Error("Название раздела должно содержать от 1 до 64 безопасных символов");
+        if(!(await acp.listThreadSections()).some(section=>section.id===sectionId))throw new Error("Раздел не найден");
+        return await acp.renameThreadSection(sectionId,name);
+      }
+      case "deleteThreadSection":{
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        if(typeof acp.deleteThreadSection!=="function"||typeof acp.listThreadSections!=="function")throw new Error("Эта версия Codex не поддерживает разделы сеансов");
+        const sectionId=argumentString(args,"sectionId",80);
+        if(sectionId===CODEX_PINNED_THREAD_SECTION_ID)throw new Error("Встроенный раздел закреплённых нельзя удалить");
+        if(!(await acp.listThreadSections()).some(section=>section.id===sectionId))throw new Error("Раздел не найден");
+        await acp.deleteThreadSection(sectionId);
+        this.catalogues.clear();
+        this.archivedCatalogues.clear();
+        return {sectionId,deleted:true};
+      }
+      case "moveThreadToSection":{
+        const thread=await this.thread(sessionId,chatId);
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        if(typeof acp.moveThreadToSection!=="function"||typeof acp.listThreadSections!=="function")throw new Error("Эта версия Codex не поддерживает разделы сеансов");
+        const sectionId=args.sectionId===null?null:argumentString(args,"sectionId",80);
+        const sections=await acp.listThreadSections();
+        const section=sectionId===null?undefined:sectionId===CODEX_PINNED_THREAD_SECTION_ID
+          ? {id:CODEX_PINNED_THREAD_SECTION_ID,name:CODEX_PINNED_THREAD_SECTION_NAME}
+          : sections.find(item=>item.id===sectionId);
+        if(sectionId!==null&&!section)throw new Error("Раздел не найден");
+        await acp.moveThreadToSection(sessionId,sectionId);
+        const moved={...thread,section};
+        this.knownThreads.get(chatId)?.set(sessionId,moved);
+        if(this.archivedThreads.get(chatId)?.has(sessionId))this.archivedThreads.get(chatId)?.set(sessionId,moved);
+        if(this.ownThreads.has(sessionId))this.ownThreads.set(sessionId,moved);
+        this.catalogues.delete(chatId);
+        this.archivedCatalogues.delete(chatId);
+        return {sessionId,sectionId,pinned:sectionId===CODEX_PINNED_THREAD_SECTION_ID};
+      }
       case "searchThreads":{
         const query=argumentString(args,"query",120).trim();
         if(query.length<2)return {sessions:[],nextCursor:undefined};
@@ -411,7 +470,7 @@ export class MiniAppAgent {
             id:thread.id,title:(thread.name||thread.preview||"Новый сеанс").slice(0,180),cwd:thread.cwd||"",
             updatedAt:thread.recencyAt||thread.updatedAt||thread.createdAt||0,
             source:threadSourceKind(thread)||"unknown",archived,busy:Boolean(current?.isBusy),
-            queue:current?.queueLength||0,liveStatus:"unknown",liveLabel:"Статус неизвестен",
+            queue:current?.queueLength||0,liveStatus:"unknown",liveLabel:"Статус неизвестен",section:mobileThreadSection(thread.section),
           };
         });
         return {sessions,nextCursor:page.nextCursor};
@@ -434,7 +493,7 @@ export class MiniAppAgent {
             id:thread.id,title:(thread.name||thread.preview||(archived?"Без названия":"Новый сеанс")).slice(0,180),cwd:thread.cwd||"",
             updatedAt:thread.recencyAt||thread.updatedAt||thread.createdAt||0,
             source:threadSourceKind(thread)||"unknown",archived,busy:Boolean(current?.isBusy),
-            queue:current?.queueLength||0,liveStatus:"unknown",liveLabel:"Статус неизвестен",
+            queue:current?.queueLength||0,liveStatus:"unknown",liveLabel:"Статус неизвестен",section:mobileThreadSection(thread.section),
           };
         });
         const nextOffset=offset+page.length;
@@ -1454,7 +1513,13 @@ export class MiniAppAgent {
       case "snapshot":{
         const {projects,threads}=await this.catalogue(chatId);
         let archivedSessions:CodexThreadSummary[]=[];
+        let sections:Awaited<ReturnType<AcpClient["listThreadSections"]>>=[];
+        let sectionsAvailable=false;
         let archiveAvailable=acp.isConnected;
+        if(acp.isConnected&&typeof acp.listThreadSections==="function"){
+          try{sections=await acp.listThreadSections();sectionsAvailable=true;}
+          catch(error){log.warn("Could not read Codex thread sections:",(error as Error).message);}
+        }
         if(archiveAvailable){
           try{archivedSessions=await this.archivedCatalogue(chatId);}
           catch(error){
@@ -1481,6 +1546,7 @@ export class MiniAppAgent {
             cwd:t.cwd||"",updatedAt:t.recencyAt||t.updatedAt||t.createdAt||0,
             source:threadSourceKind(t)||"unknown",
             archived:false,
+            section:mobileThreadSection(t.section),
             busy:controlled.some(c=>c.sessionId===t.id&&c.busy),
             queue:controlled.find(c=>c.sessionId===t.id)?.queueLength||0,
             progress:controlled.find(c=>c.sessionId===t.id)?.progress,
@@ -1488,8 +1554,13 @@ export class MiniAppAgent {
           archivedSessions:archiveAvailable?archivedSessions.slice(0,500).map(t=>({
             id:t.id,title:(t.name||t.preview||"Без названия").slice(0,180),
             cwd:t.cwd||"",updatedAt:t.recencyAt||t.updatedAt||t.createdAt||0,
-            source:threadSourceKind(t)||"unknown",archived:true,busy:false,queue:0,
+            source:threadSourceKind(t)||"unknown",archived:true,busy:false,queue:0,section:mobileThreadSection(t.section),
           })):[],
+          sectionsAvailable,
+          sections:sectionsAvailable?[
+            {id:CODEX_PINNED_THREAD_SECTION_ID,name:"Закреплённые",builtIn:true},
+            ...sections.filter(section=>section.id!==CODEX_PINNED_THREAD_SECTION_ID).map(section=>({id:section.id,name:section.name,builtIn:false})),
+          ]:[],
           archiveAvailable,
           selected:this.selected.get(chatId)||active.sessionId||null,
           controlled:controlled.map(c=>({id:c.sessionId,busy:c.busy,queue:c.queueLength,paused:c.queuePaused})),

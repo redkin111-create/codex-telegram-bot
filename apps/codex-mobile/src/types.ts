@@ -9,6 +9,8 @@ export interface MobileDevice {
 
 export interface MobileProject { path: string; name: string; }
 
+export interface MobileThreadSection { id: string; name: string; builtIn?: boolean; }
+
 export type LiveStatus = "working" | "approval" | "completed" | "failed" | "cancelled" | "observing" | "unknown";
 
 export interface MobileSession {
@@ -23,6 +25,7 @@ export interface MobileSession {
   liveStatus: LiveStatus;
   liveLabel: string;
   archived?: boolean;
+  section?: MobileThreadSection | null;
 }
 
 export interface MobileSnapshot {
@@ -30,6 +33,8 @@ export interface MobileSnapshot {
   sessions: MobileSession[];
   archivedSessions?: MobileSession[];
   archiveAvailable?: boolean;
+  sections?: MobileThreadSection[];
+  sectionsAvailable?: boolean;
   selected: string | null;
   controlled: Array<{ id: string; busy: boolean; queue: number; paused: boolean }>;
   models: Array<{ id: string; name: string }>;
@@ -188,4 +193,4 @@ export interface MobileGitDiff {
   checkedAt: number;
 }
 
-export type MobileOperation = "create" | "select" | "send" | "cancel" | "queue" | "queueRemove" | "queueResume" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "mcpOAuthLogin" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "editAndRetry" | "transcribeAudio" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "writeFile" | "createFile" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+export type MobileOperation = "create" | "select" | "send" | "cancel" | "queue" | "queueRemove" | "queueResume" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "mcpOAuthLogin" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "editAndRetry" | "transcribeAudio" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "writeFile" | "createFile" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";

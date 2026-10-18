@@ -57,6 +57,7 @@ import type {
   CodexThreadListParams,
   CodexThreadListResponse,
   CodexThreadSummary,
+  CodexThreadSection,
   CodexBackgroundTerminal,
   CodexMobileEditableTurn,
 } from "./codex-protocol.js";
@@ -685,6 +686,52 @@ export class AcpClient extends EventEmitter {
       cursor = next;
     }
     return [...byId.values()];
+  }
+
+  /** Read all user-created sidebar sections through the shared app-server. */
+  async listThreadSections(): Promise<CodexThreadSection[]> {
+    const byId = new Map<string, CodexThreadSection>();
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 1000; page++) {
+      const params = cursor ? { limit: 100, cursor } : { limit: 100 };
+      const response = await this.request("threadSection/list", params) as {
+        data?: CodexThreadSection[];
+        sections?: CodexThreadSection[];
+        nextCursor?: string | null;
+      };
+      const sections = response?.data ?? response?.sections ?? [];
+      if (Array.isArray(sections)) {
+        for (const section of sections) {
+          if (typeof section?.id === "string" && typeof section.name === "string") byId.set(section.id, section);
+        }
+      }
+      const next = typeof response?.nextCursor === "string" ? response.nextCursor : undefined;
+      if (!next || next === cursor || seenCursors.has(next)) break;
+      seenCursors.add(next);
+      cursor = next;
+    }
+    return [...byId.values()];
+  }
+
+  async createThreadSection(name: string): Promise<CodexThreadSection> {
+    const response = await this.request("threadSection/create", { name }) as { section?: CodexThreadSection };
+    if (!response?.section?.id || typeof response.section.name !== "string") throw new AcpError("threadSection/create returned no section");
+    return response.section;
+  }
+
+  async renameThreadSection(sectionId: string, name: string): Promise<CodexThreadSection> {
+    const response = await this.request("threadSection/update", { sectionId, name }) as { section?: CodexThreadSection };
+    if (!response?.section?.id || typeof response.section.name !== "string") throw new AcpError("threadSection/update returned no section");
+    return response.section;
+  }
+
+  async deleteThreadSection(sectionId: string): Promise<void> {
+    await this.request("threadSection/delete", { sectionId });
+  }
+
+  async moveThreadToSection(threadId: string, sectionId: string | null): Promise<void> {
+    await this.request("thread/section/move", { threadId, sectionId });
   }
 
   /** Rename a persisted Codex thread using the app-server's native metadata API. */

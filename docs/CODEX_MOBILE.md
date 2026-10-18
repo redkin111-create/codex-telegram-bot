@@ -36,7 +36,7 @@ full Desktop replacement while any row below has open work.
 
 | Desktop area | Current mobile coverage | Remaining for parity |
 | --- | --- | --- |
-| Projects, sessions, history, live status and screenshots | Browse projects and sessions, read history, tool output and authorized screenshots; reconnect the event stream; rename, archive, restore and fork sessions; permanently delete only an owned archived session through Codex app-server after a mobile confirmation, while blocking controlled sessions, active turns, queues and live project terminals and preserving the session when Codex refuses; native Codex search reaches older active or archived sessions with cursor paging and owner filtering; unfiltered active/archive lists continue in 100-session pages scoped to the selected project and owner | Richer live task details, pinning, side-chat and remaining Desktop session actions |
+| Projects, sessions, history, live status and screenshots | Browse projects and sessions, read history, tool output and authorized screenshots; reconnect the event stream; rename, archive, restore and fork sessions; permanently delete only an owned archived session through Codex app-server after a mobile confirmation, while blocking controlled sessions, active turns, queues and live project terminals and preserving the session when Codex refuses; native Codex search reaches older active or archived sessions with cursor paging and owner filtering; unfiltered active/archive lists continue in 100-session pages scoped to the selected project and owner; create, rename, delete and filter custom thread sections; move sessions into or out of sections; pin and unpin with Codex's built-in Pinned section through native `thread/section/move` | Richer live task details, side-chat and remaining Desktop session actions |
 | Prompting and queue | Send text/images, stop, queue, resume and remove queued prompts; steer a confirmed active turn; edit/retry the latest idle text-only request through Codex's `thread/revert` and the shared runtime, preserving selected skills and durable duplicate protection; record or select audio and transcribe it through the already configured STT endpoint, placing the result in the draft without sending it | Editing requests with attachments, earlier turns and remaining turn controls; native real-time Desktop voice input/output; a history edit does not roll back files or commands |
 | Approvals | Owner-scoped phone cards for the active session; allow/deny choices are checked server-side; no phone response falls back to Telegram after 45 seconds | More approval cases and parity checks for supported Codex builds |
 | Files and edits | Browse the authorized session folder, create text files in existing folders, read UTF-8 text, edit/save up to 512 KB with stale-file detection; safely preview PNG/JPEG/WebP/GIF up to 3 MiB after path, owner and file-signature checks; hides common secret folders/files, skips symlinks and blocks writes while the connected Codex session is busy; read unified diffs with line numbers and distinct added/removed lines; start Codex's native inline reviewer against uncommitted changes, a base branch, a commit or custom instructions, with a phone confirmation | Other binary formats, inline review comments and Desktop-equivalent file-change navigation |
@@ -63,7 +63,7 @@ losing attachments.
 
 - Root TypeScript check: passed.
 - Mobile app TypeScript check and production build: passed.
-- Current full root test suite: 235/235 passed, including plugin/app redaction, native MCP OAuth URL validation, owner/thread/idle restrictions, paired-device/Origin/CSRF checks, live ACP install/uninstall checks, isolated worktree attach/rollback, owner-filtered native search and active/archive paging, owner-checked native review start and busy-turn rejection, unified-diff parsing and line numbering, bounded one-shot and interactive terminal checks, thread-scoped background process list/termination and explicit Codex termination confirmation, remote fetch/current-branch push authorization, image path/signature checks, skill enable/disable authorization and explicit skill input resolution, thread-scoped MCP pagination/redaction, latest-turn stale-status and attachment rejection, edit/retry journal replay, audio type/signature/size/owner/STT-error handling, and owned archived-session deletion checks for runtime, queue, cross-client, terminal, offline and Codex-error cases.
+- Current full root test suite: 238/238 passed, including plugin/app redaction, native MCP OAuth URL validation, owner/thread/idle restrictions, paired-device/Origin/CSRF checks, live ACP install/uninstall checks, isolated worktree attach/rollback, owner-filtered native search and active/archive paging, owner-checked native review start and busy-turn rejection, unified-diff parsing and line numbering, bounded one-shot and interactive terminal checks, thread-scoped background process list/termination and explicit Codex termination confirmation, remote fetch/current-branch push authorization, image path/signature checks, skill enable/disable authorization and explicit skill input resolution, thread-scoped MCP pagination/redaction, latest-turn stale-status and attachment rejection, edit/retry journal replay, audio type/signature/size/owner/STT-error handling, and owned archived-session deletion checks for runtime, queue, cross-client, terminal, offline and Codex-error cases.
 - Focused branch-list/switch and API authorization checks: 2/2 passed.
 - Per-file Git diff filtering validates paths inside the authorized project and passes both names for a selected rename.
 - Mobile app `npm audit`: 0 vulnerabilities.
@@ -91,6 +91,16 @@ losing attachments.
   deletion, simulate a Codex refusal and verify the reason stays in the dialog,
   then retry and confirm the fixture session disappears. No real session was
   deleted.
+- Browser skill with Pixel 7 emulation at 412×915: pin a session into Codex's
+  built-in Pinned section, filter to pinned sessions and unpin it; create and
+  rename a custom section, move a session into it, filter and clear its section;
+  cancel section deletion, show a simulated Codex refusal without removing the
+  section, then retry successfully. All data came from the isolated fixture.
+- Browser skill at 574×637 after the section compatibility guard: an unsupported
+  fake Codex API displays a clear status and disables section filtering,
+  management, membership and pinning. With the supported fake API, create and
+  rename still work; pinning, filtering and unpinning also work, and the pinned
+  filter updates to zero sessions. No real Codex session was changed.
 - Browser skill with Pixel 7 emulation at 412×915: start MCP OAuth for the
   fixture server, verify only its HTTPS provider link is offered, then refresh
   and confirm the status changes to connected. The provider link was not opened.
@@ -179,6 +189,9 @@ losing attachments.
   request. The app-server protocol exposes that method and returns
   `effectiveEnabled`; see the [request declaration](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/common.rs)
   and [skill config types](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/plugin.rs).
+- Pinning uses Codex's built-in section identity and native thread section move
+  request; it is not a custom user section. See the [Codex state library](https://github.com/openai/codex/blob/main/codex-rs/state/src/lib.rs)
+  and [app-server protocol](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/common.rs).
 - Explicit skill selection uses Codex's native `skill` input item; its `name`
   and `SKILL.md` path stay in the local server-to-Codex request. See the
   [Codex protocol input types](https://github.com/openai/codex/blob/main/codex-rs/docs/protocol_v1.md#userinput-items).

@@ -129,6 +129,16 @@ export type CodexThreadSource =
   | { custom: string }
   | { subAgent: CodexSubAgentSource };
 
+/** User-created sidebar section returned by Codex app-server. */
+export const CODEX_PINNED_THREAD_SECTION_ID = "01984de2-8f74-7c91-a3b2-5c5e937cf318";
+export const CODEX_PINNED_THREAD_SECTION_NAME = "Pinned";
+
+export interface CodexThreadSection {
+  id: string;
+  name: string;
+  appearance?: { icon?: string | null; color?: string | null } | null;
+}
+
 export interface CodexThreadSummary {
   id: string;
   sessionId?: string;
@@ -143,6 +153,7 @@ export interface CodexThreadSummary {
   source?: CodexThreadSource;
   projectId?: string;
   parentThreadId?: string;
+  section?: CodexThreadSection | null;
   ephemeral?: boolean;
 }
 
