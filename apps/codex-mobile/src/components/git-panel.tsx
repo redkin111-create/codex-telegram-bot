@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { ClipboardCheck, CloudDownload, CloudUpload, FolderPlus, GitBranch, GitCommit, Plus, RefreshCw, X } from "lucide-react";
-import { readGitDiff, readGitStatus } from "../api.js";
-import type { MobileGitDiff, MobileGitStatus, MobileOperation } from "../types.js";
+import { readGitDiff, readGitStatus, readProjectFile } from "../api.js";
+import type { MobileFile, MobileGitDiff, MobileGitStatus, MobileOperation } from "../types.js";
+import { hasUnresolvedMergeMarkers, isUnmergedGitChange } from "../lib/git-conflicts.js";
 import { DiffViewer } from "./diff-viewer.js";
 import { Badge, Button, Card, Input, Textarea } from "./ui/primitives.js";
 
@@ -34,6 +35,10 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
   const [reviewBranch, setReviewBranch] = useState("");
   const [reviewCommit, setReviewCommit] = useState("");
   const [reviewInstructions, setReviewInstructions] = useState("");
+  const [conflictFile, setConflictFile] = useState<MobileFile>();
+  const [conflictDraft, setConflictDraft] = useState("");
+  const [conflictError, setConflictError] = useState("");
+  const [conflictSaving, setConflictSaving] = useState(false);
 
   async function refresh() {
     setLoading(true);
@@ -114,6 +119,44 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
     if (result !== undefined) setReviewDialogOpen(false);
   }
 
+  async function openConflictFile(path: string) {
+    setConflictError("");
+    try {
+      const file = await readProjectFile(sessionId, path);
+      setConflictFile(file);
+      setConflictDraft(file.text);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось безопасно прочитать файл конфликта"); }
+  }
+
+  async function saveConflict(markResolved: boolean) {
+    if (!conflictFile || !connected || conflictSaving || busyAction) return;
+    if (markResolved && hasUnresolvedMergeMarkers(conflictDraft)) {
+      setConflictError("Удалите все стандартные маркеры конфликта перед добавлением файла в индекс.");
+      return;
+    }
+    setConflictSaving(true);
+    setConflictError("");
+    try {
+      if (conflictDraft !== conflictFile.text) {
+        await onOperation("writeFile", { sessionId, path: conflictFile.path, content: conflictDraft, expectedHash: conflictFile.sha256 });
+      }
+      if (markResolved) await onOperation("gitStage", { sessionId, path: conflictFile.path });
+      const updated = await readProjectFile(sessionId, conflictFile.path);
+      setConflictFile(updated);
+      setConflictDraft(updated.text);
+      setSuccess(markResolved ? `Конфликт ${conflictFile.path} отмечен решённым в Git` : `Файл ${conflictFile.path} сохранён`);
+      await refresh();
+      if (markResolved) setConflictFile(undefined);
+    } catch (cause) {
+      setConflictError(cause instanceof Error ? cause.message : "Не удалось сохранить разрешение конфликта");
+      try {
+        const latest = await readProjectFile(sessionId, conflictFile.path);
+        setConflictFile(latest);
+        setConflictDraft(latest.text);
+      } catch { /* Preserve the editor text when the file cannot be re-read. */ }
+    } finally { setConflictSaving(false); }
+  }
+
   const patch = view === "staged" ? diff?.staged ?? "" : diff?.unstaged ?? "";
   const stagedCount = status?.changes.filter((change) => change.indexStatus !== " " && change.indexStatus !== "?").length ?? 0;
   const selectedRemote = status?.remotes.find((remote) => remote.name === remoteName);
@@ -133,12 +176,15 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
         {loading && !status ? <p className="text-sm text-muted">Читаю статус Git…</p> : status && <>
           <Card className="p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs text-muted">Текущая ветка</p><p className="mt-1 break-all font-mono text-sm">{status.branch || "не определена"}</p></div><Badge className={status.clean ? "border-[#3d5630] text-[#c7e89a]" : "text-[#f2c66d]"}>{status.clean ? "Чисто" : `${status.changes.length} изменений`}</Badge></div>
             {status.changes.length > 0 && <ul className="mt-4 divide-y divide-border">{status.changes.map((change, index) => {
-              const needsStage = change.code === "??" || (change.worktreeStatus !== " " && change.worktreeStatus !== "?");
-              const needsUnstage = change.indexStatus !== " " && change.indexStatus !== "?";
+              const conflict = isUnmergedGitChange(change);
+              const needsStage = !conflict && (change.code === "??" || (change.worktreeStatus !== " " && change.worktreeStatus !== "?"));
+              const needsUnstage = !conflict && change.indexStatus !== " " && change.indexStatus !== "?";
               const displayPath = change.previousPath ? `${change.previousPath} → ${change.path}` : change.path;
               return <li key={`${change.code}-${change.path}-${index}`} className="flex flex-wrap items-center gap-2 py-2 font-mono text-xs">
-                <span className="shrink-0 text-[#c7e89a]">{change.code}</span><span className="min-w-0 flex-1 break-all text-muted">{displayPath}</span>
-                <Button variant="ghost" className="min-h-9 px-2 text-[11px]" disabled={Boolean(loadingDiffPath)} aria-label={`Показать diff ${displayPath}`} onClick={() => void loadDiff(change.path, change.previousPath)}>{loadingDiffPath === change.path ? "Читаю" : "Diff"}</Button>
+                <span className={`shrink-0 ${conflict ? "text-[#ffc3bd]" : "text-[#c7e89a]"}`}>{change.code}</span><span className="min-w-0 flex-1 break-all text-muted">{displayPath}</span>
+                {conflict && <Badge className="border-[#733b39] text-[#ffc3bd]">Конфликт</Badge>}
+                {!conflict && <Button variant="ghost" className="min-h-9 px-2 text-[11px]" disabled={Boolean(loadingDiffPath)} aria-label={`Показать diff ${displayPath}`} onClick={() => void loadDiff(change.path, change.previousPath)}>{loadingDiffPath === change.path ? "Читаю" : "Diff"}</Button>}
+                {conflict && <Button variant="outline" className="min-h-9 px-2 text-[11px]" aria-label={`Разрешить конфликт ${change.path}`} onClick={() => void openConflictFile(change.path)}>Разрешить</Button>}
                 {needsStage && <Button variant="ghost" className="min-h-9 px-2 text-[11px]" disabled={!connected || Boolean(busyAction)} aria-label={`Добавить ${displayPath} в индекс`} onClick={() => void mutate("gitStage", { path: change.path }, "Файл добавлен в индекс")}>В индекс</Button>}
                 {needsUnstage && <Button variant="ghost" className="min-h-9 px-2 text-[11px]" disabled={!connected || Boolean(busyAction)} aria-label={`Убрать ${displayPath} из индекса`} onClick={() => void mutate("gitUnstage", { path: change.path, previousPath: change.previousPath }, "Файл убран из индекса")}>Снять</Button>}
               </li>;
@@ -223,6 +269,17 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
         </label>}
         <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={Boolean(busyAction)} onClick={() => setReviewDialogOpen(false)}>Отмена</Button><Button type="submit" className="flex-1" disabled={!connected || Boolean(busyAction) || (reviewTargetType === "baseBranch" && !reviewBranch) || (reviewTargetType === "commit" && !reviewCommit.trim()) || (reviewTargetType === "custom" && !reviewInstructions.trim())}>{busyAction === "reviewThread" ? "Проверяю…" : "Запустить ревью"}</Button></div>
       </form>
+    </div>}
+    {conflictFile && <div className="fixed inset-0 z-[90] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
+      <section className="safe-area-bottom flex max-h-[92svh] w-full max-w-2xl flex-col gap-3 rounded-2xl border border-border bg-elevated p-4 shadow-soft sm:p-5" role="dialog" aria-modal="true" aria-labelledby="conflict-editor-title">
+        <div className="flex items-start justify-between gap-3"><div className="min-w-0"><h3 id="conflict-editor-title" className="text-base font-semibold">Разрешить конфликт Git</h3><p className="mt-1 break-all font-mono text-xs text-muted">{conflictFile.path}</p></div><Button type="button" variant="ghost" className="min-h-9 px-2" aria-label="Закрыть редактор конфликта" disabled={conflictSaving} onClick={() => { setConflictFile(undefined); setConflictError(""); }}><X size={17} /></Button></div>
+        <p className="text-xs leading-5 text-muted">Редактор показывает обычный текст и не исполняет содержимое файла. Сохранение меняет рабочий файл; действие ниже также добавит его в Git-индекс и отметит конфликт решённым.</p>
+        {!connected && <p className="rounded-lg border border-border bg-[#111613] p-2 text-xs text-muted">Подключите сеанс к мобильному клиенту, чтобы сохранить изменения.</p>}
+        {hasUnresolvedMergeMarkers(conflictDraft) && <p className="rounded-lg border border-[#5f4d2d] bg-[#292316] p-2 text-xs text-[#f0d995">В тексте ещё есть стандартные маркеры конфликта. Удалите их, прежде чем помечать файл решённым.</p>}
+        <textarea aria-label={`Содержимое конфликтного файла ${conflictFile.path}`} spellCheck={false} value={conflictDraft} readOnly={!connected} onChange={(event) => setConflictDraft(event.target.value)} className="min-h-48 flex-1 resize-y rounded-xl border border-border bg-[#0d110e] p-3 font-mono text-xs leading-relaxed text-[#dce3da] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 read-only:opacity-80 sm:min-h-64" />
+        {conflictError && <p role="alert" className="rounded-lg border border-[#733b39] bg-[#351f1e] p-2 text-xs text-[#ffc3bd]">{conflictError}</p>}
+        <div className="flex flex-col gap-2 sm:flex-row sm:justify-end"><Button type="button" variant="outline" disabled={!connected || conflictSaving || conflictDraft === conflictFile.text || Boolean(busyAction)} onClick={() => void saveConflict(false)}>{conflictSaving ? "Сохраняю…" : "Сохранить текст"}</Button><Button type="button" disabled={!connected || conflictSaving || Boolean(busyAction) || hasUnresolvedMergeMarkers(conflictDraft)} onClick={() => void saveConflict(true)}>{conflictSaving ? "Сохраняю…" : "Сохранить и отметить решённым"}</Button></div>
+      </section>
     </div>}
   </div>;
 }

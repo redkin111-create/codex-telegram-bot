@@ -90,6 +90,7 @@ let selected = firstSession;
 const fixtureSettings = { model: "fixture", mode: "code", reasoning: "medium" };
 const fixtureGoals = new Map<string, { threadId: string; objective: string; status: "active" | "paused"; tokenBudget: number | null; tokensUsed: number; timeUsedSeconds: number; createdAt: number; updatedAt: number }>();
 const fixtureStaged = new Set<string>();
+let fixtureConflictResolved = false;
 let fixtureBranch = "feat/codex-mobile-fixture";
 let fixtureNotesCommitted = false;
 let fixtureRenameStaged = true;
@@ -126,6 +127,7 @@ let fixtureSectionDeleteFailure = false;
 const fixtureFiles = new Map<string, string>([
   ["README.md", "# Fixture project\n\nRead-only history is followed by mobile file access.\n"],
   ["src/main.ts", "export function greet() {\n  return \"Hello from fixture\";\n}\n"],
+  ["src/conflict.ts", "<<<<<<< HEAD\nexport const greeting = \"Hello\";\n=======\nexport const greeting = \"Hi\";\n>>>>>>> feature/greeting\n"],
   ["assets/preview.png", "fixture raster preview"],
 ]);
 
@@ -691,6 +693,7 @@ const agent = {
       remotes: [{ name: "origin", fetchTargets: ["github.com"], pushTargets: ["github.com"] }], clean: false,
       changes: [
         ...(!fixtureStaged.has("src/main.ts") ? [{ code: "M", indexStatus: " ", worktreeStatus: "M", path: "src/main.ts" }] : []),
+        ...(fixtureConflictResolved ? [{ code: "M", indexStatus: "M", worktreeStatus: " ", path: "src/conflict.ts" }] : [{ code: "UU", indexStatus: "U", worktreeStatus: "U", path: "src/conflict.ts" }]),
         ...(!fixtureNotesCommitted ? (!fixtureStaged.has("notes/review.md") ? [{ code: "??", indexStatus: "?", worktreeStatus: "?", path: "notes/review.md" }] : [{ code: "A", indexStatus: "A", worktreeStatus: " ", path: "notes/review.md" }]) : []),
         ...(fixtureRenameStaged ? [{ code: "R", indexStatus: "R", worktreeStatus: " ", path: "src/renamed.ts", previousPath: "src/old-main.ts" }]
           : fixtureStaged.has("src/old-main.ts") && fixtureStaged.has("src/renamed.ts")
@@ -712,7 +715,12 @@ const agent = {
         checkedAt: Date.now(),
       };
     }
-    if (job.op === "gitStage") { fixtureStaged.add(String(args.path)); return { path: args.path, staged: true }; }
+    if (job.op === "gitStage") {
+      const path = String(args.path);
+      fixtureStaged.add(path);
+      if (path === "src/conflict.ts") fixtureConflictResolved = true;
+      return { path, staged: true };
+    }
     if (job.op === "gitUnstage") {
       if (typeof args.previousPath === "string") {
         fixtureRenameStaged = false;
