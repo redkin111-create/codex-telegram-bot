@@ -132,6 +132,7 @@ const fixtureFiles = new Map<string, string>([
   ["src/conflict.ts", "<<<<<<< HEAD\nexport const greeting = \"Hello\";\n=======\nexport const greeting = \"Hi\";\n>>>>>>> feature/greeting\n"],
   ["assets/preview.png", "fixture raster preview"],
 ]);
+const fixtureDirectories = new Set<string>(["src", "assets"]);
 
 const voiceAcp = {
   isConnected: true,
@@ -654,14 +655,22 @@ const agent = {
       const path = String(args.path ?? "");
       const prefix = path ? `${path}/` : "";
       const children = new Map<string, { name: string; kind: "directory" | "file"; size?: number; mtimeMs?: number }>();
+      for (const directory of fixtureDirectories) {
+        if (!directory.startsWith(prefix)) continue;
+        const remainder = directory.slice(prefix.length);
+        if (!remainder) continue;
+        const slash = remainder.indexOf("/");
+        const name = slash < 0 ? remainder : remainder.slice(0, slash);
+        children.set(name, { name, kind: "directory", mtimeMs: 1 });
+      }
       for (const [filePath, text] of fixtureFiles) {
         if (!filePath.startsWith(prefix)) continue;
         const remainder = filePath.slice(prefix.length);
         if (!remainder) continue;
         const slash = remainder.indexOf("/");
         const name = slash < 0 ? remainder : remainder.slice(0, slash);
-        if (slash >= 0) children.set(name, { name, kind: "directory" });
-        else children.set(name, { name, kind: "file", size: filePath === "assets/preview.png" ? 75 : Buffer.byteLength(text), mtimeMs: Date.now() });
+        if (slash >= 0) children.set(name, { name, kind: "directory", mtimeMs: 1 });
+        else children.set(name, { name, kind: "file", size: filePath === "assets/preview.png" ? 75 : Buffer.byteLength(text), mtimeMs: 1 });
       }
       const entries = [...children.values()].sort((a, b) => a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "directory" ? -1 : 1);
       return { project: "codex-mobile", path, entries };
@@ -689,6 +698,53 @@ const agent = {
       if (!path || fixtureFiles.has(path)) throw new Error("Файл уже существует");
       fixtureFiles.set(path, String(args.content ?? ""));
       return { path, sha256: createHash("sha256").update(fixtureFiles.get(path)!).digest("hex"), savedAt: Date.now() };
+    }
+    if (job.op === "createDirectory") {
+      const path = String(args.path ?? "").replaceAll("\\", "/");
+      const parts = path.split("/").filter(Boolean);
+      const parent = parts.slice(0, -1).join("/");
+      if (!path || parts.length === 0 || parts.some((part) => part === "." || part === "..") || (parent && !fixtureDirectories.has(parent)) || fixtureDirectories.has(path) || fixtureFiles.has(path)) throw new Error("Папка уже существует или путь недопустим");
+      fixtureDirectories.add(path);
+      return { path };
+    }
+    if (job.op === "renameProjectEntry") {
+      const path = String(args.path ?? "");
+      const newName = String(args.newName ?? "");
+      const kind = String(args.expectedKind ?? "");
+      const parts = path.split("/");
+      const target = parts.slice(0, -1).concat(newName).filter(Boolean).join("/");
+      if (!path || !newName || newName.includes("/") || args.expectedMtimeMs !== 1 || fixtureFiles.has(target) || fixtureDirectories.has(target)) throw new Error("Файл или папка изменились");
+      if (kind === "file") {
+        const content = fixtureFiles.get(path);
+        const size = path === "assets/preview.png" ? 75 : content === undefined ? -1 : Buffer.byteLength(content);
+        if (content === undefined || size !== args.expectedSize) throw new Error("Файл или папка изменились");
+        fixtureFiles.set(target, content);
+        fixtureFiles.delete(path);
+      } else if (kind === "directory" && fixtureDirectories.has(path)) {
+        const oldPrefix = path + "/";
+        const newPrefix = target + "/";
+        fixtureDirectories.delete(path);
+        fixtureDirectories.add(target);
+        for (const directory of [...fixtureDirectories]) if (directory.startsWith(oldPrefix)) { fixtureDirectories.delete(directory); fixtureDirectories.add(newPrefix + directory.slice(oldPrefix.length)); }
+        for (const [filePath, content] of [...fixtureFiles]) if (filePath.startsWith(oldPrefix)) { fixtureFiles.delete(filePath); fixtureFiles.set(newPrefix + filePath.slice(oldPrefix.length), content); }
+      } else throw new Error("Файл или папка не найдены");
+      return { from: path, path: target, kind };
+    }
+    if (job.op === "deleteProjectEntry") {
+      const path = String(args.path ?? "");
+      const kind = String(args.expectedKind ?? "");
+      if (!path || args.expectedMtimeMs !== 1) throw new Error("Файл или папка изменились");
+      if (kind === "file") {
+        const content = fixtureFiles.get(path);
+        const size = path === "assets/preview.png" ? 75 : content === undefined ? -1 : Buffer.byteLength(content);
+        if (content === undefined || size !== args.expectedSize) throw new Error("Файл или папка изменились");
+        fixtureFiles.delete(path);
+      } else if (kind === "directory" && fixtureDirectories.has(path)) {
+        const prefix = path + "/";
+        if ([...fixtureFiles.keys()].some((filePath) => filePath.startsWith(prefix)) || [...fixtureDirectories].some((directory) => directory !== path && directory.startsWith(prefix))) throw new Error("Удалить можно только пустую папку");
+        fixtureDirectories.delete(path);
+      } else throw new Error("Файл или папка не найдены");
+      return { path, kind };
     }
     if (job.op === "gitConflictStages") {
       if (String(args.path ?? "") === "assets/icon.bin" && !fixtureBinaryConflictResolved) return {

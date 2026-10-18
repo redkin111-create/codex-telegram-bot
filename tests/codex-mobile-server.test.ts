@@ -1055,6 +1055,63 @@ test("project file reads and writes use the authorized session and write CSRF ch
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
+test("project directory creation requires a paired device, CSRF and an owned session", async () => {
+  const f = await startFixture();
+  try {
+    const payload = JSON.stringify({ op: "createDirectory", args: { sessionId: allowedSession, path: "src/new-folder" } });
+    const unauthenticated = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: payload,
+    });
+    assert.equal(unauthenticated.status, 401);
+    assert.equal(f.calls.length, 0);
+    const login = await pair(f.origin, f.auth);
+    const noCsrf = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: payload,
+    });
+    assert.equal(noCsrf.status, 403);
+    const foreign = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ op: "createDirectory", args: { sessionId: foreignSession, path: "new-folder" } }),
+    });
+    assert.equal(foreign.status, 403);
+    assert.equal(f.calls.length, 0);
+    const created = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: payload,
+    });
+    assert.equal(created.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "createDirectory");
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("project rename and deletion are paired, CSRF protected and session scoped", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    for (const op of ["renameProjectEntry", "deleteProjectEntry"] as const) {
+      const args = { sessionId: allowedSession, path: "src/main.ts", expectedKind: "file", expectedSize: 20, expectedMtimeMs: 1, ...(op === "renameProjectEntry" ? { newName: "mobile.ts" } : {}) };
+      const payload = JSON.stringify({ op, args });
+      const unauthenticated = await fetch(f.origin + "/api/operations", {
+        method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: payload,
+      });
+      assert.equal(unauthenticated.status, 401);
+      const noCsrf = await fetch(f.origin + "/api/operations", {
+        method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: payload,
+      });
+      assert.equal(noCsrf.status, 403);
+      const foreign = await fetch(f.origin + "/api/operations", {
+        method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+        body: JSON.stringify({ op, args: { ...args, sessionId: foreignSession } }),
+      });
+      assert.equal(foreign.status, 403);
+      const authorized = await fetch(f.origin + "/api/operations", {
+        method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: payload,
+      });
+      assert.equal(authorized.status, 200);
+      assert.equal(f.calls.at(-1)?.op, op);
+    }
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
 test("Git conflict-stage reads require a paired device and an owned session", async () => {
   const f = await startFixture();
   try {

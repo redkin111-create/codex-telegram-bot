@@ -3,7 +3,7 @@ import test from "node:test";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ReasoningEffort } from "../src/app/types.js";
@@ -1343,6 +1343,11 @@ test("mobile project files stay inside the authorized session, hide secrets and 
     assert.equal(file.text,"export const answer = 42;\n");
     const created=await agent.executeMobile({op:"createFile",userId:101,args:{sessionId,path:"src/new.ts",content:""}}) as {sha256:string};
     assert.equal(created.sha256,createHash("sha256").update("").digest("hex"));
+    const createdFolder=await agent.executeMobile({op:"createDirectory",userId:101,args:{sessionId,path:"src/new-folder"}}) as {path:string};
+    assert.deepEqual(createdFolder,{path:"src/new-folder"});
+    assert.equal(statSync(join(project,"src","new-folder")).isDirectory(),true);
+    await assert.rejects(agent.executeMobile({op:"createDirectory",userId:101,args:{sessionId,path:"src/new-folder"}}),/уже существует|существует/i);
+    await assert.rejects(agent.executeMobile({op:"createDirectory",userId:101,args:{sessionId,path:"../outside"}}),/Недопустимый путь|пределы проекта/i);
     assert.equal((await agent.executeMobile({op:"readFile",userId:101,args:{sessionId,path:"src/new.ts"}}) as {text:string}).text,"");
     await assert.rejects(agent.executeMobile({op:"createFile",userId:101,args:{sessionId,path:"src/main.ts",content:"overwrite"}}),/already exists|существует/i);
     await assert.rejects(agent.executeMobile({op:"createFile",userId:101,args:{sessionId,path:"src/.env",content:"secret"}}),/недоступен|Недопустимый/);
@@ -1355,6 +1360,78 @@ test("mobile project files stay inside the authorized session, hide secrets and 
     const updated=await agent.executeMobile({op:"readFile",userId:101,args:{sessionId,path:"src/main.ts"}}) as {sha256:string};
     await assert.rejects(agent.executeMobile({op:"writeFile",userId:101,args:{sessionId,path:"src/main.ts",content:"during turn",expectedHash:updated.sha256}}),/текущей задачи/);
     await assert.rejects(agent.executeMobile({op:"createFile",userId:101,args:{sessionId,path:"src/busy.ts",content:"x"}}),/текущей задачи/);
+    await assert.rejects(agent.executeMobile({op:"createDirectory",userId:101,args:{sessionId,path:"src/busy-folder"}}),/текущей задачи/);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("mobile rename keeps a project file inside its authorized folder and rejects stale listings",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-rename-file-"));
+  const project=join(dir,"project");mkdirSync(join(project,"src"),{recursive:true});
+  const file=join(project,"src","main.ts");writeFileSync(file,"export const answer = 42;\n");
+  const sessionId="26262626-2626-4262-8262-262626262626";
+  const runtime={sessionId,isBusy:false};
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"project",roots:[project]}],
+    listThreads:async()=>[{id:sessionId,name:"Mobile rename",cwd:project,source:"cli",recencyAt:2}],
+    availableModels:[],
+  }) as unknown as AcpClient;
+  const registry={controller:()=>({list:()=>[]}),get:()=>runtime,runtimeForSession:()=>runtime} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef03",op:"snapshot",userId:101,args:{}});
+    const listing=await agent.executeMobile({op:"files",userId:101,args:{sessionId,path:"src"}}) as {entries:Array<{name:string;size:number;mtimeMs:number}>};
+    const entry=listing.entries.find((item)=>item.name==="main.ts")!;
+    const renamed=await agent.executeMobile({op:"renameProjectEntry",userId:101,args:{sessionId,path:"src/main.ts",newName:"answer.ts",expectedKind:"file",expectedSize:entry.size,expectedMtimeMs:entry.mtimeMs}});
+    assert.deepEqual(renamed,{from:"src/main.ts",path:"src/answer.ts",kind:"file"});
+    assert.equal(readFileSync(join(project,"src","answer.ts"),"utf8"),"export const answer = 42;\n");
+    const nextListing=await agent.executeMobile({op:"files",userId:101,args:{sessionId,path:"src"}}) as {entries:Array<{name:string;size:number;mtimeMs:number}>};
+    const nextEntry=nextListing.entries.find((item)=>item.name==="answer.ts")!;
+    writeFileSync(join(project,"src","answer.ts"),"new content with a different length\n");
+    await assert.rejects(agent.executeMobile({op:"renameProjectEntry",userId:101,args:{sessionId,path:"src/answer.ts",newName:"stale.ts",expectedKind:"file",expectedSize:nextEntry.size,expectedMtimeMs:nextEntry.mtimeMs}}),/изменился|обновите/i);
+    await assert.rejects(agent.executeMobile({op:"renameProjectEntry",userId:202,args:{sessionId,path:"src/answer.ts",newName:"foreign.ts",expectedKind:"file",expectedSize:nextEntry.size,expectedMtimeMs:nextEntry.mtimeMs}}),/Пользователь не разрешён/);
+    assert.equal(existsSync(join(project,"src","answer.ts")),true);
+    assert.equal(existsSync(join(project,"src","stale.ts")),false);
+    const nested=join(project,"nested");mkdirSync(join(nested,"src"),{recursive:true});
+    writeFileSync(join(nested,"src","index.ts"),"export {}\n");
+    const root=await agent.executeMobile({op:"files",userId:101,args:{sessionId}}) as {entries:Array<{name:string;kind:string;mtimeMs:number}>};
+    const directory=root.entries.find((item)=>item.name==="nested")!;
+    const renamedDirectory=await agent.executeMobile({op:"renameProjectEntry",userId:101,args:{sessionId,path:"nested",newName:"components",expectedKind:"directory",expectedMtimeMs:directory.mtimeMs}});
+    assert.deepEqual(renamedDirectory,{from:"nested",path:"components",kind:"directory"});
+    assert.equal(readFileSync(join(project,"components","src","index.ts"),"utf8"),"export {}\n");
+    assert.equal(existsSync(nested),false);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("mobile delete removes an owned file and refuses non-empty project folders",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-delete-entry-"));
+  const project=join(dir,"project");mkdirSync(join(project,"empty-folder"),{recursive:true});mkdirSync(join(project,"full-folder"),{recursive:true});
+  writeFileSync(join(project,"remove.txt"),"remove this file\n");writeFileSync(join(project,"full-folder","keep.txt"),"keep this file\n");
+  const sessionId="27272727-2727-4272-8272-272727272727";
+  const runtime={sessionId,isBusy:false};
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"project",roots:[project]}],
+    listThreads:async()=>[{id:sessionId,name:"Mobile delete",cwd:project,source:"cli",recencyAt:2}],
+    availableModels:[],
+  }) as unknown as AcpClient;
+  const registry={controller:()=>({list:()=>[]}),get:()=>runtime,runtimeForSession:()=>runtime} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef04",op:"snapshot",userId:101,args:{}});
+    const root=await agent.executeMobile({op:"files",userId:101,args:{sessionId}}) as {entries:Array<{name:string;kind:string;size?:number;mtimeMs:number}>};
+    const file=root.entries.find((entry)=>entry.name==="remove.txt")!;
+    const removed=await agent.executeMobile({op:"deleteProjectEntry",userId:101,args:{sessionId,path:"remove.txt",expectedKind:"file",expectedSize:file.size,expectedMtimeMs:file.mtimeMs}});
+    assert.deepEqual(removed,{path:"remove.txt",kind:"file"});
+    assert.equal(existsSync(join(project,"remove.txt")),false);
+    const empty=root.entries.find((entry)=>entry.name==="empty-folder")!;
+    const removedFolder=await agent.executeMobile({op:"deleteProjectEntry",userId:101,args:{sessionId,path:"empty-folder",expectedKind:"directory",expectedMtimeMs:empty.mtimeMs}});
+    assert.deepEqual(removedFolder,{path:"empty-folder",kind:"directory"});
+    assert.equal(existsSync(join(project,"empty-folder")),false);
+    const full=root.entries.find((entry)=>entry.name==="full-folder")!;
+    await assert.rejects(agent.executeMobile({op:"deleteProjectEntry",userId:101,args:{sessionId,path:"full-folder",expectedKind:"directory",expectedMtimeMs:full.mtimeMs}}),/пуст|содержит|не удалось/i);
+    await assert.rejects(agent.executeMobile({op:"deleteProjectEntry",userId:202,args:{sessionId,path:"full-folder/keep.txt",expectedKind:"file",expectedSize:14,expectedMtimeMs:full.mtimeMs}}),/Пользователь не разрешён/);
+    assert.equal(existsSync(join(project,"full-folder","keep.txt")),true);
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 

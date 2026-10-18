@@ -2,7 +2,7 @@
  * Windows-side outbound TMA agent. Reuses the SAME AcpClient/RuntimeRegistry as
  * the Telegram bot and never listens on the PC's public network interface.
  */
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFile as execFileCallback, execFileSync } from "node:child_process";
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
@@ -159,7 +159,7 @@ interface MobileMcpResourceRef {
   ownerId:number;sessionId:string;serverName:string;uri?:string;uriTemplate?:string;expiresAt:number;
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; stt?:Pick<SttService,"enabled"|"transcribe">; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "listRealtimeVoices" | "startRealtime" | "stopRealtime" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "createSideChat" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitConflictStages" | "gitResolveConflictStage" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "listRealtimeVoices" | "startRealtime" | "stopRealtime" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "createSideChat" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "createDirectory" | "renameProjectEntry" | "deleteProjectEntry" | "gitStatus" | "gitDiff" | "gitConflictStages" | "gitResolveConflictStage" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 const MOBILE_GLOBAL_OPERATIONS=new Set<MobileLocalOperation>(["listThreadSections","createThreadSection","renameThreadSection","deleteThreadSection"]);
 export class MiniAppAgent {
@@ -1293,6 +1293,68 @@ export class MiniAppAgent {
         catch(error){if((error as NodeJS.ErrnoException).code==="EEXIST")throw new Error("Файл уже существует");throw error;}
         return {path:relative(root,absolute).split(sep).join("/"),sha256:createHash("sha256").update(content,"utf8").digest("hex"),savedAt:Date.now()};
       }
+      case "createDirectory":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        const rawPath=argumentString(args,"path",1200);
+        if(!rawPath||isAbsolute(rawPath)||/^[a-z]:/i.test(rawPath)||rawPath.startsWith("\\\\"))throw new Error("Ожидался относительный путь внутри проекта");
+        const parts=rawPath.split(/[\\/]+/).filter(Boolean);
+        if(parts.some(part=>part===".."||part==="."||part.includes(":")||part.includes("\0")))throw new Error("Недопустимый путь внутри проекта");
+        if(parts.some(part=>this.isHiddenMobileFile(part)))throw new Error("Этот каталог недоступен в мобильном просмотре");
+        const name=parts.pop();
+        if(!name||this.isHiddenMobileFile(name))throw new Error("Этот каталог недоступен в мобильном просмотре");
+        const {root}=this.mobileRoot(sessionId,chatId);
+        const parent=parts.length?this.mobilePath(root,parts.join("/")):root;
+        if(!statSync(parent).isDirectory())throw new Error("Папка для нового каталога не найдена");
+        const actualParent=realpathSync.native(parent);
+        if(!isPathWithinRoot(root,actualParent))throw new Error("Путь выходит за пределы проекта");
+        const absolute=resolve(actualParent,name);
+        if(!isPathWithinRoot(root,absolute))throw new Error("Путь выходит за пределы проекта");
+        try{lstatSync(absolute);throw new Error("Каталог уже существует");}
+        catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT")throw error;}
+        this.requireIdleMobileRuntime(sessionId,chatId);
+        try{mkdirSync(absolute);}
+        catch(error){if((error as NodeJS.ErrnoException).code==="EEXIST")throw new Error("Каталог уже существует");throw error;}
+        return {path:relative(root,absolute).split(sep).join("/")};
+      }
+      case "renameProjectEntry":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        this.requireIdleMobileRuntime(sessionId,chatId);
+        const {root}=this.mobileRoot(sessionId,chatId);
+        const entry=this.mobileProjectEntry(root,argumentString(args,"path",1200));
+        this.assertMobileEntrySnapshot(entry,args);
+        const newName=this.mobileEntryName(argumentString(args,"newName",255));
+        if(newName===entry.name)throw new Error("Новое имя совпадает с текущим");
+        const target=resolve(entry.parent,newName);
+        if(!isPathWithinRoot(root,target))throw new Error("Новое имя выходит за пределы проекта");
+        try{lstatSync(target);throw new Error("В этой папке уже есть такой файл или каталог");}
+        catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT")throw error;}
+        const latest=this.mobileProjectEntry(root,entry.path);
+        this.assertMobileEntrySnapshot(latest,args);
+        if(realpathSync.native(latest.parent)!==entry.parent||!isPathWithinRoot(root,entry.parent))throw new Error("Папка изменилась. Обновите список файлов.");
+        try{lstatSync(target);throw new Error("В этой папке уже есть такой файл или каталог");}
+        catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT")throw error;}
+        renameSync(latest.absolute,target);
+        return {from:entry.path,path:relative(root,target).split(sep).join("/"),kind:entry.kind};
+      }
+      case "deleteProjectEntry":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        this.requireIdleMobileRuntime(sessionId,chatId);
+        const {root}=this.mobileRoot(sessionId,chatId);
+        const entry=this.mobileProjectEntry(root,argumentString(args,"path",1200));
+        this.assertMobileEntrySnapshot(entry,args);
+        const latest=this.mobileProjectEntry(root,entry.path);
+        this.assertMobileEntrySnapshot(latest,args);
+        try{
+          if(entry.kind==="directory")rmdirSync(latest.absolute);
+          else unlinkSync(latest.absolute);
+        }catch(error){
+          const code=(error as NodeJS.ErrnoException).code;
+          if(entry.kind==="directory"&&(code==="ENOTEMPTY"||code==="EEXIST"))throw new Error("Удалить можно только пустую папку");
+          if(code==="ENOENT")throw new Error("Файл или папка уже изменились. Обновите список и повторите действие.");
+          throw error;
+        }
+        return {path:entry.path,kind:entry.kind};
+      }
       case "gitStatus":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
         return this.mobileGitStatus(sessionId,chatId);
@@ -1539,6 +1601,28 @@ export class MiniAppAgent {
     const root=realpathSync.native(cwd);
     if(!statSync(root).isDirectory())throw new Error("Папка проекта недоступна");
     return {root,name:thread.name||basename(root)};
+  }
+  private mobileProjectEntry(root:string,rawPath:string):{absolute:string;parent:string;path:string;name:string;kind:"file"|"directory";size:number;mtimeMs:number}{
+    if(!rawPath||isAbsolute(rawPath)||/^[a-z]:/i.test(rawPath)||rawPath.startsWith("\\\\"))throw new Error("Ожидался путь внутри проекта");
+    const parts=rawPath.split(/[\\/]+/).filter(Boolean);
+    if(!parts.length||parts.some(part=>part==="."||part===".."||part.includes(":")||part.includes("\0")))throw new Error("Недопустимый путь внутри проекта");
+    if(parts.some(part=>this.isHiddenMobileFile(part)))throw new Error("Этот путь недоступен в мобильном просмотре");
+    const absolute=this.mobilePath(root,parts.join("/"));
+    const info=lstatSync(absolute);
+    if(info.isSymbolicLink()||(!info.isFile()&&!info.isDirectory()))throw new Error("Можно менять только обычные файлы и папки проекта");
+    const parent=realpathSync.native(dirname(absolute));
+    if(!isPathWithinRoot(root,parent))throw new Error("Путь выходит за пределы проекта");
+    return {absolute,parent,path:relative(root,absolute).split(sep).join("/"),name:basename(absolute),kind:info.isDirectory()?"directory":"file",size:info.isFile()?info.size:0,mtimeMs:info.mtimeMs};
+  }
+  private assertMobileEntrySnapshot(entry:ReturnType<MiniAppAgent["mobileProjectEntry"]>,args:Record<string,unknown>):void{
+    if(args.expectedKind!==entry.kind||typeof args.expectedMtimeMs!=="number"||args.expectedMtimeMs!==entry.mtimeMs||
+      (entry.kind==="file"&&(typeof args.expectedSize!=="number"||args.expectedSize!==entry.size)))throw new Error("Файл или папка изменились после просмотра. Обновите список и повторите действие.");
+  }
+  private mobileEntryName(rawName:string):string{
+    const name=rawName.trim();
+    if(!name||name!==rawName||name==="."||name===".."||/[<>:"/\\|?*\u0000-\u001f]/.test(name)||/[. ]$/.test(name)||
+      /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i.test(name)||this.isHiddenMobileFile(name))throw new Error("Недопустимое имя файла или папки");
+    return name;
   }
   private mobilePath(root:string,rawPath:string):string{
     if(rawPath.length>1200||isAbsolute(rawPath)||/^[a-z]:/i.test(rawPath)||rawPath.startsWith("\\\\"))throw new Error("Ожидался относительный путь внутри проекта");
