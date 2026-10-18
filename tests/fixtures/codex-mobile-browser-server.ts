@@ -25,7 +25,7 @@ const projectTwo = "C:\\fixture\\other-project";
 const screenshotPath = "C:\\fixture\\codex-mobile\\screenshots\\sample.png";
 const fixtureScreenshots = [
   { path: screenshotPath, name: "sample.png", mtimeMs: 1, size: 68 },
-  ...Array.from({ length: 29 }, (_, index) => {
+  ...Array.from({ length: 79 }, (_, index) => {
     const n = index + 2;
     const name = `capture-${String(n).padStart(2, "0")}.png`;
     return { path: `C:\\fixture\\codex-mobile\\screenshots\\${name}`, name, mtimeMs: n, size: 68 };

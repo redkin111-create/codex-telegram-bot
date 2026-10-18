@@ -3,8 +3,9 @@
  *
  * The old Mini App re-scanned only the last 2 MiB of JSONL when asking for a
  * screenshot. Large later tool results dropped the reference, even if the
- * image was still present. This index remembers bounded references while it
- * follows new records. It never sends file data or untrusted tool output.
+ * image was still present. This index reads large rollouts in bounded chunks,
+ * remembers recent references while it follows new records, and never sends
+ * file data or untrusted tool output.
  */
 import { open, realpath, stat } from "node:fs/promises";
 import { basename, extname, isAbsolute, relative, sep } from "node:path";
@@ -19,7 +20,7 @@ export interface ScreenshotRef {
 type Cursor={path:string;cwd:string;offset:number;partial:string;references:string[];images:ScreenshotRef[]};
 const MAX_SCAN=8*1024*1024;
 const MAX_LINE=4*1024*1024;
-const MAX_REFERENCES=64;
+const MAX_REFERENCES=256;
 const MAX_IMAGES=MAX_REFERENCES;
 const MAX_BYTES=3*1024*1024;
 const EXTENSIONS=new Set([".png",".jpg",".jpeg",".webp",".gif"]);
@@ -42,10 +43,7 @@ export class TmaScreenshotIndex {
     try{fileSize=(await stat(jsonl)).size;}catch{return [];}
     let current=this.sessions.get(id);
     if(!current||current.path!==jsonl||current.cwd!==cwd||current.offset>fileSize){
-      const from=Math.max(0,fileSize-MAX_SCAN);
-      current={path:jsonl,cwd,offset:from,partial:"",references:[],images:[]};
-      // If starting mid-line, discard its tail: JSONL records are atomic.
-      if(from>0)current.partial="\0";
+      current={path:jsonl,cwd,offset:0,partial:"",references:[],images:[]};
       this.sessions.delete(id);this.sessions.set(id,current);
       if(this.sessions.size>60)this.sessions.delete(this.sessions.keys().next().value!);
     }

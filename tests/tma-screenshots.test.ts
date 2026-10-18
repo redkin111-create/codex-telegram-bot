@@ -112,3 +112,49 @@ test("screenshot index returns every tracked image when a session has more than 
     assert.equal(images.at(-1)?.name,"capture-30.png");
   }finally{rmSync(dir,{recursive:true,force:true});}
 });
+
+test("screenshot index includes old screenshots before more than 8 MiB of later tool output",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"tma-old-screenshot-window-"));
+  try{
+    const cwd=join(dir,"toy");
+    mkdirSync(cwd);
+    const file=join(dir,"rollout.jsonl");
+    const image=join(cwd,"first-screen.png");
+    writeFileSync(image,screenshot);
+    writeFileSync(file,record(image));
+    for(let n=0;n<3;n++){
+      appendFileSync(file,JSON.stringify({type:"response_item",payload:{type:"function_call_output",
+        output:"X".repeat(3*1024*1024)}})+"\n");
+    }
+    const index=new TmaScreenshotIndex();
+    const images=await index.scan(sid,file,cwd);
+    assert.equal(images.length,1);
+    assert.equal(images[0]?.name,"first-screen.png");
+    const laterImage=join(cwd,"later-screen.png");
+    writeFileSync(laterImage,screenshot);
+    appendFileSync(file,record(laterImage));
+    const later=await index.scan(sid,file,cwd);
+    assert.deepEqual(later.map((image)=>image.name),["first-screen.png","later-screen.png"]);
+  }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+test("screenshot index keeps references beyond the previous 64-image cap",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"tma-many-screens-over-cap-"));
+  try{
+    const cwd=join(dir,"toy");
+    mkdirSync(cwd);
+    const file=join(dir,"rollout.jsonl");
+    const lines:string[]=[];
+    for(let n=1;n<=80;n++){
+      const path=join(cwd,`capture-${String(n).padStart(3,"0")}.png`);
+      writeFileSync(path,screenshot);
+      lines.push(record(path));
+    }
+    writeFileSync(file,lines.join(""));
+    const index=new TmaScreenshotIndex();
+    const images=await index.scan(sid,file,cwd);
+    assert.equal(images.length,80);
+    assert.equal(images[0]?.name,"capture-001.png");
+    assert.equal(images.at(-1)?.name,"capture-080.png");
+  }finally{rmSync(dir,{recursive:true,force:true});}
+});
