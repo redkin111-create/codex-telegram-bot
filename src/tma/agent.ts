@@ -9,7 +9,7 @@ import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "
 import { promisify } from "node:util";
 import type { AcpClient } from "../acp/client.js";
 import { mobileMcpResourceTemplateParameters, resolveMobileMcpResourceTemplate } from "../acp/mobile-mcp.js";
-import { CODEX_PINNED_THREAD_SECTION_ID, CODEX_PINNED_THREAD_SECTION_NAME, type CodexThreadSection, type CodexThreadSummary, type CodexThreadReadState, type CodexProjectSummary, type CodexRateLimitWindow, type CodexThreadGoalStatus, type CodexReviewTarget } from "../acp/codex-protocol.js";
+import { CODEX_PINNED_THREAD_SECTION_ID, CODEX_PINNED_THREAD_SECTION_NAME, type CodexThreadSection, type CodexThreadSummary, type CodexThreadReadState, type CodexProjectSummary, type CodexRateLimitWindow, type CodexThreadGoalStatus, type CodexReviewTarget, type CodexMobileEditableTurn } from "../acp/codex-protocol.js";
 import { REASONING_LEVELS, textPrompt, type ReasoningEffort } from "../app/types.js";
 import type { RuntimeRegistry } from "../bot/registry.js";
 import { isVisibleThreadForChat, threadSourceKind } from "../bot/catalog.js";
@@ -50,6 +50,15 @@ function mobileThreadSection(section?:CodexThreadSection|null){
   return section.id===CODEX_PINNED_THREAD_SECTION_ID
     ? {id:section.id,name:"Закреплённые",builtIn:true}
     : {id:section.id,name:section.name,builtIn:false};
+}
+function mobileEditableTurnSummary(turn:CodexMobileEditableTurn){
+  return {
+    turnId:turn.turnId,
+    text:turn.text,
+    skillNames:turn.skillNames,
+    attachmentCount:turn.attachmentCount,
+    editable:turn.editable,
+  };
 }
 const MOBILE_AUDIO_TYPES:Record<string,{extension:string;kind:string}>={
   "audio/webm":{extension:".webm",kind:"webm"},"audio/ogg":{extension:".ogg",kind:"ogg"},
@@ -597,7 +606,7 @@ export class MiniAppAgent {
         if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
         if(typeof acp.readMobileLatestEditableTurn!=="function")throw new Error("Эта версия Codex не поддерживает редактирование последнего запроса");
         const turn=await acp.readMobileLatestEditableTurn(sessionId);
-        return turn??{editable:false,reason:"Последний запрос Codex не найден"};
+        return turn?mobileEditableTurnSummary(turn):{editable:false,reason:"Последний запрос Codex не найден"};
       }
       case "listEditableTurns":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
@@ -606,7 +615,7 @@ export class MiniAppAgent {
         if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
         if(typeof acp.readMobileEditableTurns!=="function")throw new Error("Эта версия Codex не поддерживает просмотр запросов для редактирования");
         const turns=await acp.readMobileEditableTurns(sessionId);
-        return {latestTurnId:turns[0]?.turnId,turns};
+        return {latestTurnId:turns[0]?.turnId,turns:turns.map(mobileEditableTurnSummary)};
       }
       case "editAndRetry":{
         const turnId=argumentString(args,"turnId",128);
@@ -648,11 +657,13 @@ export class MiniAppAgent {
             this.promptJournal.reserve(key,fingerprint);
             reserved=true;
             dispatched=true;
-            await acp.revertMobileThread!(sessionId,turnId,expectedLatestTurnId);
+            const revertedTurn=await acp.revertMobileThread!(sessionId,turnId,expectedLatestTurnId);
             this.historyCache.delete(sessionId+":chat");
             this.historyCache.delete(sessionId+":tools");
             const input=textPrompt(message);
             input.skillNames=selected.skillNames;
+            input.images=revertedTurn?.resendImages??selected.resendImages??[];
+            input.localImages=revertedTurn?.resendLocalImages??selected.resendLocalImages??[];
             const result=await registry.submitPrompt(chatId,input);
             const answer={result:result.kind==="submitted"?result.outcome:result.kind};
             this.promptJournal.complete(key,answer);

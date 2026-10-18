@@ -217,6 +217,9 @@ export interface CodexMobileEditableTurn {
   skillNames: string[];
   attachmentCount: number;
   editable: boolean;
+  /** Server-only replay data. MiniAppAgent must omit these fields from browser responses. */
+  resendImages?: Array<{ mimeType: string; data: string }>;
+  resendLocalImages?: string[];
 }
 
 // ── turns ────────────────────────────────────────────────────────────────────

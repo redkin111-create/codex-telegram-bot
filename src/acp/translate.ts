@@ -195,6 +195,8 @@ export function toCodexInput(content: ContentBlock[]): CodexUserInput[] {
     if (b.type === "skill") {
       // ACP resolves selected skill names against the thread's native skill inventory.
       continue;
+    } else if (b.type === "image" && typeof b.localPath === "string" && b.localPath) {
+      out.push({ type: "localImage", path: b.localPath });
     } else if (b.type === "image" && typeof b.data === "string" && b.data) {
       const mime = typeof b.mimeType === "string" && b.mimeType ? b.mimeType : "image/png";
       out.push({ type: "image", url: `data:${mime};base64,${b.data}` });

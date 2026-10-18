@@ -16,10 +16,14 @@ export function buildContentBlocks(input: PromptInput, opts: ContentOptions = {}
   for (const img of input.images) {
     blocks.push({ type: "image", data: img.data, mimeType: img.mimeType });
   }
+  for (const localPath of input.localImages ?? []) {
+    blocks.push({ type: "image", localPath });
+  }
 
   let text = input.text.trim();
-  if (!text && input.images.length > 0) {
-    text = input.images.length === 1 ? "Проанализируй приложенное изображение." : "Проанализируй приложенные изображения.";
+  const imageCount = input.images.length + (input.localImages?.length ?? 0);
+  if (!text && imageCount > 0) {
+    text = imageCount === 1 ? "Проанализируй приложенное изображение." : "Проанализируй приложенные изображения.";
   }
   if (input.quotedText?.trim()) {
     const quoted = input.quotedText.trim();
@@ -52,6 +56,7 @@ export function mergeInputs(inputs: PromptInput[]): PromptInput {
       .filter((t) => t.trim().length > 0)
       .join("\n\n"),
     images: inputs.flatMap((i) => i.images),
+    ...(inputs.some((i) => i.localImages?.length) ? { localImages: inputs.flatMap((i) => i.localImages ?? []) } : {}),
     ...(skillNames.length ? { skillNames } : {}),
     replyTo: inputs.find((i) => i.replyTo !== undefined)?.replyTo,
     quotedText: quotes.length > 0 ? [...new Set(quotes)].join("\n\n---\n\n") : undefined,
@@ -59,5 +64,6 @@ export function mergeInputs(inputs: PromptInput[]): PromptInput {
 }
 
 export function imageSummary(input: PromptInput): string {
-  return input.images.length > 0 ? ` (+${input.images.length} image${input.images.length > 1 ? "s" : ""})` : "";
+  const count = input.images.length + (input.localImages?.length ?? 0);
+  return count > 0 ? ` (+${count} image${count > 1 ? "s" : ""})` : "";
 }

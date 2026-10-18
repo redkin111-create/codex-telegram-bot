@@ -200,7 +200,11 @@ export class SessionRuntime {
     return this.queue.length;
   }
   get queuedPrompts(): QueuedPrompt[] {
-    return this.queue.map(({ id, input }) => ({ id, input: { ...input, images: [...input.images] } }));
+    return this.queue.map(({ id, input }) => ({ id, input: {
+      ...input,
+      images: [...input.images],
+      ...(input.localImages ? { localImages: [...input.localImages] } : {}),
+    } }));
   }
   get isQueuePaused(): boolean {
     return this.queuePaused;

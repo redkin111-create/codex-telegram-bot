@@ -128,6 +128,7 @@ let fixtureBackgroundTerminalFailure = false;
 let fixtureLatestTurnId = "11111111-1111-4111-8111-111111111111";
 let fixtureTurnIds = ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", fixtureLatestTurnId];
 let fixtureEditUnavailable = process.env.CODEX_MOBILE_FIXTURE_EDIT_UNAVAILABLE === "1";
+let fixtureEditWithImages = process.env.CODEX_MOBILE_FIXTURE_EDIT_WITH_IMAGES === "1";
 let fixtureEditFailure = false;
 let fixtureTranscriptionFailure = false;
 let fixtureDeleteFailure = false;
@@ -369,16 +370,17 @@ const agent = {
       if (sessionId !== firstSession) throw new Error("Сеанс не найден");
       return fixtureEditUnavailable
         ? { editable: false, reason: "В запросе есть вложение, которое нельзя безопасно восстановить.", attachmentCount: 1 }
-        : { turnId: fixtureLatestTurnId, text: "Проверь экран Codex Mobile и сообщи, что видишь.", skillNames: [], attachmentCount: 0, editable: true };
+        : { turnId: fixtureLatestTurnId, text: "Проверь экран Codex Mobile и сообщи, что видишь.", skillNames: [], attachmentCount: fixtureEditWithImages ? 2 : 0, editable: true };
     }
     if (job.op === "listEditableTurns") {
       if (sessionId !== firstSession) throw new Error("Сеанс не найден");
       const userEntries = (history.get(sessionId) ?? []).filter((entry) => entry.role === "user");
       const turns = fixtureTurnIds.slice(0, userEntries.length).map((turnId, index) => {
         const unavailable = fixtureEditUnavailable && turnId === fixtureLatestTurnId;
+        const hasImages = fixtureEditWithImages && turnId === fixtureLatestTurnId;
         return {
           turnId, text: userEntries[index]?.text ?? "", skillNames: [],
-          attachmentCount: unavailable ? 1 : 0, editable: !unavailable,
+          attachmentCount: unavailable ? 1 : hasImages ? 2 : 0, editable: !unavailable,
           ...(unavailable ? { reason: "Запрос содержит вложение." } : {}),
         };
       }).reverse();

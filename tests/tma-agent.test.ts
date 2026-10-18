@@ -155,6 +155,51 @@ test("mobile edit and retry only reverts the latest owned idle text turn and sub
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile edit keeps image bytes out of browser responses and resubmits owned history images",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-edit-image-"));
+  const sessionId="94949494-9494-4949-8949-949494949494";
+  const png=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j2ioAAAAASUVORK5CYII=","base64");
+  const image={mimeType:"image/png",data:png.toString("base64")};
+  const localImage="C:\\Users\\user\\AppData\\Local\\Codex\\attachments\\screen.png";
+  let latestTurn={turnId:"a1234567-1234-4234-8234-123456789abc",text:"old prompt",skillNames:[],attachmentCount:2,editable:true,resendImages:[image],resendLocalImages:[localImage]};
+  const acp=Object.assign(new EventEmitter(),{
+    isConnected:true,
+    listProjects:async()=>[{id:"project",name:"Fixture",roots:[dir]}],
+    listThreads:async()=>[{id:sessionId,name:"Image edit fixture",cwd:dir,source:"appServer",createdAt:1,updatedAt:2,recencyAt:2}],
+    listAllThreads:async(params?:{archived?:boolean})=>params?.archived?[]:[{id:sessionId,name:"Image edit fixture",cwd:dir,source:"appServer",createdAt:1,updatedAt:2,recencyAt:2}],
+    async readMobileLatestEditableTurn(){return {...latestTurn};},
+    async readMobileEditableTurns(){return [{...latestTurn}];},
+    async revertMobileThread(_threadId:string){const selected={...latestTurn};latestTurn={...latestTurn,turnId:"b1234567-1234-4234-8234-123456789abc"};return selected;},
+    availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],
+    currentModelId:"default",currentModeId:"code",accountState:async()=>({}),
+  }) as unknown as AcpClient;
+  const submitted:Array<{text:string;images?:Array<{mimeType:string;data:string}>;localImages?:string[]}>=[];
+  const runtime={sessionId,isBusy:false,queueLength:0};
+  const registry={
+    get:()=>runtime,
+    controller:()=>({list:()=>[],foreground:()=>({sessionId}),switchTo:async()=>({sessionId})}),
+    runtimeForSession:()=>runtime,
+    async submitPrompt(_userId:number,input:{text:string;images?:Array<{mimeType:string;data:string}>;localImages?:string[]}){submitted.push({text:input.text,...(input.images?.length?{images:input.images}:{}),...(input.localImages?.length?{localImages:input.localImages}:{})});return {kind:"submitted",outcome:{stopReason:"end_turn"}};},
+  } as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101"])} as AppConfig;
+  const owners=new TelegramSessionRegistry(dir);
+  owners.recordMobile(sessionId,101,dir,"Fixture");
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
+    const latest=await agent.executeMobile({op:"latestEditableTurn",userId:101,args:{sessionId}});
+    const turns=await agent.executeMobile({op:"listEditableTurns",userId:101,args:{sessionId}});
+    assert.equal(JSON.stringify(latest).includes(image.data),false);
+    assert.equal(JSON.stringify(turns).includes(image.data),false);
+    assert.equal(JSON.stringify(latest).includes(localImage),false);
+    assert.equal(JSON.stringify(turns).includes(localImage),false);
+    await agent.executeMobile({op:"editAndRetry",userId:101,args:{
+      sessionId,turnId:latestTurn.turnId,expectedLatestTurnId:latestTurn.turnId,text:"updated prompt",requestId:"mobile-image-edit-1234",
+    }});
+    assert.deepEqual(submitted,[{text:"updated prompt",images:[image],localImages:[localImage]}]);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile file attachments enter the shared runtime prompt with safe labels and cleanup paths",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-file-prompt-"));
   const project=join(dir,"project");

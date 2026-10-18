@@ -1,7 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AcpClient } from "../src/acp/client.js";
+import { toCodexInput } from "../src/acp/translate.js";
 import { buildContentBlocks, mergeInputs } from "../src/bot/prompt-content.js";
+
+test("history image paths survive shared prompt construction and return as native Codex image inputs", () => {
+  const localImage = "C:\\Users\\user\\AppData\\Local\\Codex\\attachments\\screen.png";
+  const merged = mergeInputs([
+    { text: "Review this image", images: [], localImages: [localImage] },
+  ]);
+  const content = buildContentBlocks(merged);
+  assert.deepEqual(content, [
+    { type: "image", localPath: localImage },
+    { type: "text", text: "Review this image" },
+  ]);
+  assert.deepEqual(toCodexInput(content), [
+    { type: "localImage", path: localImage },
+    { type: "text", text: "Review this image" },
+  ]);
+});
 
 test("selected skill names survive queued prompt merging without storing local paths", () => {
   const merged = mergeInputs([

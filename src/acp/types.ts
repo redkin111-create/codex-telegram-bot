@@ -35,6 +35,8 @@ export interface ContentBlock {
   text?: string;
   data?: string;
   mimeType?: string;
+  /** Host-only image path recovered from Codex history; never supplied by the browser. */
+  localPath?: string;
   /** Internal selected skill name. ACP resolves its path from Codex, never from browser input. */
   name?: string;
   [k: string]: unknown;

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { AcpClient } from "../src/acp/client.js";
 
@@ -55,7 +58,7 @@ test("mobile edit refuses a changed turn and unsupported attachments before reve
     methods.push(method);
     if (method === "thread/turns/list") return {
       data: [{ id: "turn-newer", status: "completed", items: [{ type: "userMessage", content: [
-        { type: "text", text: "attached prompt" }, { type: "localImage", path: "C:\\private\\photo.png" },
+        { type: "text", text: "attached prompt" }, { type: "image", url: "https://example.test/photo.png" },
       ] }] }],
     };
     return { thread: { id: "owned-thread" } };
@@ -97,7 +100,7 @@ test("mobile edit lists recent user turns and revalidates an earlier text-only t
       { type: "text", text: "request to revise" }, { type: "skill", name: "fixture-review", path: "C:\\private\\SKILL.md" },
     ] }] },
     { id: "turn-with-image", status: "completed", items: [{ type: "userMessage", content: [
-      { type: "text", text: "image request" }, { type: "localImage", path: "C:\\private\\photo.png" },
+      { type: "text", text: "image request" }, { type: "image", url: "https://example.test/photo.png" },
     ] }] },
   ];
   const internal = client as unknown as { request: (method: string, params: unknown) => Promise<unknown> };
@@ -129,4 +132,69 @@ test("mobile edit lists recent user turns and revalidates an earlier text-only t
     method: "thread/revert", params: { threadId: "owned-thread", beforeTurnId: "turn-older" },
   });
   client.stop();
+});
+
+test("mobile edit keeps validated inline and local images inside the server and returns them after a confirmed revert", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-mobile-edit-image-"));
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j2ioAAAAASUVORK5CYII=", "base64");
+  const imageUrl = `data:image/png;base64,${png.toString("base64")}`;
+  const localImage = join(dir, "photo.png");
+  writeFileSync(localImage, png);
+  const client = new AcpClient({ codexCliPath: "codex", workspace: dir, trustAllTools: false });
+  const internal = client as unknown as { request: (method: string, params: unknown) => Promise<unknown> };
+  internal.request = async (method) => {
+    if (method === "thread/turns/list") return { data: [{
+      id: "turn-image-1", status: "completed", items: [{ type: "userMessage", content: [
+        { type: "text", text: "Check this screenshot" }, { type: "image", url: imageUrl },
+        { type: "localImage", path: localImage },
+      ] }],
+    }] };
+    if (method === "thread/revert") return { thread: { id: "owned-thread" } };
+    throw new Error(`Unexpected ACP method: ${method}`);
+  };
+  const api = client as unknown as {
+    readMobileEditableTurns: (threadId: string) => Promise<Array<{
+      turnId: string; text: string; attachmentCount: number; editable: boolean;
+      resendImages?: Array<{ mimeType: string; data: string }>;
+      resendLocalImages?: string[];
+    }>>;
+    revertMobileThread: (threadId: string, beforeTurnId: string, expectedLatestTurnId?: string) => Promise<{
+      resendImages?: Array<{ mimeType: string; data: string }>;
+      resendLocalImages?: string[];
+    }>;
+  };
+  const [turn] = await api.readMobileEditableTurns("owned-thread");
+  assert.equal(turn?.editable, true);
+  assert.equal(turn?.attachmentCount, 2);
+  assert.equal(turn?.resendImages, undefined);
+  assert.equal(turn?.resendLocalImages, undefined);
+  const restored = await api.revertMobileThread("owned-thread", "turn-image-1", "turn-image-1");
+  assert.deepEqual(restored.resendImages, [{ mimeType: "image/png", data: png.toString("base64") }]);
+  assert.deepEqual(restored.resendLocalImages, [localImage]);
+  client.stop();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("mobile edit checks local image availability before truncating history", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-mobile-edit-missing-image-"));
+  const missingImage = join(dir, "missing.png");
+  const client = new AcpClient({ codexCliPath: "codex", workspace: dir, trustAllTools: false });
+  const calls: string[] = [];
+  const internal = client as unknown as { request: (method: string, params: unknown) => Promise<unknown> };
+  internal.request = async (method) => {
+    calls.push(method);
+    if (method === "thread/turns/list") return { data: [{
+      id: "turn-stale-image", status: "completed", items: [{ type: "userMessage", content: [
+        { type: "text", text: "Review this image" }, { type: "localImage", path: missingImage },
+      ] }],
+    }] };
+    return { thread: { id: "owned-thread" } };
+  };
+  try {
+    await assert.rejects(client.revertMobileThread("owned-thread", "turn-stale-image", "turn-stale-image"), /изображение недоступно/i);
+    assert.deepEqual(calls, ["thread/turns/list"]);
+  } finally {
+    client.stop();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

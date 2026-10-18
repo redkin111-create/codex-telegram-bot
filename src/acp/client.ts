@@ -11,6 +11,8 @@
 import { type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { statSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { codexLaunchInfo, codexSpawn } from "../app/codex-cli.js";
 import { createLogger } from "../logger.js";
 import { killPid } from "../sessions/process.js";
@@ -79,7 +81,23 @@ import type {
 
 const log = createLogger("codex:client");
 
-function parseMobileEditableTurn(value: unknown): CodexMobileEditableTurn | undefined {
+function parseMobileEditableImage(url: unknown): { mimeType: string; data: string } | undefined {
+  if (typeof url !== "string") return undefined;
+  const match = /^data:(image\/(?:jpeg|png|webp));base64,((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?)$/i.exec(url);
+  if (!match) return undefined;
+  const mimeType = match[1]!.toLowerCase();
+  const data = match[2]!;
+  if (data.length < 16 || data.length > Math.ceil((1536 * 1024) / 3) * 4 + 4) return undefined;
+  const bytes = Buffer.from(data, "base64");
+  if (bytes.length < 16 || bytes.length > 1536 * 1024 || bytes.toString("base64") !== data) return undefined;
+  const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  const png = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  const webp = bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP";
+  if (!(mimeType === "image/jpeg" && jpeg || mimeType === "image/png" && png || mimeType === "image/webp" && webp)) return undefined;
+  return { mimeType, data };
+}
+
+function parseMobileEditableTurn(value: unknown, retainReplayData = false): CodexMobileEditableTurn | undefined {
   if (!value || typeof value !== "object") return undefined;
   const record = value as Record<string, unknown>;
   if (typeof record.id !== "string" || !/^[a-z0-9_-]{8,128}$/i.test(record.id) || !Array.isArray(record.items)) return undefined;
@@ -88,13 +106,31 @@ function parseMobileEditableTurn(value: unknown): CodexMobileEditableTurn | unde
   if (userMessages.length !== 1 || !Array.isArray(userMessages[0]!.content)) return undefined;
   const skillNames: string[] = [];
   const text: string[] = [];
+  const resendImages: Array<{ mimeType: string; data: string }> = [];
+  const resendLocalImages: string[] = [];
   let attachmentCount = 0;
   let hasUnsupportedContent = false;
   for (const value of userMessages[0]!.content) {
     if (!value || typeof value !== "object") { hasUnsupportedContent = true; continue; }
     const item = value as Record<string, unknown>;
-    if (item.type === "text" && typeof item.text === "string") text.push(item.text);
+    if (item.type === "text" && typeof item.text === "string") {
+      if (item.text_elements !== undefined && (!Array.isArray(item.text_elements) || item.text_elements.length > 0)) hasUnsupportedContent = true;
+      else text.push(item.text);
+    }
     else if (item.type === "skill" && typeof item.name === "string" && /^[a-z0-9][a-z0-9._-]{0,79}$/i.test(item.name)) skillNames.push(item.name);
+    else if (item.type === "image") {
+      attachmentCount++;
+      const image = parseMobileEditableImage(item.url);
+      if (!image || resendImages.length + resendLocalImages.length >= 5) hasUnsupportedContent = true;
+      else if (retainReplayData) resendImages.push(image);
+    }
+    else if (item.type === "localImage") {
+      attachmentCount++;
+      const path = item.path;
+      if (typeof path !== "string" || !path || path.length > 32768 || /[\u0000-\u001f\u007f]/.test(path) || !isAbsolute(path) || resendImages.length + resendLocalImages.length >= 5) {
+        hasUnsupportedContent = true;
+      } else if (retainReplayData) resendLocalImages.push(path);
+    }
     else { attachmentCount++; hasUnsupportedContent = true; }
   }
   const joinedText = text.join("\n").trim();
@@ -105,6 +141,8 @@ function parseMobileEditableTurn(value: unknown): CodexMobileEditableTurn | unde
     text: joinedText,
     skillNames: [...new Set(skillNames)],
     attachmentCount,
+    ...(resendImages.length ? { resendImages } : {}),
+    ...(resendLocalImages.length ? { resendLocalImages } : {}),
     editable: Boolean(joinedText) && !hasUnsupportedContent && terminalTurn,
   };
 }
@@ -426,23 +464,28 @@ export class AcpClient extends EventEmitter {
 
   /** Read a bounded list of recent user turns, newest first, for safe mobile editing. */
   async readMobileEditableTurns(threadId: string): Promise<CodexMobileEditableTurn[]> {
+    return this.readMobileEditableTurnsInternal(threadId);
+  }
+
+  private async readMobileEditableTurnsInternal(threadId: string, retainTurnId?: string): Promise<CodexMobileEditableTurn[]> {
     if (!/^[a-z0-9_-]{8,128}$/i.test(threadId)) throw new Error("Неверный сеанс Codex для редактирования запроса");
     const response = await this.request("thread/turns/list", {
       threadId, limit: 20, sortDirection: "desc", itemsView: "full",
     }) as { data?: unknown };
     if (!Array.isArray(response?.data)) throw new AcpError("Codex вернул неверный список запросов");
     return response.data.flatMap((turn) => {
-      const parsed = parseMobileEditableTurn(turn);
+      const record = turn && typeof turn === "object" ? turn as Record<string, unknown> : undefined;
+      const parsed = parseMobileEditableTurn(turn, record?.id === retainTurnId);
       return parsed ? [parsed] : [];
     });
   }
 
   /** Revalidate the selected turn and latest-turn snapshot before changing history. */
-  async revertMobileThread(threadId: string, beforeTurnId: string, expectedLatestTurnId?: string): Promise<void> {
+  async revertMobileThread(threadId: string, beforeTurnId: string, expectedLatestTurnId?: string): Promise<CodexMobileEditableTurn> {
     if (!/^[a-z0-9_-]{8,128}$/i.test(threadId) || !/^[a-z0-9_-]{8,128}$/i.test(beforeTurnId)) {
       throw new Error("Неверный запрос для редактирования истории Codex");
     }
-    const turns = await this.readMobileEditableTurns(threadId);
+    const turns = await this.readMobileEditableTurnsInternal(threadId, beforeTurnId);
     const latestTurnId = turns[0]?.turnId;
     if (!latestTurnId || (expectedLatestTurnId && latestTurnId !== expectedLatestTurnId)) {
       throw new AcpError("История Codex изменилась. Обновите список запросов перед редактированием");
@@ -450,10 +493,18 @@ export class AcpClient extends EventEmitter {
     const selected = turns.find((turn) => turn.turnId === beforeTurnId);
     if (!selected) throw new AcpError("Выбранный запрос больше не найден. Обновите список запросов перед редактированием");
     if (!selected.editable) throw new AcpError("Выбранный запрос нельзя безопасно редактировать с телефона");
+    for (const path of selected.resendLocalImages ?? []) {
+      try {
+        if (!statSync(path).isFile()) throw new Error("not a file");
+      } catch {
+        throw new AcpError("Исходное изображение недоступно. История не изменена; восстановите вложение в Codex Desktop и повторите попытку");
+      }
+    }
     const result = await this.request("thread/revert", { threadId, beforeTurnId }) as {
       thread?: { id?: unknown };
     };
     if (result?.thread?.id !== threadId) throw new AcpError("Codex не подтвердил изменение истории сеанса");
+    return selected;
   }
 
   /** Read only the MCP connections already associated with one Codex thread. */
