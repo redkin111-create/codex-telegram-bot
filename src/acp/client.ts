@@ -156,6 +156,12 @@ export interface SessionMetadata {
   credits?: number;
 }
 
+export interface CodexDeviceCodeLogin {
+  loginId: string;
+  verificationUrl: string;
+  userCode: string;
+}
+
 // Re-exported so existing importers of these from "../acp/client.js" keep working.
 export { AcpError, isAccountExhaustedError, isContextExhaustedError, isTransientAcpError };
 
@@ -742,6 +748,42 @@ export class AcpClient extends EventEmitter {
       rateLimits: l?.rateLimits,
       rateLimitsByLimitId: l?.rateLimitsByLimitId ?? undefined,
     };
+  }
+
+  /** Start Codex's native ChatGPT device-code sign-in without exposing tokens to the caller. */
+  async startChatgptDeviceCodeLogin(): Promise<CodexDeviceCodeLogin> {
+    const response = await this.request("account/login/start", { type: "chatgptDeviceCode" }) as Record<string, unknown>;
+    const loginId = typeof response?.loginId === "string" ? response.loginId : "";
+    const verificationUrl = typeof response?.verificationUrl === "string" ? response.verificationUrl : "";
+    const userCode = typeof response?.userCode === "string" ? response.userCode : "";
+    const validLoginId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(loginId);
+    const cancelInvalidLogin = async () => {
+      if (validLoginId) await this.request("account/login/cancel", { loginId }).catch(() => undefined);
+    };
+    if (response?.type !== "chatgptDeviceCode" || !validLoginId) {
+      await cancelInvalidLogin();
+      throw new Error("Codex вернул неверный ответ для входа по коду");
+    }
+    let url: URL;
+    try { url = new URL(verificationUrl); }
+    catch { await cancelInvalidLogin(); throw new Error("Codex вернул неверную ссылку входа"); }
+    if (url.protocol !== "https:" || url.hostname !== "auth.openai.com" || url.pathname !== "/codex/device" || url.username || url.password || url.search || url.hash) {
+      await cancelInvalidLogin();
+      throw new Error("Codex вернул небезопасную ссылку входа");
+    }
+    if (!/^[A-Z0-9-]{4,32}$/.test(userCode)) {
+      await cancelInvalidLogin();
+      throw new Error("Codex вернул неверный одноразовый код");
+    }
+    return { loginId, verificationUrl: url.toString(), userCode };
+  }
+
+  /** Cancel only a login that this client started and still tracks locally. */
+  async cancelAccountLogin(loginId: string): Promise<void> {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(loginId)) {
+      throw new Error("Неверный ID входа Codex");
+    }
+    await this.request("account/login/cancel", { loginId });
   }
 
   /** Populate the model catalogue via `model/list` (best-effort). */

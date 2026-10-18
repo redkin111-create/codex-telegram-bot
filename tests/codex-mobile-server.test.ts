@@ -44,11 +44,13 @@ async function startFixture(extensions: Record<string, unknown> = {}) {
   const accountCalls: Array<{ ownerId: number; action?: unknown }> = [];
   let activeAccount = "account-personal-1";
   let autoRotate = false;
+  let deviceLoginPending = false;
   const accountController = {
     async snapshot(ownerId: number) {
       accountCalls.push({ ownerId });
       if (ownerId !== 101) throw new Error("Доступ к аккаунтам запрещён");
       return { loggedIn: true, activeAccountId: activeAccount, activeLabel: activeAccount, autoRotate,
+        ...(deviceLoginPending ? { deviceLogin: { status: "pending", startedAt: "2026-10-18T00:00:00.000Z", verificationUrl: "https://auth.openai.com/codex/device", userCode: "ABCD-1234" } } : {}),
         accounts: [{ id: "account-personal-1", label: "Личный", savedAt: "2026-10-18T00:00:00.000Z", active: activeAccount === "account-personal-1" },
           { id: "account-work-001", label: "Работа", savedAt: "2026-10-17T00:00:00.000Z", active: activeAccount === "account-work-001" }] };
     },
@@ -58,6 +60,7 @@ async function startFixture(extensions: Record<string, unknown> = {}) {
       const body = action as { action?: string; id?: string; label?: string; enabled?: boolean };
       if (body.action === "switch") activeAccount = body.id ?? activeAccount;
       if (body.action === "setAutoRotate") autoRotate = body.enabled === true;
+      if (body.action === "startDeviceLogin") deviceLoginPending = true;
       return { snapshot: await accountController.snapshot(ownerId), message: "Действие аккаунта выполнено" };
     },
   } as unknown as MobileAccountController;
@@ -235,6 +238,25 @@ test("account API requires a paired device, Origin and CSRF and delegates only t
     assert.equal(changed.status, 200);
     assert.equal(f.accountCalls.at(-1)?.ownerId, 101);
     assert.equal((await changed.json() as { snapshot: { activeAccountId: string } }).snapshot.activeAccountId, "account-work-001");
+
+    const deviceLoginBody = JSON.stringify({ action: "startDeviceLogin" });
+    const beforeDeviceLogin = f.accountCalls.filter((call) => call.action !== undefined).length;
+    assert.equal((await fetch(f.origin + "/api/accounts", {
+      method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: deviceLoginBody,
+    })).status, 401);
+    assert.equal((await fetch(f.origin + "/api/accounts", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: deviceLoginBody,
+    })).status, 403);
+    assert.equal((await fetch(f.origin + "/api/accounts", {
+      method: "POST", headers: { origin: "https://attacker.invalid", cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: deviceLoginBody,
+    })).status, 403);
+    assert.equal(f.accountCalls.filter((call) => call.action !== undefined).length, beforeDeviceLogin);
+    const deviceLogin = await fetch(f.origin + "/api/accounts", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: deviceLoginBody,
+    });
+    assert.equal(deviceLogin.status, 200);
+    assert.equal(f.accountCalls.some((call) => call.ownerId === 101 && (call.action as { action?: string } | undefined)?.action === "startDeviceLogin"), true);
+    assert.equal((await deviceLogin.json() as { snapshot: { deviceLogin: { status: string } } }).snapshot.deviceLogin.status, "pending");
   } finally { await cleanup(f.server, f.dataDir); }
 });
 

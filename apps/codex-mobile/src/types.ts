@@ -23,6 +23,12 @@ export interface MobileAccountsSnapshot {
   activeAccountType?: string;
   autoRotate: boolean;
   accounts: MobileAccount[];
+  deviceLogin?: {
+    status: "starting" | "pending" | "completed" | "failed" | "cancelled";
+    startedAt: string;
+    verificationUrl?: string;
+    userCode?: string;
+  };
 }
 
 export type MobileAccountAction =
@@ -30,7 +36,9 @@ export type MobileAccountAction =
   | { action: "rename"; id: string; label: string }
   | { action: "forget"; id: string }
   | { action: "setAutoRotate"; enabled: boolean }
-  | { action: "switch"; id: string };
+  | { action: "switch"; id: string }
+  | { action: "startDeviceLogin" }
+  | { action: "cancelDeviceLogin" };
 
 export interface MobileProject { path: string; name: string; }
 

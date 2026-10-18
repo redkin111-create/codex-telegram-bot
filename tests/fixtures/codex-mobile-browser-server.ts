@@ -932,6 +932,7 @@ const mobileApprovals = new MobileApprovalBroker(
 const mobileElicitations = new MobileElicitationBroker(feed as unknown as TmaLiveFeed, fixtureRegistry, new Set([String(ownerId)]));
 let fixtureAccountActive = "fixture-personal";
 let fixtureAccountAutoRotate = false;
+let fixtureDeviceLogin: { status: "pending" | "completed" | "failed" | "cancelled"; startedAt: string; verificationUrl?: string; userCode?: string } | undefined;
 const fixtureAccounts = [
   { id: "fixture-personal", label: "Fixture личный", email: "personal@example.test", accountType: "Plus", savedAt: "2026-10-18T00:00:00.000Z" },
   { id: "fixture-work", label: "Fixture рабочий", email: "work@example.test", accountType: "Team", savedAt: "2026-10-17T00:00:00.000Z" },
@@ -945,6 +946,7 @@ const mobileAccounts = {
       activeLabel: fixtureAccounts.find((account) => account.id === fixtureAccountActive)?.email ?? "Fixture личный",
       activeAccountType: fixtureAccounts.find((account) => account.id === fixtureAccountActive)?.accountType ?? "Plus",
       autoRotate: fixtureAccountAutoRotate,
+      ...(fixtureDeviceLogin ? { deviceLogin: { ...fixtureDeviceLogin } } : {}),
       accounts: fixtureAccounts.map((account) => ({ ...account, active: account.id === fixtureAccountActive })),
     };
   },
@@ -953,6 +955,15 @@ const mobileAccounts = {
     const body = value as { action?: string; id?: string; label?: string; enabled?: boolean };
     const target = fixtureAccounts.find((account) => account.id === body.id);
     if (body.action === "saveCurrent") return { snapshot: await this.snapshot(userId), message: "Текущий тестовый аккаунт сохранён" };
+    if (body.action === "startDeviceLogin") {
+      fixtureDeviceLogin = { status: "pending", startedAt: new Date().toISOString(), verificationUrl: "https://auth.openai.com/codex/device", userCode: "ABCD-1234" };
+      return { snapshot: await this.snapshot(userId), message: "Тестовый одноразовый код создан" };
+    }
+    if (body.action === "cancelDeviceLogin") {
+      if (fixtureDeviceLogin?.status !== "pending") throw new Error("Нет ожидающего тестового входа");
+      fixtureDeviceLogin = { status: "cancelled", startedAt: fixtureDeviceLogin.startedAt };
+      return { snapshot: await this.snapshot(userId), message: "Тестовый вход отменён" };
+    }
     if (body.action === "rename" && target) target.label = String(body.label ?? "");
     else if (body.action === "forget" && target) fixtureAccounts.splice(fixtureAccounts.indexOf(target), 1);
     else if (body.action === "setAutoRotate") fixtureAccountAutoRotate = body.enabled === true;
@@ -1085,6 +1096,13 @@ process.stdin.on("data", (chunk: string) => {
       } else if (command.command === "voiceError") {
         feed.publish(selected, { kind: "activity", label: "Ошибка голосового соединения Codex" });
         process.stdout.write("Fixture realtime voice failed remotely.\n");
+      } else if (command.command === "deviceLoginSuccess" || command.command === "deviceLoginFailure") {
+        if (fixtureDeviceLogin?.status !== "pending") throw new Error("No fake device-code login is pending");
+        fixtureDeviceLogin = {
+          status: command.command === "deviceLoginSuccess" ? "completed" : "failed",
+          startedAt: fixtureDeviceLogin.startedAt,
+        };
+        process.stdout.write(command.command === "deviceLoginSuccess" ? "Fixture device-code login completed.\n" : "Fixture device-code login failed.\n");
       } else if (command.command === "planUpdated") {
         feed.publish(selected, { kind: "plan", turnId: "fixture-turn", explanation: "Изолированная проверка плана",
           plan: [
