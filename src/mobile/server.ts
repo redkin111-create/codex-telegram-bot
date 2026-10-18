@@ -432,6 +432,22 @@ export function createMobileServer(options: MobileServerOptions): Server {
       } catch (error) { json(res, 502, { error: safeError(error) }); }
       return;
     }
+    if (path === "/api/git/conflict-stages" && method === "GET") {
+      const sessionId = url.searchParams.get("sessionId") ?? "";
+      const filePath = url.searchParams.get("path") ?? "";
+      if (!safeSessionId(sessionId) || !filePath || filePath.length > 1200 ||
+          !await options.agent.canReadSession(sessionId, device.ownerId)) {
+        json(res, 403, { error: "Доступ к конфликту Git запрещён" }); return;
+      }
+      if (!options.agent.executeMobile) { json(res, 503, { error: "Стадии Git-конфликта недоступны" }); return; }
+      try {
+        const result = await options.agent.executeMobile({
+          op: "gitConflictStages", userId: device.ownerId, args: { sessionId, path: filePath },
+        });
+        json(res, 200, result);
+      } catch (error) { json(res, 502, { error: safeError(error) }); }
+      return;
+    }
     const history = /^\/api\/history\/([^/]+)$/.exec(path);
     if (history && method === "GET") {
       const sessionId = decodeURIComponent(history[1]!);

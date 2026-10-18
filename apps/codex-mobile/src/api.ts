@@ -1,5 +1,5 @@
 import type {
-  MobileAccountAction, MobileAccountsSnapshot, MobileActivity, MobileApproval, MobileAttachment, MobileCapabilities, MobileDevice, MobileFile, MobileFileListing, MobileGitDiff, MobileGitStatus, MobileHistory, MobileOperation, MobileSnapshot,
+  MobileAccountAction, MobileAccountsSnapshot, MobileActivity, MobileApproval, MobileAttachment, MobileCapabilities, MobileDevice, MobileFile, MobileFileListing, MobileGitConflictStages, MobileGitDiff, MobileGitStatus, MobileHistory, MobileOperation, MobileSnapshot,
 } from "./types.js";
 
 export class MobileApiError extends Error {
@@ -79,6 +79,11 @@ export function readGitDiff(sessionId: string, path?: string, previousPath?: str
   if (path !== undefined) query.set("path", path);
   if (previousPath !== undefined) query.set("previousPath", previousPath);
   return jsonRequest<MobileGitDiff>(`/api/git/diff?${query}`);
+}
+
+export function readGitConflictStages(sessionId: string, path: string) {
+  const query = new URLSearchParams({ sessionId, path });
+  return jsonRequest<MobileGitConflictStages>(`/api/git/conflict-stages?${query}`);
 }
 
 export function resolveApproval(id: string, sessionId: string, optionId: string, csrfToken: string) {

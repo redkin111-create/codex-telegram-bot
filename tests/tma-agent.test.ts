@@ -1477,6 +1477,38 @@ test("mobile Git view reads bounded branch status and safe staged and unstaged d
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile conflict-stage reads return bounded UTF-8 base, ours and theirs only for an owned unmerged path",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-conflict-stages-"));
+  const project=join(dir,"repo");mkdirSync(project,{recursive:true});
+  const git=(...args:string[])=>execFileSync("git",["-C",project,...args],{encoding:"utf8",windowsHide:true});
+  const sessionId="31313131-3131-4131-8131-313131313131";
+  git("init","-q","-b","main");
+  git("config","user.name","Mobile Fixture");git("config","user.email","mobile-fixture@example.invalid");
+  mkdirSync(join(project,"src"));writeFileSync(join(project,"src","conflict.ts"),"export const value = 'base';\n");
+  git("add","src/conflict.ts");git("commit","-m","base");
+  git("switch","-q","-c","theirs");writeFileSync(join(project,"src","conflict.ts"),"export const value = 'theirs';\n");git("commit","-am","theirs");
+  git("switch","-q","main");writeFileSync(join(project,"src","conflict.ts"),"export const value = 'ours';\n");git("commit","-am","ours");
+  try{git("merge","theirs");}catch{/* Expected: both branches changed the same line. */}
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"repo",roots:[project]}],
+    listThreads:async(params?:{archived?:boolean})=>params?.archived?[]:[{id:sessionId,name:"Conflict fixture",cwd:project,source:"cli",recencyAt:2}],
+    availableModels:[],
+  }) as unknown as AcpClient;
+  const runtime={sessionId,isBusy:false};
+  const registry={controller:()=>({list:()=>[]}),get:()=>runtime,runtimeForSession:()=>runtime} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
+    const stages=await agent.executeMobile({op:"gitConflictStages" as never,userId:101,args:{sessionId,path:"src/conflict.ts"}} as never) as {path:string;base:string;ours:string;theirs:string};
+    assert.deepEqual(stages,{project:"Conflict fixture",path:"src/conflict.ts",base:"export const value = 'base';\n",ours:"export const value = 'ours';\n",theirs:"export const value = 'theirs';\n"});
+    await assert.rejects(agent.executeMobile({op:"gitConflictStages" as never,userId:101,args:{sessionId:"99999999-9999-4999-8999-999999999999",path:"src/conflict.ts"}} as never),/Доступ к сеансу запрещён/);
+    await assert.rejects(agent.executeMobile({op:"gitConflictStages" as never,userId:101,args:{sessionId,path:"..\\outside.txt"}} as never),/Недопустимый путь Git/);
+    git("add","src/conflict.ts");
+    await assert.rejects(agent.executeMobile({op:"gitConflictStages" as never,userId:101,args:{sessionId,path:"src/conflict.ts"}} as never),/не находится в состоянии конфликта/i);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile Git lists fetched remote branches and tracks only a listed remote ref",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-remote-branch-"));
   const project=join(dir,"repo"),source=join(dir,"source"),remote=join(dir,"origin.git");

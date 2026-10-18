@@ -1055,6 +1055,30 @@ test("project file reads and writes use the authorized session and write CSRF ch
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
+test("Git conflict-stage reads require a paired device and an owned session", async () => {
+  const f = await startFixture();
+  try {
+    const path = encodeURIComponent("src/conflict.ts");
+    const unauthenticated = await fetch(f.origin + `/api/git/conflict-stages?sessionId=${allowedSession}&path=${path}`);
+    assert.equal(unauthenticated.status, 401);
+    assert.equal(f.calls.length, 0);
+
+    const login = await pair(f.origin, f.auth);
+    const stages = await fetch(f.origin + `/api/git/conflict-stages?sessionId=${allowedSession}&path=${path}`, {
+      headers: { origin: f.origin, cookie: login.sessionCookie },
+    });
+    assert.equal(stages.status, 200);
+    assert.equal((await stages.json() as { op: string }).op, "gitConflictStages");
+    assert.deepEqual(f.calls.at(-1), { op: "gitConflictStages", userId: 101, args: { sessionId: allowedSession, path: "src/conflict.ts" } });
+
+    const foreign = await fetch(f.origin + `/api/git/conflict-stages?sessionId=${foreignSession}&path=${path}`, {
+      headers: { origin: f.origin, cookie: login.sessionCookie },
+    });
+    assert.equal(foreign.status, 403);
+    assert.equal(f.calls.length, 1);
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
 test("Git status and diffs are exposed only for the paired owner's session", async () => {
   const f = await startFixture();
   try {

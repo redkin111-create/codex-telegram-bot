@@ -29,6 +29,26 @@
 - Codex disconnects, timeouts and partial turns remain visible as errors/unknown status.
 - Untrusted filenames, Markdown, diffs and tool output remain inert at mobile widths.
 
+## Parity acceptance
+
+- The capability matrix in `docs/CODEX_MOBILE.md` is the source of truth. A
+  Desktop capability is not counted as implemented until its server operation
+  delegates to the existing Codex runtime, checks the signed-in device and
+  owner/resource scope, has an automated test, and its mobile behavior has been
+  exercised with Browser skill against an isolated fixture.
+- The phone is an additional client for the one `AcpClient` and
+  `RuntimeRegistry` owned by the existing process. Never start another Codex
+  runtime or copy business logic out of `MiniAppAgent`/`TmaLiveFeed`.
+- Every API call and each SSE reconnect/event delivery checks the current
+  device and resource authorization. State-changing requests also validate the
+  configured browser Origin and CSRF token. Markdown, tool output, diffs and
+  screenshots are displayed as inert data.
+- “Статус неизвестен” is the honest state whenever Codex does not confirm an
+  outcome. Do not infer completion from a disconnect or missing event.
+- This branch remains local-only: no Tailscale Serve/Funnel changes, no
+  deployment, no listener start on the user's laptop, and no changes to the
+  Telegram bot, port 3301, its autostart or existing sessions.
+
 ## Tasks
 
 ### Task 1: Pairing and device sessions
@@ -54,7 +74,7 @@
 ### Task 4: Coding workflow and integrations
 
 - Add complete work-context selection (host, workspace, branch, worktree and environment setup), steering, richer attachments, side chats, plans/goals, compact and pinning where existing APIs expose them. Isolated worktree creation now opens a thread through the shared ACP runtime. Steering, goals, manual compact, and guarded edit/retry for the latest idle text-only turn are implemented; native pin/unpin now uses Codex's built-in Pinned section, and section creation, rename, deletion, filtering and membership changes use the shared ACP runtime. Snapshot now detects when the running Codex build lacks the section API and disables these controls instead of inventing a pinned section. Broader compatibility checks against installed Desktop versions remain open.
-- Finish file edit edge cases and add review comments and conflict resolution through existing runtime interfaces. Git now has guarded per-path stage/unstage, staged commit, local branch listing, create-branch/existing-branch switching, tracking an already-fetched branch, confirmed fetch from a configured HTTPS/SSH/local remote, confirmed push of only the current branch, isolated worktree creation and path-scoped diff review including rename paths. Interactive PTY input/resize/stop, same-shell reattachment, and listing/stopping Codex background processes with thread-scoped ownership checks are implemented.
+- Finish file edit edge cases and add review comments and conflict resolution through existing runtime interfaces. Git now has guarded per-path stage/unstage, staged commit, local branch listing, create-branch/existing-branch switching, tracking an already-fetched branch, confirmed fetch from a configured HTTPS/SSH/local remote, confirmed push of only the current branch, isolated worktree creation and path-scoped diff review including rename paths. Text conflicts can read bounded base/ours/theirs Git stages for selection in the inert editor; side-by-side comparison and binary/symlink handling remain open. Interactive PTY input/resize/stop, same-shell reattachment, and listing/stopping Codex background processes with thread-scoped ownership checks are implemented.
 - Add models/modes/reasoning, safe skills/MCP/subagent inventories, quota display, plugin/app catalogs, and confirmed remote-plugin install/removal. Plugin enable/disable, arbitrary marketplaces, full provider OAuth, saved-account management, tasks and voice remain open.
 - Keep changes allowlisted and require confirmation for destructive or permission-changing actions.
 - Add server tests and browser-check every action against fake filesystem/runtime fixtures.

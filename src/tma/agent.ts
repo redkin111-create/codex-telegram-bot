@@ -31,6 +31,7 @@ const execFile=promisify(execFileCallback);
 const MAX_MOBILE_TERMINAL_OUTPUT=64*1024;
 const MAX_MOBILE_PTY_BUFFER=512*1024;
 const MAX_MOBILE_PTY_READ=64*1024;
+const MAX_MOBILE_CONFLICT_STAGE_BYTES=512*1024;
 const MOBILE_PTY_IDLE_MS=30*60*1000;
 import { normalizeMobileIntegrations, normalizeMobileMcpServers, normalizePluginInstallResult, type MobileMcpResourceSummary } from "../mobile/integrations.js";
 import { normalizeMobileMarketplaces } from "../mobile/marketplaces.js";
@@ -157,7 +158,7 @@ interface MobileMcpResourceRef {
   ownerId:number;sessionId:string;serverName:string;uri?:string;uriTemplate?:string;expiresAt:number;
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; stt?:Pick<SttService,"enabled"|"transcribe">; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "listRealtimeVoices" | "startRealtime" | "stopRealtime" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "createSideChat" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "listRealtimeVoices" | "startRealtime" | "stopRealtime" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "createSideChat" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitConflictStages" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 const MOBILE_GLOBAL_OPERATIONS=new Set<MobileLocalOperation>(["listThreadSections","createThreadSection","renameThreadSection","deleteThreadSection"]);
 export class MiniAppAgent {
@@ -1299,6 +1300,10 @@ export class MiniAppAgent {
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
         return this.mobileGitDiff(sessionId,chatId,args);
       }
+      case "gitConflictStages":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        return this.mobileGitConflictStages(sessionId,chatId,args);
+      }
       case "gitStage":
       case "gitUnstage":
       case "gitCommit":
@@ -1738,6 +1743,53 @@ export class MiniAppAgent {
     const unstaged=this.gitOutput(gitRoot,[...safeArgs,...pathArgs]);
     const staged=this.gitOutput(gitRoot,[...safeArgs,"--cached",...pathArgs]);
     return {project:name,unstaged,staged,checkedAt:Date.now()};
+  }
+  private gitConflictBlobText(root:string,objectId:string):string{
+    const sizeText=this.gitOutput(root,["cat-file","-s",objectId],1024).trim();
+    if(!/^\d{1,9}$/.test(sizeText))throw new Error("Git вернул неверный размер версии конфликта");
+    const size=Number(sizeText);
+    if(size>MAX_MOBILE_CONFLICT_STAGE_BYTES)throw new Error("Версия конфликта больше 512 КБ и не открывается на телефоне");
+    let bytes:Buffer;
+    try{
+      bytes=execFileSync("git",["--no-pager","-C",root,"-c","core.fsmonitor=false","cat-file","blob",objectId],{
+        encoding:null,timeout:8000,maxBuffer:MAX_MOBILE_CONFLICT_STAGE_BYTES+1,windowsHide:true,stdio:["ignore","pipe","ignore"],
+      });
+    }catch(error){
+      if((error as NodeJS.ErrnoException).code==="ENOBUFS")throw new Error("Версия конфликта больше 512 КБ и не открывается на телефоне");
+      throw new Error("Не удалось прочитать версию конфликта из Git");
+    }
+    if(bytes.length>MAX_MOBILE_CONFLICT_STAGE_BYTES)throw new Error("Версия конфликта больше 512 КБ и не открывается на телефоне");
+    if(bytes.includes(0))throw new Error("Бинарный конфликт нельзя открыть как текст");
+    try{return new TextDecoder("utf-8",{fatal:true}).decode(bytes);}
+    catch{throw new Error("Версия конфликта не является корректным UTF-8 текстом");}
+  }
+  private mobileGitConflictStages(sessionId:string,userId:number,args:Record<string,unknown>={}){
+    const {root,name}=this.mobileRoot(sessionId,userId);
+    const gitRoot=this.gitRoot(root);
+    const path=this.mobileGitPath(root,argumentString(args,"path",1200));
+    const records=this.gitOutput(gitRoot,["ls-files","--unmerged","-z","--",path],64*1024).split("\0").filter(Boolean);
+    const stages=new Map<number,{mode:string;objectId:string}>();
+    for(const record of records){
+      const tab=record.indexOf("\t");
+      if(tab<0||record.slice(tab+1)!==path)continue;
+      const [mode,objectId,stageText]=record.slice(0,tab).split(" ");
+      const stage=Number(stageText);
+      if(!mode||!/^\d{6}$/.test(mode)||!objectId||!/^([a-f0-9]{40}|[a-f0-9]{64})$/i.test(objectId)||![1,2,3].includes(stage))continue;
+      if(mode==="120000")throw new Error("Конфликт символьной ссылки нельзя разрешить текстовым редактором");
+      if(stages.has(stage))throw new Error("Git вернул несколько вариантов одной стадии конфликта");
+      stages.set(stage,{mode,objectId});
+    }
+    if(!stages.size)throw new Error("Файл не находится в состоянии конфликта Git");
+    const text=(stage:number)=>{
+      const value=stages.get(stage);
+      return value?this.gitConflictBlobText(gitRoot,value.objectId):undefined;
+    };
+    return {
+      project:name,path,
+      ...(stages.has(1)?{base:text(1)}:{}),
+      ...(stages.has(2)?{ours:text(2)}:{}),
+      ...(stages.has(3)?{theirs:text(3)}:{}),
+    };
   }
   private async project(path:string,userId:number):Promise<{name:string;cwd:string}>{
     const {projects,threads}=await this.catalogue(userId);

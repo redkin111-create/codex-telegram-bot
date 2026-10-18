@@ -689,6 +689,15 @@ const agent = {
       fixtureFiles.set(path, String(args.content ?? ""));
       return { path, sha256: createHash("sha256").update(fixtureFiles.get(path)!).digest("hex"), savedAt: Date.now() };
     }
+    if (job.op === "gitConflictStages") {
+      if (String(args.path ?? "") !== "src/conflict.ts" || fixtureConflictResolved) throw new Error("Файл не находится в состоянии конфликта Git");
+      return {
+        project: "codex-mobile", path: "src/conflict.ts",
+        base: "export const greeting = \"Hello\";\n",
+        ours: "export const greeting = \"Hello\";\n",
+        theirs: "export const greeting = \"Hi\";\n",
+      };
+    }
     if (job.op === "gitStatus") return {
       project: "codex-mobile", branch: fixtureBranch, branches: [...new Set([fixtureBranch, "main", "release/candidate"])], remoteBranches: ["origin/mobile/feature"],
       remotes: [{ name: "origin", fetchTargets: ["github.com"], pushTargets: ["github.com"] }], clean: false,
