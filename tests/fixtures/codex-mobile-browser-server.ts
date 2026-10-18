@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer, type Server } from "node:http";
 import { MobileAuthStore } from "../../src/mobile/auth.js";
+import type { MobilePromptAttachment } from "../../src/mobile/attachments.js";
 import { createMobileServer } from "../../src/mobile/server.js";
 import { MobileApprovalBroker } from "../../src/mobile/approvals.js";
 import { MiniAppAgent, type MobileLocalJob } from "../../src/tma/agent.js";
@@ -144,7 +145,7 @@ const agent = {
   async canReadSession(sessionId: string, id: number) {
     return id === ownerId && (sessions.some((session) => session.id === sessionId) || archivedSessions.some((session) => session.id === sessionId));
   },
-  async execute(job: TmaJob): Promise<unknown> {
+  async execute(job: TmaJob, attachments: readonly MobilePromptAttachment[] = []): Promise<unknown> {
     const args = job.args;
     if (job.op === "snapshot") {
       return {
@@ -195,7 +196,10 @@ const agent = {
       return { sessionId };
     }
     if (job.op === "send") {
-      const message = String(args.text ?? "");
+      const fileContext = attachments.map((file) => file.text !== undefined
+        ? `\n\nВложенный файл «${file.name}»:\n${file.text}`
+        : `\n\nВложенный файл «${file.name}» сохранён по пути: ${file.path ?? "недоступен"}.`).join("");
+      const message = `${String(args.text ?? "")}${fileContext}`.trim();
       const runtime = controlled.get(sessionId) ?? { busy: false, queue: [], paused: false };
       if (runtime.busy) {
         runtime.queue.push({ id: randomUUID(), text: message || "Проверить прикреплённое фото" });

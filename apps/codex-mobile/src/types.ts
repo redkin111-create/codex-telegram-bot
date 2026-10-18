@@ -90,6 +90,13 @@ export interface MobileEditableTurn {
   reason?: string;
 }
 
+export interface MobileAttachment {
+  id: string;
+  name: string;
+  size: number;
+  kind: "text" | "document";
+}
+
 export interface MobileLiveEvent {
   id: number;
   sessionId: string;

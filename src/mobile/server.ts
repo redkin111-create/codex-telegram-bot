@@ -3,6 +3,7 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, relative, resolve, sep } from "node:path";
 import type { TmaJob, TmaOperation } from "../tma/protocol.js";
+import { MobileAttachmentStore, MAX_MOBILE_ATTACHMENT_BYTES, type MobilePromptAttachment } from "./attachments.js";
 import type { MiniAppAgent, MobileLocalJob, MobileLocalOperation } from "../tma/agent.js";
 import type { LiveEvent, TmaLiveFeed } from "../tma/live.js";
 import { MobileAuthStore } from "./auth.js";
@@ -20,7 +21,7 @@ const MOBILE_READ_OPERATIONS = new Set<MobileLocalOperation>(["listThreadSection
 
 export interface MobileAgent {
   canReadSession(id: string, userId: number): Promise<boolean>;
-  execute(job: TmaJob): Promise<unknown>;
+  execute(job: TmaJob, attachments?: readonly MobilePromptAttachment[]): Promise<unknown>;
   executeMobile?(job: MobileLocalJob): Promise<unknown>;
 }
 
@@ -71,6 +72,23 @@ async function readJson(req: IncomingMessage, maxBytes = 32 * 1024): Promise<Rec
   const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Ожидался JSON-объект");
   return parsed as Record<string, unknown>;
+}
+
+async function readBytes(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
+  const declared = Number(req.headers["content-length"]);
+  if (Number.isFinite(declared) && declared > maxBytes) throw new Error("Файл должен быть не больше 10 МБ");
+  if (req.headers["content-encoding"] && req.headers["content-encoding"] !== "identity") {
+    throw new Error("Сжатые загрузки файлов не поддерживаются");
+  }
+  const chunks: Buffer[] = [];
+  let length = 0;
+  for await (const chunk of req) {
+    const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    length += data.length;
+    if (length > maxBytes) throw new Error("Файл должен быть не больше 10 МБ");
+    chunks.push(data);
+  }
+  return Buffer.concat(chunks, length);
 }
 
 function cookie(req: IncomingMessage, name: string): string | undefined {
@@ -174,6 +192,7 @@ export function createMobileServer(options: MobileServerOptions): Server {
   const origins = new Set((options.allowedOrigins ?? []).map((origin) => origin.trim()).filter(Boolean));
   const now = options.now ?? Date.now;
   const started = new Map<string, { at: number; count: number }>();
+  const attachments = new MobileAttachmentStore(options.dataDir, now);
   const server = createServer((req, res) => {
     securityHeaders(res);
     void route(req, res).catch((error) => {
@@ -243,6 +262,44 @@ export function createMobileServer(options: MobileServerOptions): Server {
       const csrfToken = cookie(req, CSRF_COOKIE);
       if (!csrfToken || !options.auth.verifyCsrf(device.id, csrfToken)) { json(res, 401, { error: "Сессия требует повторной привязки" }); return; }
       json(res, 200, { device, csrfToken });
+      return;
+    }
+    if (path === "/api/attachments" && method === "POST") {
+      const sessionId = url.searchParams.get("sessionId") ?? "";
+      const name = url.searchParams.get("name") ?? "";
+      if (!safeSessionId(sessionId) || !name || name.length > 300 ||
+          !await options.agent.canReadSession(sessionId, device.ownerId)) {
+        json(res, 403, { error: "Доступ к вложению запрещён" }); return;
+      }
+      let bytes: Buffer;
+      try { bytes = await readBytes(req, MAX_MOBILE_ATTACHMENT_BYTES); }
+      catch (error) {
+        const message = safeError(error);
+        json(res, message.includes("10 МБ") ? 413 : 415, { error: message });
+        return;
+      }
+      try {
+        const mimeType = typeof req.headers["content-type"] === "string" ? req.headers["content-type"] : "application/octet-stream";
+        const descriptor = await attachments.add(device.ownerId, device.id, sessionId, name, mimeType, bytes);
+        json(res, 201, descriptor);
+      } catch (error) {
+        const message = safeError(error);
+        const status = message.includes("каталога данных") ? 503
+          : message.includes("Слишком много ожидающих") ? 429
+          : message.includes("не больше 10 МБ") ? 413
+          : 415;
+        json(res, status, { error: message });
+      }
+      return;
+    }
+    const removeAttachment = /^\/api\/attachments\/([a-f0-9-]{36})$/i.exec(path);
+    if (removeAttachment && method === "DELETE") {
+      const sessionId = url.searchParams.get("sessionId") ?? "";
+      if (!safeSessionId(sessionId) || !await options.agent.canReadSession(sessionId, device.ownerId)) {
+        json(res, 403, { error: "Доступ к вложению запрещён" }); return;
+      }
+      const removed = await attachments.remove(device.ownerId, device.id, sessionId, removeAttachment[1]!);
+      json(res, removed ? 200 : 404, removed ? { removed: true } : { error: "Вложение не найдено или уже отправлено" });
       return;
     }
     if (path === "/api/logout" && method === "POST") {
@@ -404,9 +461,36 @@ export function createMobileServer(options: MobileServerOptions): Server {
           !body.args || typeof body.args !== "object" || Array.isArray(body.args)) {
         json(res, 400, { error: "Неизвестная операция" }); return;
       }
-      const args = body.args as Record<string, unknown>;
+      const args = { ...(body.args as Record<string, unknown>) };
       if (typeof args.sessionId === "string" && !await options.agent.canReadSession(args.sessionId, device.ownerId)) {
         json(res, 403, { error: "Доступ к сеансу запрещён" }); return;
+      }
+      let promptAttachments: MobilePromptAttachment[] = [];
+      let attachmentIds: string[] = [];
+      if (body.op === "send" || body.op === "steer") {
+        const rawIds = args.attachmentIds;
+        delete args.attachmentIds;
+        delete args.mobileAttachments;
+        if (rawIds !== undefined && (!Array.isArray(rawIds) || rawIds.some((id) => typeof id !== "string"))) {
+          json(res, 400, { error: "Список вложений недопустим" }); return;
+        }
+        attachmentIds = (rawIds ?? []) as string[];
+        if (body.op === "steer" && attachmentIds.length > 0) {
+          json(res, 400, { error: "Файлы можно отправлять в очередь или новый запрос, но не добавлять к активному ходу" }); return;
+        }
+        if (attachmentIds.length > 0) {
+          if (typeof args.sessionId !== "string" || typeof args.requestId !== "string") {
+            json(res, 400, { error: "Для вложения нужен выбранный сеанс и идентификатор запроса" }); return;
+          }
+          try {
+            promptAttachments = await attachments.resolveForPrompt(
+              device.ownerId, device.id, args.sessionId, attachmentIds, args.requestId,
+            );
+          } catch (error) { json(res, 403, { error: safeError(error) }); return; }
+        }
+      } else {
+        delete args.attachmentIds;
+        delete args.mobileAttachments;
       }
       if (MOBILE_READ_OPERATIONS.has(body.op as MobileLocalOperation)) {
         if (!options.agent.executeMobile) { json(res, 503, { error: "Настройки Codex недоступны" }); return; }
@@ -429,7 +513,13 @@ export function createMobileServer(options: MobileServerOptions): Server {
         catch (error) { json(res, 502, { error: safeError(error) }); }
         return;
       }
-      try { json(res, 200, await execute(body.op as TmaOperation, device.ownerId, args)); }
+      try {
+        const result = await execute(body.op as TmaOperation, device.ownerId, args, promptAttachments);
+        if (attachmentIds.length > 0 && typeof args.requestId === "string") {
+          attachments.complete(attachmentIds, device.id, args.requestId);
+        }
+        json(res, 200, result);
+      }
       catch (error) { json(res, 502, { error: safeError(error) }); }
       return;
     }
@@ -473,8 +563,8 @@ export function createMobileServer(options: MobileServerOptions): Server {
     json(res, 404, { error: "Not found" });
   };
 
-  const execute = (op: TmaOperation, userId: number, args: Record<string, unknown>) =>
-    options.agent.execute({ id: randomBytes(12).toString("hex"), op, userId, args });
+  const execute = (op: TmaOperation, userId: number, args: Record<string, unknown>, promptAttachments?: readonly MobilePromptAttachment[]) =>
+    options.agent.execute({ id: randomBytes(12).toString("hex"), op, userId, args }, promptAttachments);
 
   return server;
 }

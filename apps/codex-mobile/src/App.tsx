@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { FolderOpen, GitBranch, LoaderCircle, Menu, RefreshCw, Shield, ShieldAlert, SlidersHorizontal, Terminal } from "lucide-react";
 import {
   asLiveEvent, logout, MobileApiError, openEventStream, parseSseBlock, readActivity, readApprovals,
-  readCapabilities, readHistory, readSession, readSnapshot, resolveApproval, runOperation, transcribeAudio as transcribeAudioRequest,
+  readCapabilities, readHistory, readSession, readSnapshot, removeAttachment, resolveApproval, runOperation, transcribeAudio as transcribeAudioRequest, uploadAttachment,
 } from "./api.js";
 import { ApprovalPanel } from "./components/approval-panel.js";
 import { Conversation, type FollowUpMode, type PromptImage } from "./components/conversation.js";
@@ -13,7 +13,7 @@ import { Pairing } from "./components/pairing.js";
 import { SettingsPanel } from "./components/settings-panel.js";
 import { Workspace } from "./components/workspace.js";
 import type {
-  HistoryEntry, MobileActivity, MobileApproval, MobileDevice, MobileEditableTurn, MobileLiveEvent, MobileQueue, MobileSession, MobileSnapshot,
+  HistoryEntry, MobileActivity, MobileApproval, MobileAttachment, MobileDevice, MobileEditableTurn, MobileLiveEvent, MobileQueue, MobileSession, MobileSnapshot,
   MobileOperation,
 } from "./types.js";
 import { Button } from "./components/ui/primitives.js";
@@ -462,21 +462,22 @@ export default function App() {
     await refreshSnapshot();
   }
 
-  async function send(text: string, images: PromptImage[], mode: FollowUpMode) {
+  async function send(text: string, images: PromptImage[], attachments: MobileAttachment[], mode: FollowUpMode) {
     if (!selectedId) return;
-    const fingerprint = JSON.stringify([selectedId, mode, text, images.map((image) => [image.name, image.mimeType, image.data.length])]);
+    if (mode === "steer" && attachments.length) throw new Error("Файлы можно отправить в очередь, но не добавить к активному ходу");
+    const fingerprint = JSON.stringify([selectedId, mode, text, images.map((image) => [image.name, image.mimeType, image.data.length]), attachments.map((file) => file.id)]);
     if (!pendingSend.current || pendingSend.current.fingerprint !== fingerprint) {
       pendingSend.current = { fingerprint, requestId: crypto.randomUUID() };
     }
     if (mode === "steer") {
       await operation("steer", {
         sessionId: selectedId, text, images: images.map(({ name, mimeType, data }) => ({ name, mimeType, data })),
-        requestId: pendingSend.current.requestId,
+        attachmentIds: attachments.map((file) => file.id), requestId: pendingSend.current.requestId,
       });
     } else {
       await operation("send", {
         sessionId: selectedId, text, images: images.map(({ name, mimeType, data }) => ({ name, mimeType, data })),
-        requestId: pendingSend.current.requestId,
+        attachmentIds: attachments.map((file) => file.id), requestId: pendingSend.current.requestId,
       });
     }
     pendingSend.current = undefined;
@@ -595,6 +596,8 @@ export default function App() {
         onCompact={compactSession} compacting={compacting} onSend={send}
         onLoadSkills={loadMobileSkills}
         onLoadLatestEditableTurn={loadLatestEditableTurn} onEditAndRetry={editAndRetry} onTranscribeAudio={transcribeVoice}
+        onUploadAttachment={(sessionId, file) => uploadAttachment(sessionId, file, csrf)}
+        onRemoveAttachment={(sessionId, id) => removeAttachment(sessionId, id, csrf)}
         onQueueRemove={(id) => void removeQueued(id)} onQueueResume={() => void resumeQueue()}
         onQueueOpen={readQueue} />
     </div>

@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { GitFork, ImagePlus, LoaderCircle, Mic, Minimize2, Pencil, Play, Search, Send, Sparkles, Square, Trash2, Wrench, X } from "lucide-react";
+import { FileText, GitFork, ImagePlus, LoaderCircle, Mic, Minimize2, Paperclip, Pencil, Play, Search, Send, Sparkles, Square, Trash2, Wrench, X } from "lucide-react";
 import "../../../../apps/mini-app/public/photo-input.js";
-import type { HistoryEntry, MobileActivity, MobileCapabilities, MobileEditableTurn, MobileLiveEvent, MobileQueue, MobileSession } from "../types.js";
+import type { HistoryEntry, MobileActivity, MobileAttachment, MobileCapabilities, MobileEditableTurn, MobileLiveEvent, MobileQueue, MobileSession } from "../types.js";
 import { imageUrl } from "../api.js";
 import { SafeMarkdown } from "../markdown.js";
 import { isMobileSkillNameSafe, prependMobileSkill } from "../skill-prompt.js";
@@ -14,7 +14,7 @@ export type FollowUpMode = "queue" | "steer";
 export function Conversation({
   session, history, activity, events, queue, connected, connecting, loading, streamConnected,
   error, includeTools, onToggleTools, onConnect, onCancel, onFork, forking, onCompact, compacting, onSend, onQueueRemove, onQueueResume, onQueueOpen, onLoadSkills,
-  onLoadLatestEditableTurn, onEditAndRetry, onTranscribeAudio,
+  onLoadLatestEditableTurn, onEditAndRetry, onTranscribeAudio, onUploadAttachment, onRemoveAttachment,
 }: {
   session?: MobileSession;
   history: HistoryEntry[];
@@ -34,7 +34,7 @@ export function Conversation({
   forking: boolean;
   onCompact: () => Promise<void>;
   compacting: boolean;
-  onSend: (text: string, images: PromptImage[], mode: FollowUpMode) => Promise<void>;
+  onSend: (text: string, images: PromptImage[], attachments: MobileAttachment[], mode: FollowUpMode) => Promise<void>;
   onQueueRemove: (itemId: string) => void;
   onQueueResume: () => void;
   onQueueOpen: () => void;
@@ -42,10 +42,17 @@ export function Conversation({
   onLoadLatestEditableTurn: () => Promise<MobileEditableTurn>;
   onEditAndRetry: (turnId: string, text: string) => Promise<void>;
   onTranscribeAudio: (file: File) => Promise<string>;
+  onUploadAttachment: (sessionId: string, file: File) => Promise<MobileAttachment>;
+  onRemoveAttachment: (sessionId: string, id: string) => Promise<{ removed: boolean }>;
 }) {
+  const activeSessionId = useRef(session?.id);
+  activeSessionId.current = session?.id;
   const [text, setText] = useState("");
   const [images, setImages] = useState<PromptImage[]>([]);
+  const [attachments, setAttachments] = useState<MobileAttachment[]>([]);
   const [imageError, setImageError] = useState("");
+  const [attachmentError, setAttachmentError] = useState("");
+  const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [preparing, setPreparing] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
   const [compactConfirm, setCompactConfirm] = useState(false);
@@ -83,6 +90,8 @@ export function Conversation({
     setEditTurn(undefined);
     setEditError("");
     setEditNotice("");
+    setAttachments([]);
+    setAttachmentError("");
   }, [session?.id]);
 
   async function openEditDialog() {
@@ -150,6 +159,39 @@ export function Conversation({
     finally { setPreparing(false); }
   }
 
+  async function attachDocuments(files: FileList | null) {
+    if (!files?.length || !session) return;
+    const targetSessionId = session.id;
+    setUploadingAttachments(true);
+    setAttachmentError("");
+    try {
+      const selected = Array.from(files);
+      if (attachments.length + selected.length > 5) throw new Error("Можно прикрепить не больше пяти файлов");
+      for (const file of selected) {
+        const prepared = await onUploadAttachment(targetSessionId, file);
+        if (activeSessionId.current !== targetSessionId) {
+          await onRemoveAttachment(targetSessionId, prepared.id).catch(() => undefined);
+          return;
+        }
+        setAttachments((current) => [...current, prepared]);
+      }
+    } catch (cause) {
+      setAttachmentError(cause instanceof Error ? cause.message : "Не удалось прикрепить файл");
+    } finally { setUploadingAttachments(false); }
+  }
+
+  async function removeDocument(id: string) {
+    if (!session) return;
+    setAttachmentError("");
+    try {
+      const result = await onRemoveAttachment(session.id, id);
+      if (!result.removed) throw new Error("Файл уже отправлен или истёк. Обновите сеанс.");
+      setAttachments((current) => current.filter((file) => file.id !== id));
+    } catch (cause) {
+      setAttachmentError(cause instanceof Error ? cause.message : "Не удалось удалить вложение");
+    }
+  }
+
   async function transcribeVoice(file?: File) {
     if (!file) return;
     setTranscribing(true);
@@ -164,11 +206,17 @@ export function Conversation({
   }
 
   async function submit() {
-    if (!text.trim() && images.length === 0) return;
+    if (!text.trim() && images.length === 0 && attachments.length === 0) return;
+    if (followUpMode === "steer" && turnBusy && attachments.length > 0) {
+      setAttachmentError("Файлы можно отправить в очередь. Для активной задачи используйте режим «В очередь».");
+      return;
+    }
     try {
-      await onSend(text.trim(), images, followUpMode);
+      await onSend(text.trim(), images, attachments, followUpMode);
       setText("");
       setImages([]);
+      setAttachments([]);
+      setAttachmentError("");
       setFollowUpMode("queue");
     } catch { /* Keep the draft available after a rejected or uncertain request. */ }
   }
@@ -246,6 +294,7 @@ export function Conversation({
 
     {error && <p className="mx-3 mb-2 rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd] sm:mx-5 md:mx-8" role="alert">{error}</p>}
     {imageError && <p className="mx-3 mb-2 rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd] sm:mx-5 md:mx-8" role="alert">{imageError}</p>}
+    {attachmentError && <p className="mx-3 mb-2 rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd] sm:mx-5 md:mx-8" role="alert">{attachmentError}</p>}
     {voiceError && <p className="mx-3 mb-2 rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd] sm:mx-5 md:mx-8" role="alert">{voiceError}</p>}
     {transcribing && <p className="mx-3 mb-2 flex items-center gap-2 rounded-xl border border-border bg-panel px-3 py-2 text-xs text-muted sm:mx-5 md:mx-8" role="status"><LoaderCircle size={14} className="animate-spin" />Распознаю речь. Текст появится в черновике.</p>}
     {compactNotice && <p className="mx-3 mb-2 rounded-xl border border-[#46533d] bg-[#20291b] px-3 py-2 text-sm text-[#d5f49c] sm:mx-5 md:mx-8" role="status">{compactNotice}</p>}
@@ -267,10 +316,16 @@ export function Conversation({
             </li>)}</ul> : <p className="py-2 text-xs text-muted">Нет включённых навыков, доступных для вызова.</p>}
       </section>}
       {images.length > 0 && <div className="mx-auto mb-2 flex max-w-4xl gap-2 overflow-x-auto">{images.map((image, index) => <div key={`${image.name}-${index}`} className="relative h-16 w-20 shrink-0 overflow-hidden rounded-lg border border-border"><img src={image.preview} alt={image.name} className="h-full w-full object-cover" /><button type="button" aria-label={`Убрать ${image.name}`} className="absolute right-1 top-1 rounded-full bg-black/75 px-1.5 text-xs" onClick={() => setImages((current) => current.filter((_, i) => i !== index))}>×</button></div>)}</div>}
+      {attachments.length > 0 && <ul className="mx-auto mb-2 flex max-w-4xl flex-wrap gap-2" aria-label="Прикреплённые файлы">{attachments.map((file) => <li key={file.id} className="flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-border bg-panel px-2.5 py-1.5 text-xs"><FileText size={14} className="shrink-0 text-accent" /><span className="max-w-[min(64vw,20rem)] truncate" title={file.name}>{file.name}</span><span className="shrink-0 text-[10px] text-muted">{(file.size / 1024).toFixed(file.size < 10_240 ? 1 : 0)} КБ</span><button type="button" className="min-h-7 min-w-7 rounded-md text-muted hover:bg-elevated" aria-label={`Убрать файл ${file.name}`} disabled={uploadingAttachments} onClick={() => void removeDocument(file.id)}><X size={13} /></button></li>)}</ul>}
       <div className="mx-auto flex max-w-4xl items-end gap-2">
         <label className="flex min-h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-xl border border-border bg-[#1b211c] text-muted hover:text-accent" aria-label="Прикрепить фото">
           <ImagePlus size={19} />
           <input type="file" className="sr-only" accept="image/jpeg,image/png,image/webp" multiple disabled={preparing || images.length >= 3} onChange={(event) => { void attach(event.target.files); event.target.value = ""; }} />
+        </label>
+        <label className={`flex min-h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-border bg-[#1b211c] text-muted ${connected && attachments.length < 5 && !uploadingAttachments ? "cursor-pointer hover:text-accent" : "cursor-not-allowed opacity-45"}`} aria-label="Прикрепить файл">
+          {uploadingAttachments ? <LoaderCircle size={18} className="animate-spin" /> : <Paperclip size={18} />}
+          <span className="sr-only">Прикрепить текстовый файл, PDF или ZIP</span>
+          <input type="file" className="sr-only" accept=".txt,.md,.markdown,.json,.json5,.jsonl,.csv,.tsv,.log,.xml,.yaml,.yml,.toml,.ini,.cfg,.conf,.ts,.tsx,.js,.jsx,.mjs,.py,.go,.rs,.java,.kt,.html,.css,.sql,.sh,.ps1,.patch,.diff,.pdf,.zip,text/*,application/pdf,application/zip" multiple disabled={!connected || attachments.length >= 5 || uploadingAttachments} onChange={(event) => { void attachDocuments(event.target.files); event.target.value = ""; }} />
         </label>
         <label className={`flex min-h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-border bg-[#1b211c] text-muted ${connected && !transcribing ? "cursor-pointer hover:text-accent" : "cursor-not-allowed opacity-45"}`} aria-label="Распознать речь из аудио">
           {transcribing ? <LoaderCircle size={18} className="animate-spin" /> : <Mic size={18} />}
@@ -279,7 +334,7 @@ export function Conversation({
         </label>
         <Button type="button" variant="outline" className="min-h-11 w-11 shrink-0 px-0" aria-label="Выбрать навык Codex" disabled={!connected} onClick={() => void toggleSkillPicker()}><Sparkles size={18} /></Button>
         <div className="min-w-0 flex-1"><Textarea value={text} onChange={(event) => setText(event.target.value)} onKeyDown={submitOnEnter} placeholder={!connected ? "Подключите сеанс, чтобы отправить задачу" : turnBusy && followUpMode === "steer" ? "Направление для текущей задачи…" : turnBusy ? "Следующая задача в очереди…" : "Задача для Codex…"} disabled={!connected} rows={2} className="min-h-[48px] max-h-40 resize-none py-3" aria-label="Сообщение Codex" /></div>
-        <Button type="submit" className="min-h-12 w-12 shrink-0 px-0" disabled={!connected || (!text.trim() && images.length === 0) || preparing || transcribing} aria-label={followUpMode === "steer" && turnBusy ? "Направить текущую задачу" : "Отправить задачу"}>{preparing || transcribing ? <LoaderCircle className="animate-spin" size={18} /> : <Send size={18} />}</Button>
+        <Button type="submit" className="min-h-12 w-12 shrink-0 px-0" disabled={!connected || (!text.trim() && images.length === 0 && attachments.length === 0) || preparing || transcribing || uploadingAttachments || (followUpMode === "steer" && turnBusy && attachments.length > 0)} aria-label={followUpMode === "steer" && turnBusy ? "Направить текущую задачу" : "Отправить задачу"}>{preparing || transcribing || uploadingAttachments ? <LoaderCircle className="animate-spin" size={18} /> : <Send size={18} />}</Button>
       </div>
       <div className="mx-auto mt-2 flex max-w-4xl items-center justify-between text-[10px] text-[#758077]">
         <span>{connected ? "Enter отправляет · Shift+Enter переносит строку" : "История доступна без подключения"}</span>

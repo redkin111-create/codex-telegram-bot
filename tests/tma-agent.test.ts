@@ -13,6 +13,7 @@ import type { AcpClient } from "../src/acp/client.js";
 import type { RuntimeRegistry } from "../src/bot/registry.js";
 import { CODEX_PINNED_THREAD_SECTION_ID } from "../src/acp/codex-protocol.js";
 import { TelegramSessionRegistry } from "../src/sessions/telegram-registry.js";
+import { saveIncomingAttachment } from "../src/bot/incoming-files.js";
 
 test("mobile-only agent can use existing runtime logic without an outbound TMA transport",()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-agent-"));
@@ -138,6 +139,59 @@ test("mobile edit and retry only reverts the latest owned idle text turn and sub
     }finally{replayAgent.stop();}
     assert.deepEqual(reverts,[{threadId:sessionId,turnId}]);
     assert.deepEqual(submitted,[{userId:101,text:"$fixture-review updated prompt",skillNames:["fixture-review"]}]);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("mobile file attachments enter the shared runtime prompt with safe labels and cleanup paths",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-file-prompt-"));
+  const project=join(dir,"project");
+  mkdirSync(project);
+  const sessionId="81818181-8181-4181-8181-818181818181";
+  const thread={id:sessionId,name:"Attachment fixture",cwd:project,source:"cli",createdAt:1,updatedAt:2,recencyAt:2};
+  const acp=Object.assign(new EventEmitter(),{
+    isConnected:true,
+    listProjects:async()=>[{id:"project",name:"Fixture",roots:[project]}],
+    listThreads:async()=>[thread],
+    listAllThreads:async()=>[thread],
+    availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],
+    currentModelId:"default",currentModeId:"code",
+  }) as unknown as AcpClient;
+  const runtime={sessionId,isBusy:false,queueLength:0};
+  const controller={runtimeForSession:()=>runtime,foreground:()=>runtime,list:()=>[]};
+  const submitted:Array<{text:string;attachmentNames?:string[];attachmentContext?:string;attachmentPaths?:string[];displayText?:string}>=[];
+  const registry={
+    controller:()=>controller,
+    get:()=>runtime,
+    async submitPrompt(_userId:number,input:{text:string;attachmentNames?:string[];attachmentContext?:string;attachmentPaths?:string[];displayText?:string}){
+      submitted.push(input);
+      return {kind:"submitted",outcome:"accepted"};
+    },
+  } as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
+  const owners=new TelegramSessionRegistry(dir);
+  owners.recordMobile(sessionId,101,project,"Fixture");
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    const binary=await saveIncomingAttachment(dir,"report.pdf",Buffer.from("%PDF-1.7\\nfixture"));
+    const text="export const ready = true;";
+    const result=await agent.execute({
+      id:"abcdef0123456789abcdef01",op:"send",userId:101,
+      args:{sessionId,text:"Проверь документы",requestId:"mobile-attachments-0001"},
+    },[
+      {id:"11111111-1111-4111-8111-111111111111",name:"notes.ts",mimeType:"text/plain",size:text.length,text},
+      {id:"22222222-2222-4222-8222-222222222222",name:binary.name,mimeType:"application/pdf",size:18,path:binary.path},
+    ]);
+    assert.deepEqual(result,{result:"accepted"});
+    assert.equal(submitted.length,1);
+    const input=submitted[0]!;
+    assert.match(input.text,/Проверь документы/);
+    assert.match(input.text,/export const ready = true;/);
+    assert.ok(input.text.includes(binary.path));
+    assert.deepEqual(input.attachmentNames,["notes.ts","report.pdf"]);
+    assert.deepEqual(input.attachmentPaths,[binary.path]);
+    assert.equal(input.displayText,"Проверь документы");
+    assert.match(input.attachmentContext??"",/notes\.ts/);
+    assert.match(input.attachmentContext??"",/report\.pdf/);
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 

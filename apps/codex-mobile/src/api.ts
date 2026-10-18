@@ -1,5 +1,5 @@
 import type {
-  MobileActivity, MobileApproval, MobileCapabilities, MobileDevice, MobileFile, MobileFileListing, MobileGitDiff, MobileGitStatus, MobileHistory, MobileLiveEvent, MobileOperation, MobileSnapshot,
+  MobileActivity, MobileApproval, MobileAttachment, MobileCapabilities, MobileDevice, MobileFile, MobileFileListing, MobileGitDiff, MobileGitStatus, MobileHistory, MobileLiveEvent, MobileOperation, MobileSnapshot,
 } from "./types.js";
 
 export class MobileApiError extends Error {
@@ -104,6 +104,38 @@ export function runOperation<T = unknown>(op: MobileOperation, args: Record<stri
     method: "POST",
     headers: { "X-CSRF-Token": csrfToken },
     body: JSON.stringify({ op, args }),
+  });
+}
+
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+export async function uploadAttachment(sessionId: string, file: File, csrfToken: string): Promise<MobileAttachment> {
+  if (!file.size || file.size > MAX_ATTACHMENT_BYTES) throw new MobileApiError("Файл должен быть не пустым и не больше 10 МБ", 413);
+  const url = new URL("/api/attachments", window.location.origin);
+  url.searchParams.set("sessionId", sessionId);
+  url.searchParams.set("name", file.name);
+  const response = await fetch(url, {
+    method: "POST",
+    credentials: "same-origin",
+    cache: "no-store",
+    headers: { "Content-Type": file.type || "application/octet-stream", "X-CSRF-Token": csrfToken },
+    body: file,
+  });
+  const payload = await response.json().catch(() => ({})) as { error?: unknown } & MobileAttachment;
+  if (!response.ok) {
+    throw new MobileApiError(typeof payload.error === "string" ? payload.error : `Файл не принят (${response.status})`, response.status);
+  }
+  if (typeof payload.id !== "string" || typeof payload.name !== "string" ||
+      !Number.isSafeInteger(payload.size) || !["text", "document"].includes(payload.kind)) {
+    throw new MobileApiError("Сервер вернул неверное описание файла", 502);
+  }
+  return payload;
+}
+
+export function removeAttachment(sessionId: string, id: string, csrfToken: string) {
+  const query = new URLSearchParams({ sessionId });
+  return jsonRequest<{ removed: boolean }>(`/api/attachments/${encodeURIComponent(id)}?${query}`, {
+    method: "DELETE", headers: { "X-CSRF-Token": csrfToken },
   });
 }
 

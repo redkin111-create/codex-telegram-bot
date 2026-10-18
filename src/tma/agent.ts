@@ -33,6 +33,8 @@ const MOBILE_PTY_IDLE_MS=30*60*1000;
 import { normalizeMobileIntegrations, normalizeMobileMcpServers, normalizePluginInstallResult } from "../mobile/integrations.js";
 import { gitRemoteTarget } from "../mobile/git-remotes.js";
 import { SttService } from "../app/stt.js";
+import type { MobilePromptAttachment } from "../mobile/attachments.js";
+import { mobileAttachmentContext } from "../mobile/attachments.js";
 
 const log=createLogger("tma:agent");
 const MAX_IMG=3*1024*1024;
@@ -111,6 +113,19 @@ function statSyncSafe(path:string):{size:number;mtimeMs:number}{
     const s=statSync(path);
     return {size:s.size,mtimeMs:s.mtimeMs};
   }catch{return {size:0,mtimeMs:0};}
+}
+function isSafeMobilePromptAttachment(file:MobilePromptAttachment,dataDir:string):boolean{
+  if(!file||!/^[a-f0-9-]{36}$/i.test(file.id)||typeof file.name!=="string"||file.name.length>120||
+    typeof file.mimeType!=="string"||file.mimeType.length>100||!Number.isSafeInteger(file.size)||file.size<1||file.size>10*1024*1024)return false;
+  if(typeof file.text==="string"&&!file.path)return file.text.length<=200_000;
+  if(file.text!==undefined||typeof file.path!=="string")return false;
+  const root=resolve(dataDir,"telegram-incoming");
+  if(!isPathWithinRoot(root,file.path))return false;
+  try{
+    const rootInfo=lstatSync(root);
+    const fileInfo=lstatSync(file.path);
+    return rootInfo.isDirectory()&&!rootInfo.isSymbolicLink()&&fileInfo.isFile()&&!fileInfo.isSymbolicLink();
+  }catch{return false;}
 }
 const sleep=(ms:number,signal:AbortSignal)=>new Promise<void>(resolve=>{
   if(signal.aborted)return resolve();
@@ -1496,7 +1511,7 @@ export class MiniAppAgent {
     if(!matched&&!known&&!allowed)throw new Error("Папка проекта не разрешена");
     return {name:matched?.name||basename(path),cwd:path};
   }
-  async execute(job:TmaJob):Promise<unknown>{
+  async execute(job:TmaJob,mobileAttachments:readonly MobilePromptAttachment[]=[]):Promise<unknown>{
     const {acp,registry,cfg}=this.deps;
     const chatId=job.userId,controller=registry.controller(chatId),args=job.args;
     switch(job.op){
@@ -1640,9 +1655,11 @@ export class MiniAppAgent {
         const id=argumentString(args,"sessionId",80);
         const message=typeof args.text==="string"&&args.text.length<=16000?args.text.trim():"";
         const images=parseTmaImages(args.images);
-        if(!message&&!images.length)throw new Error("Напиши задачу или прикрепи фото");
+        if(mobileAttachments.length>5||mobileAttachments.some(file=>!isSafeMobilePromptAttachment(file,cfg.dataDir)))
+          throw new Error("Одно из вложений недоступно или имеет неверный формат");
+        if(!message&&!images.length&&!mobileAttachments.length)throw new Error("Напиши задачу или прикрепи файл");
         const requestId=argumentString(args,"requestId",80);
-        const fingerprint=tmaPromptFingerprint(message,images);
+        const fingerprint=tmaPromptFingerprint(message,images,mobileAttachments.map(file=>file.id));
         if(!/^[a-zA-Z0-9_-]{12,80}$/.test(requestId))throw new Error("Неверный идентификатор запроса");
         const key=chatId+":"+id+":"+requestId;
         const existing=this.sends.get(key);
@@ -1663,8 +1680,16 @@ export class MiniAppAgent {
             if(!controller.runtimeForSession(id))await controller.addAttach(id,t.cwd,basename(t.cwd),[]);
             else if(controller.foreground().sessionId!==id)await controller.switchTo(id);
             this.selected.set(chatId,id);
-            const input=textPrompt(message||"Проанализируй прикреплённые изображения.");
+            const attachmentContexts=mobileAttachments.map(mobileAttachmentContext);
+            const promptText=[message,...attachmentContexts].filter(Boolean).join("\n\n");
+            const input=textPrompt(promptText||"Проанализируй прикреплённые изображения.");
             input.images=images;
+            if(mobileAttachments.length){
+              input.attachmentNames=mobileAttachments.map(file=>file.name);
+              input.attachmentContext=attachmentContexts.join("\n\n");
+              input.attachmentPaths=mobileAttachments.flatMap(file=>file.path?[file.path]:[]);
+              input.displayText=message||`Файлы: ${mobileAttachments.map(file=>file.name).join(", ")}`;
+            }
             const skillName=selectedMobileSkillName(message);
             if(skillName)input.skillNames=[skillName];
             // Once this call starts, a crash or ambiguous error may mean Codex

@@ -3,13 +3,14 @@ import { once } from "node:events";
 import test from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { MobileAuthStore } from "../src/mobile/auth.js";
 import { createMobileServer, type MobileServerOptions } from "../src/mobile/server.js";
 import type { LiveEvent, TmaLiveFeed } from "../src/tma/live.js";
 
 const allowedSession = "00000000-0000-4000-8000-000000000101";
 const foreignSession = "00000000-0000-4000-8000-000000000202";
+const secondOwnedSession = "00000000-0000-4000-8000-000000000303";
 
 class FixtureFeed {
   readonly epoch = "1234567890abcdef12345678";
@@ -32,16 +33,16 @@ async function startFixture() {
   const dataDir = await mkdtemp(join(tmpdir(), "codex-mobile-server-"));
   const auth = new MobileAuthStore(dataDir, { allowedOwners: new Set(["101"]) });
   const feed = new FixtureFeed();
-  const calls: Array<{ op: string; userId: number; args: Record<string, unknown> }> = [];
+  const calls: Array<{ op: string; userId: number; args: Record<string, unknown>; attachments?: unknown[] }> = [];
   let failNext = false;
   let readImageValue: unknown = { name: "pixel.png", mime: "image/png", data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString("base64") };
   const settings = { model: "fixture-model", mode: "code", reasoning: "medium" };
   const approvalId = "44444444-4444-4444-8444-444444444444";
   const approvalDecisions: Array<{ ownerId: number; sessionId: string; id: string; optionId: string }> = [];
   const agent = {
-    async canReadSession(id: string, ownerId: number) { return id === allowedSession && ownerId === 101; },
-    async execute(job: { op: string; userId: number; args: Record<string, unknown> }) {
-      calls.push(job);
+    async canReadSession(id: string, ownerId: number) { return (id === allowedSession || id === secondOwnedSession) && ownerId === 101; },
+    async execute(job: { op: string; userId: number; args: Record<string, unknown> }, attachments?: unknown[]) {
+      calls.push({ ...job, ...(attachments ? { attachments } : {}) });
       if (failNext) { failNext = false; throw new Error("Codex runtime unavailable"); }
       if (job.op === "snapshot") return { projects: [{ path: "C:\\work\\demo", name: "demo" }], sessions: [{ id: allowedSession, title: "Demo" }] };
       if (job.op === "history") return { entries: [{ role: "assistant", text: "Safe fixture history" }], images: [] };
@@ -138,6 +139,122 @@ test("private API and event stream reject requests without a paired device", asy
       body: JSON.stringify({ sessionId: allowedSession, after: 0, epoch: "" }),
     });
     assert.equal(events.status, 401);
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("mobile document uploads require CSRF and an owned session, then attach server-prepared text to one send", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const url = new URL("/api/attachments", f.origin);
+    url.searchParams.set("sessionId", allowedSession);
+    url.searchParams.set("name", "notes.md");
+    const bytes = "# Mobile attachment\nReview this change safely.";
+    const upload = (headers: Record<string, string> = {}) => fetch(url, {
+      method: "POST",
+      headers: { origin: f.origin, "content-type": "text/markdown", ...headers },
+      body: bytes,
+    });
+
+    assert.equal((await upload()).status, 401);
+    assert.equal((await upload({ cookie: login.sessionCookie })).status, 403);
+    const uploaded = await upload({ cookie: login.sessionCookie, "x-csrf-token": login.csrfToken });
+    assert.equal(uploaded.status, 201);
+    const descriptor = await uploaded.json() as { id: string; name: string; kind: string; size: number; path?: string; text?: string };
+    assert.match(descriptor.id, /^[a-f0-9-]{36}$/);
+    assert.equal(descriptor.name, "notes.md");
+    assert.equal(descriptor.kind, "text");
+    assert.equal(descriptor.size, Buffer.byteLength(bytes));
+    assert.equal(descriptor.path, undefined);
+    assert.equal(descriptor.text, undefined);
+
+    const crossSession = await fetch(f.origin + "/api/operations", {
+      method: "POST",
+      headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ op: "send", args: {
+        sessionId: secondOwnedSession, text: "Проверь файл", requestId: "mobile-file-request-0002", attachmentIds: [descriptor.id],
+      } }),
+    });
+    assert.equal(crossSession.status, 403);
+
+    const fakeId = "99999999-9999-4999-8999-999999999999";
+    const sent = await fetch(f.origin + "/api/operations", {
+      method: "POST",
+      headers: {
+        origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ op: "send", args: {
+        sessionId: allowedSession, text: "Проверь файл", requestId: "mobile-file-request-0001",
+        attachmentIds: [descriptor.id], mobileAttachments: [{ id: fakeId, text: "Forged internal context" }],
+      } }),
+    });
+    assert.equal(sent.status, 200);
+    const call = f.calls.at(-1)!;
+    assert.equal(call.op, "send");
+    assert.equal(call.args.mobileAttachments, undefined);
+    assert.equal(call.args.attachmentIds, undefined);
+    assert.equal(call.attachments?.length, 1);
+    const prepared = call.attachments?.[0] as { id: string; name: string; text?: string; path?: string };
+    assert.equal(prepared.id, descriptor.id);
+    assert.equal(prepared.name, "notes.md");
+    assert.equal(prepared.text, bytes);
+    assert.equal(prepared.path, undefined);
+
+    const disposable = await upload({ cookie: login.sessionCookie, "x-csrf-token": login.csrfToken });
+    const disposableDescriptor = await disposable.json() as { id: string };
+    const removed = await fetch(`${f.origin}/api/attachments/${disposableDescriptor.id}?sessionId=${allowedSession}`, {
+      method: "DELETE",
+      headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken },
+    });
+    assert.equal(removed.status, 200);
+    assert.deepEqual(await removed.json(), { removed: true });
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("mobile attachment upload rejects foreign sessions, unsupported binaries and invalid PDF signatures", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const upload = (sessionId: string, name: string, type: string, body: Uint8Array | string) => {
+      const url = new URL("/api/attachments", f.origin);
+      url.searchParams.set("sessionId", sessionId);
+      url.searchParams.set("name", name);
+      return fetch(url, {
+        method: "POST",
+        headers: {
+          origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken,
+          "content-type": type,
+        },
+        body,
+      });
+    };
+    assert.equal((await upload(foreignSession, "notes.md", "text/markdown", "private" )).status, 403);
+    assert.equal((await upload(allowedSession, "payload.exe", "application/octet-stream", new Uint8Array([0, 1, 2, 3]))).status, 415);
+    assert.equal((await upload(allowedSession, "broken.pdf", "application/pdf", "not a pdf" )).status, 415);
+    const pdf = Buffer.from("%PDF-1.7\nfixture document");
+    const accepted = await upload(allowedSession, "report.pdf", "application/pdf", pdf);
+    assert.equal(accepted.status, 201);
+    const descriptor = await accepted.json() as { id: string; kind: string; path?: string };
+    assert.equal(descriptor.kind, "document");
+    assert.equal(descriptor.path, undefined);
+    assert.equal(f.calls.length, 0);
+
+    const sent = await fetch(f.origin + "/api/operations", {
+      method: "POST",
+      headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ op: "send", args: {
+        sessionId: allowedSession, text: "Прочитай PDF", requestId: "mobile-pdf-request-0001", attachmentIds: [descriptor.id],
+      } }),
+    });
+    assert.equal(sent.status, 200);
+    const prepared = f.calls.at(-1)?.attachments?.[0] as { path?: string; name: string; text?: string };
+    assert.equal(prepared.name, "report.pdf");
+    assert.equal(prepared.text, undefined);
+    assert.ok(prepared.path);
+    const relativePath = relative(join(f.dataDir, "telegram-incoming"), prepared.path!);
+    assert.ok(relativePath && !relativePath.startsWith(".."));
+    assert.equal(JSON.stringify(descriptor).includes(prepared.path), false);
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
