@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ClipboardCheck, CloudDownload, CloudUpload, FolderPlus, GitBranch, GitCommit, Plus, RefreshCw, X } from "lucide-react";
 import { readGitDiff, readGitStatus } from "../api.js";
 import type { MobileGitDiff, MobileGitStatus, MobileOperation } from "../types.js";
+import { DiffViewer } from "./diff-viewer.js";
 import { Badge, Button, Card, Input, Textarea } from "./ui/primitives.js";
 
 export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktreeCreated }: {
@@ -171,7 +172,7 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
           </form>}
           <div className="mt-5 flex flex-wrap gap-2">{diffScope && <Button variant="ghost" className="min-h-10 px-3" onClick={() => void loadDiff()}>Все файлы</Button>}<Button variant={view === "unstaged" ? "outline" : "ghost"} className="min-h-10 px-3" onClick={() => setView("unstaged")}>Рабочая папка</Button><Button variant={view === "staged" ? "outline" : "ghost"} className="min-h-10 px-3" onClick={() => setView("staged")}>Индекс</Button><Button type="button" className="ml-auto min-h-10 px-3" disabled={!connected || Boolean(busyAction)} onClick={() => setReviewDialogOpen(true)}><ClipboardCheck size={15} />Ревью Codex</Button></div>
           <p className="mt-2 break-all text-[11px] text-muted">{diffScope ? `Diff: ${diffScope.previousPath ? `${diffScope.previousPath} → ` : ""}${diffScope.path}` : "Diff всех файлов"}</p>
-          <Card className="mt-2 min-h-48 overflow-auto"><pre className="whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-relaxed text-[#dce3da] sm:p-4">{loadingDiffPath ? "Читаю diff…" : patch || (status.clean ? "Нет незакоммиченных изменений." : "Git не создал текстовый diff для этих изменений.")}</pre></Card>
+          <Card className="mt-2 min-h-48 overflow-hidden"><DiffViewer patch={patch} loading={Boolean(loadingDiffPath)} emptyMessage={status.clean ? "Нет незакоммиченных изменений." : "Git не создал текстовый diff для этих изменений."} /></Card>
           <form className="mt-4 flex flex-col gap-2 sm:flex-row" onSubmit={(event) => { event.preventDefault(); void mutate("gitCommit", { message: commitMessage }, "Изменения сохранены коммитом"); }}>
             <Input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder="Сообщение коммита" aria-label="Сообщение коммита" maxLength={200} />
             <Button type="submit" className="min-h-10 shrink-0" disabled={!connected || stagedCount === 0 || !commitMessage.trim() || Boolean(busyAction)}><GitCommit size={16} />{busyAction === "gitCommit" ? "Сохраняю" : `Коммит (${stagedCount})`}</Button>
