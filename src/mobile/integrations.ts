@@ -25,6 +25,24 @@ export interface MobileAppSummary {
   installUrl?: string;
 }
 
+export interface MobileMcpToolSummary {
+  name: string;
+  description?: string;
+}
+
+export interface MobileMcpServerSummary {
+  name: string;
+  status: "notStarted" | "starting" | "connected" | "authenticationRequired" | "failed" | "cancelled" | "disabled" | "unknown";
+  authStatus: "unknown" | "unsupported" | "notLoggedIn" | "bearerToken" | "oauth";
+  serverName?: string;
+  serverVersion?: string;
+  tools: MobileMcpToolSummary[];
+  toolCount: number;
+  resourceCount: number;
+  resourceTemplateCount: number;
+  discoveryFailed: boolean;
+}
+
 export interface MobileIntegrationInventory {
   pluginCatalogAvailable: boolean;
   appsAvailable: boolean;
@@ -182,4 +200,45 @@ export function normalizePluginInstallResult(value: unknown): Array<{ id: string
     const installUrl = safeHttpsUrl(app?.installUrl);
     return [{ id, name, ...(installUrl ? { installUrl } : {}) }];
   }).slice(0, 20);
+}
+
+/** Keep thread-scoped MCP status useful while omitting endpoints, schemas, errors and secrets. */
+export function normalizeMobileMcpServers(value: unknown): MobileMcpServerSummary[] {
+  return list(value).flatMap((raw): MobileMcpServerSummary[] => {
+    const server = record(raw);
+    const name = safeText(server?.name, 120);
+    if (!name) return [];
+
+    const rawTools = record(server?.tools) ?? {};
+    const tools = Object.entries(rawTools).slice(0, 100).flatMap(([rawName, rawTool]) => {
+      const toolName = safeText(rawName, 120);
+      if (!toolName) return [];
+      const tool = record(rawTool);
+      const description = safeText(tool?.description, 500);
+      return [{ name: toolName, ...(description ? { description } : {}) }];
+    });
+    const status = server?.runtimeStatus;
+    const allowedStatuses = new Set(["notStarted", "starting", "connected", "authenticationRequired", "failed", "cancelled", "disabled"]);
+    const rawAuthStatus = server?.authStatus;
+    const authStatus = rawAuthStatus === "needs_auth" ? "notLoggedIn" : rawAuthStatus;
+    const allowedAuthStatuses = new Set(["unknown", "unsupported", "notLoggedIn", "bearerToken", "oauth"]);
+    const serverInfo = record(server?.serverInfo);
+
+    return [{
+      name,
+      status: typeof status === "string" && allowedStatuses.has(status)
+        ? status as MobileMcpServerSummary["status"]
+        : "unknown",
+      authStatus: typeof authStatus === "string" && allowedAuthStatuses.has(authStatus)
+        ? authStatus as MobileMcpServerSummary["authStatus"]
+        : "unknown",
+      ...(safeText(serverInfo?.name, 120) ? { serverName: safeText(serverInfo?.name, 120)! } : {}),
+      ...(safeText(serverInfo?.version, 80) ? { serverVersion: safeText(serverInfo?.version, 80)! } : {}),
+      tools,
+      toolCount: Object.keys(rawTools).length,
+      resourceCount: list(server?.resources).length,
+      resourceTemplateCount: list(server?.resourceTemplates).length,
+      discoveryFailed: typeof server?.toolsError === "string" && server.toolsError.length > 0,
+    }];
+  }).slice(0, 100);
 }

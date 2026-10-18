@@ -353,7 +353,10 @@ export interface CodexSkillInfo {
 
 export interface CodexMcpServerStatus {
   name: string;
+  runtimeStatus?: "notStarted" | "starting" | "connected" | "authenticationRequired" | "failed" | "cancelled" | "disabled" | null;
+  serverInfo?: { name?: string | null; version?: string | null } | null;
   tools?: Record<string, unknown>;
+  toolsError?: string | null;
   resources?: unknown[];
   resourceTemplates?: unknown[];
   authStatus?: unknown;

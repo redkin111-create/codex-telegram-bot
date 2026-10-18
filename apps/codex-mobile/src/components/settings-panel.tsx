@@ -20,6 +20,29 @@ function safeLinkHost(value?: string): string | undefined {
   } catch { return undefined; }
 }
 
+function mcpStatusLabel(status: MobileCapabilities["mcpServers"][number]["status"]): string {
+  switch (status) {
+    case "connected": return "Подключён";
+    case "starting": return "Подключается";
+    case "authenticationRequired": return "Требуется вход";
+    case "notStarted": return "Не запущен";
+    case "failed": return "Ошибка подключения";
+    case "cancelled": return "Остановлен";
+    case "disabled": return "Отключён";
+    default: return "Статус неизвестен";
+  }
+}
+
+function mcpAuthLabel(status: MobileCapabilities["mcpServers"][number]["authStatus"]): string | undefined {
+  switch (status) {
+    case "notLoggedIn": return "Вход не выполнен";
+    case "bearerToken": return "Вход выполнен";
+    case "oauth": return "OAuth подключён";
+    case "unsupported": return "Авторизация не поддерживается";
+    default: return undefined;
+  }
+}
+
 export function SettingsPanel({ sessionId, connected, onClose, onOperation }: {
   sessionId: string;
   connected: boolean;
@@ -188,7 +211,17 @@ export function SettingsPanel({ sessionId, connected, onClose, onOperation }: {
             <h3 className="flex items-center gap-2 text-sm font-semibold"><Activity size={16} className="text-accent" /> Лимиты</h3>
             {capabilities.limits.length ? capabilities.limits.map((limit) => <div key={limit.id} className="space-y-2"><p className="text-xs text-muted">{limit.name}</p>{([limit.primary, limit.secondary].filter(Boolean) as NonNullable<typeof limit.primary>[]).map((window, index) => <div key={index}><div className="mb-1 flex justify-between text-xs"><span>{index === 0 ? "Основной период" : "Дополнительный период"}</span><span>{Math.round(window.usedPercent)}% использовано</span></div><div className="h-1.5 overflow-hidden rounded-full bg-elevated"><div className="h-full rounded-full bg-accent" style={{ width: `${window.usedPercent}%` }} /></div>{window.resetsAt && <p className="mt-1 flex items-center gap-1 text-[11px] text-muted"><Clock3 size={12} /> Сброс: {new Date(window.resetsAt * 1000).toLocaleString()}</p>}</div>)}</div>) : <p className="text-xs text-muted">Информация о лимитах сейчас недоступна.</p>}
           </Card>
-          <Card className="space-y-3 p-4"><h3 className="flex items-center gap-2 text-sm font-semibold"><Plug size={16} className="text-accent" /> MCP-серверы</h3>{capabilities.mcpServers.length ? <ul className="space-y-2">{capabilities.mcpServers.map((server) => <li key={server.name} className="flex items-center justify-between gap-3 text-sm"><span className="truncate">{server.name}</span><Badge>{server.toolCount} инструментов</Badge></li>)}</ul> : <p className="text-xs text-muted">Подключённых MCP-серверов нет или их список недоступен.</p>}</Card>
+          <Card className="space-y-3 p-4">
+            <h3 className="flex items-center gap-2 text-sm font-semibold"><Plug size={16} className="text-accent" /> MCP-серверы</h3>
+            {!capabilities.mcpServersAvailable ? <p className="text-xs text-muted">Состояние MCP-серверов для этого сеанса недоступно.</p>
+              : capabilities.mcpServers.length ? <ul className="space-y-2">{capabilities.mcpServers.map((server) => <li key={server.name} className="rounded-xl border border-border bg-[#111613] p-3">
+                <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="break-words text-sm font-medium">{server.name}</p>{server.serverName && <p className="mt-1 break-words text-[11px] text-muted">{server.serverName}{server.serverVersion ? ` · ${server.serverVersion}` : ""}</p>}</div><Badge>{mcpStatusLabel(server.status)}</Badge></div>
+                <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted"><span>{server.toolCount} инструментов</span><span>{server.resourceCount} ресурсов</span><span>{server.resourceTemplateCount} шаблонов</span>{mcpAuthLabel(server.authStatus) && <span>{mcpAuthLabel(server.authStatus)}</span>}</div>
+                {server.discoveryFailed && <p className="mt-2 text-[11px] text-[#ffc3bd]">Codex сообщил об ошибке списка инструментов. Подробности доступны в локальном Codex.</p>}
+                {server.tools.length > 0 && <details className="mt-3 border-t border-border pt-2"><summary className="min-h-8 cursor-pointer py-1 text-xs font-medium">Доступные инструменты ({server.toolCount})</summary><ul className="mt-1 space-y-2">{server.tools.map((tool) => <li key={tool.name} className="rounded-lg bg-[#171d18] p-2"><p className="break-words font-mono text-[11px]">{tool.name}</p>{tool.description && <p className="mt-1 break-words text-[11px] leading-relaxed text-muted">{tool.description}</p>}</li>)}</ul></details>}
+              </li>)}</ul> : <p className="text-xs text-muted">В этом сеансе нет подключённых MCP-серверов.</p>}
+            <p className="text-[11px] leading-relaxed text-muted">Показано состояние выбранного сеанса. Адреса, параметры инструментов и секреты авторизации не передаются в мобильный интерфейс.</p>
+          </Card>
           <Card className="space-y-3 p-4">
             <h3 className="flex items-center gap-2 text-sm font-semibold"><Puzzle size={16} className="text-accent" /> Плагины Codex</h3>
             {!capabilities.pluginCatalogAvailable ? <p className="text-xs leading-relaxed text-muted">Эта версия Codex не предоставляет каталог плагинов.</p> : capabilities.plugins.length ? <ul className="space-y-3">{capabilities.plugins.slice(0, 80).map((plugin) => <li key={`${plugin.marketplace}:${plugin.id}`} className="rounded-xl border border-border bg-[#111613] p-3">

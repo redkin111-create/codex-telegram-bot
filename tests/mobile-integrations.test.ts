@@ -2,7 +2,28 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { AcpClient } from "../src/acp/client.js";
 import { resolveRemotePluginInstall } from "../src/acp/plugins.js";
-import { normalizeMobileIntegrations } from "../src/mobile/integrations.js";
+import { normalizeMobileIntegrations, normalizeMobileMcpServers } from "../src/mobile/integrations.js";
+
+test("mobile MCP status keeps useful per-thread details while redacting endpoints, errors and schemas", () => {
+  const result = normalizeMobileMcpServers([{
+    name: "local-tools", runtimeStatus: "connected", authStatus: "oauth",
+    serverInfo: { name: "Local tools", version: "2.0", privatePath: "C:\\private\\server" },
+    httpOrigin: "https://internal.example.invalid", toolsError: "C:\\private\\token: secret",
+    tools: {
+      read_file: { description: "Read a fixture file", inputSchema: { properties: { token: { default: "secret" } } } },
+      "<script>": { description: "Literal <img src=x onerror=alert(1)>", inputSchema: { secret: "hidden" } },
+    },
+    resources: [{ uri: "file:///private/report" }], resourceTemplates: [{ uriTemplate: "file:///private/{name}" }],
+  }]);
+  assert.deepEqual(result, [{
+    name: "local-tools", status: "connected", authStatus: "oauth", serverName: "Local tools", serverVersion: "2.0",
+    tools: [
+      { name: "read_file", description: "Read a fixture file" },
+      { name: "<script>", description: "Literal <img src=x onerror=alert(1)>" },
+    ], toolCount: 2, resourceCount: 1, resourceTemplateCount: 1, discoveryFailed: true,
+  }]);
+  assert.doesNotMatch(JSON.stringify(result), /internal\.example|private|secret|inputSchema|file:\/\//i);
+});
 
 test("mobile integration inventory drops local paths and unsafe URLs while keeping useful status", () => {
   const result = normalizeMobileIntegrations({
@@ -52,6 +73,28 @@ test("remote plugin installation only resolves an available catalog entry withou
   assert.throws(() => resolveRemotePluginInstall(catalog, "disabled@official", "official"), /недоступен/i);
   assert.throws(() => resolveRemotePluginInstall(catalog, "installed@official", "official"), /уже установлен/i);
   assert.throws(() => resolveRemotePluginInstall({ marketplaces: [] }, "../../etc", "official"), /каталоге/i);
+});
+
+test("MCP inventory reads the selected thread and follows every cursor page", async () => {
+  const client = new AcpClient({ codexCliPath: "codex", workspace: "C:\\work", trustAllTools: false });
+  const calls: Array<Record<string, unknown>> = [];
+  const internal = client as unknown as { request: (method: string, params: unknown) => Promise<unknown> };
+  internal.request = async (method, params) => {
+    assert.equal(method, "mcpServerStatus/list");
+    calls.push(params as Record<string, unknown>);
+    const cursor = (params as { cursor?: string }).cursor;
+    return cursor
+      ? { data: [{ name: "second", tools: {} }], nextCursor: null }
+      : { data: [{ name: "first", tools: {} }], nextCursor: "mcp-page-2" };
+  };
+  try {
+    const servers = await client.listMobileMcpServers("owned-thread");
+    assert.deepEqual(servers.map((server) => server.name), ["first", "second"]);
+    assert.deepEqual(calls, [
+      { threadId: "owned-thread", detail: "full", limit: 100 },
+      { threadId: "owned-thread", detail: "full", limit: 100, cursor: "mcp-page-2" },
+    ]);
+  } finally { client.stop(); }
 });
 
 test("installed integration inventories remain visible when the runtime cannot load catalogs", () => {

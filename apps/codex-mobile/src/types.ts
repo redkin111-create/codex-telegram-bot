@@ -99,7 +99,19 @@ export interface MobileCapabilities {
   modes: Array<{ id: string; name: string; description?: string }>;
   reasoningLevels: string[];
   skills: Array<{ name: string; description?: string; enabled: boolean; scope?: "user" | "repo" | "system" | "admin"; canToggle: boolean; invokable: boolean }>;
-  mcpServers: Array<{ name: string; toolCount: number }>;
+  mcpServersAvailable: boolean;
+  mcpServers: Array<{
+    name: string;
+    status: "notStarted" | "starting" | "connected" | "authenticationRequired" | "failed" | "cancelled" | "disabled" | "unknown";
+    authStatus: "unknown" | "unsupported" | "notLoggedIn" | "bearerToken" | "oauth";
+    serverName?: string;
+    serverVersion?: string;
+    tools: Array<{ name: string; description?: string }>;
+    toolCount: number;
+    resourceCount: number;
+    resourceTemplateCount: number;
+    discoveryFailed: boolean;
+  }>;
   plugins: Array<{ id: string; name: string; marketplace: string; description?: string; capabilities: string[]; sourceType?: "remote" | "local" | "git" | "npm"; installed: boolean; enabled: boolean; installable: boolean; installPolicy: "AVAILABLE" | "INSTALLED_BY_DEFAULT" | "NOT_AVAILABLE" | "unknown"; availability: string; mustShowInstallationInterstitial: boolean }>;
   pluginCatalogAvailable: boolean;
   apps: Array<{ id: string; name: string; description?: string; enabled: boolean; accessible: boolean; callable: boolean; installUrl?: string }>;

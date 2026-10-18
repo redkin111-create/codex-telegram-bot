@@ -30,7 +30,7 @@ const MAX_MOBILE_TERMINAL_OUTPUT=64*1024;
 const MAX_MOBILE_PTY_BUFFER=512*1024;
 const MAX_MOBILE_PTY_READ=64*1024;
 const MOBILE_PTY_IDLE_MS=30*60*1000;
-import { normalizeMobileIntegrations, normalizePluginInstallResult } from "../mobile/integrations.js";
+import { normalizeMobileIntegrations, normalizeMobileMcpServers, normalizePluginInstallResult } from "../mobile/integrations.js";
 
 const log=createLogger("tma:agent");
 const MAX_IMG=3*1024*1024;
@@ -564,6 +564,12 @@ export class MiniAppAgent {
         const rawIntegrations=acp.isConnected&&typeof acp.mobileIntegrationInventory==="function"
           ? await acp.mobileIntegrationInventory(integrationThread?.cwd,sessionId||undefined).catch(()=>undefined)
           : undefined;
+        let mcpInventory:unknown=acp.availableMcpServers;
+        let mcpServersAvailable=acp.isConnected;
+        if(acp.isConnected&&integrationThread&&typeof acp.listMobileMcpServers==="function"){
+          try{mcpInventory=await acp.listMobileMcpServers(sessionId);mcpServersAvailable=true;}
+          catch{mcpInventory=[];mcpServersAvailable=false;}
+        }
         const skills=integrationThread?.cwd&&acp.isConnected&&typeof acp.listMobileSkills==="function"
           ? await acp.listMobileSkills(integrationThread.cwd).catch(()=>acp.availableSkills)
           : acp.availableSkills;
@@ -601,7 +607,7 @@ export class MiniAppAgent {
           skills:skills.slice(0,100).map(s=>({name:s.name.slice(0,160),description:s.description?.slice(0,500),
             enabled:s.enabled!==false,scope:s.scope,canToggle:(s.scope==="user"||s.scope==="repo")&&skillNameCounts.get(s.name)===1,
             invokable:s.enabled!==false&&skillNameCounts.get(s.name)===1})),
-          mcpServers:acp.availableMcpServers.slice(0,60).map(s=>({name:s.name.slice(0,120),toolCount:Object.keys(s.tools??{}).length})),
+          mcpServersAvailable,mcpServers:normalizeMobileMcpServers(mcpInventory),
           plugins:integrations.plugins,pluginCatalogAvailable:integrations.pluginCatalogAvailable,
           apps:integrations.apps,appsAvailable:integrations.appsAvailable,
           account:account.account?{type:account.account.type,email:account.account.email?.slice(0,200),plan:account.account.planType?.slice(0,100)}:undefined,

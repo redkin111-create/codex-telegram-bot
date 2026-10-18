@@ -56,7 +56,9 @@ async function startFixture() {
         online: true, ...settings, models: [{ id: settings.model, name: "Fixture Model" }],
         modes: [{ id: settings.mode, name: "Code" }], reasoningLevels: ["low", "medium", "high"],
         skills: [{ name: "fixture-skill", description: "Safe plain text", enabled: true, scope: "user", canToggle: true, invokable: true }],
-        mcpServers: [{ name: "fixture-mcp", toolCount: 2 }], limits: [], subagents: [], checkedAt: 1,
+        mcpServersAvailable: true,
+        mcpServers: [{ name: "fixture-mcp", status: "connected", authStatus: "oauth", tools: [], toolCount: 2, resourceCount: 0, resourceTemplateCount: 0, discoveryFailed: false }],
+        limits: [], subagents: [], checkedAt: 1,
         plugins: [], pluginCatalogAvailable: false, apps: [], appsAvailable: false,
       };
       if (job.op === "setModel") settings.model = String(job.args.modelId);

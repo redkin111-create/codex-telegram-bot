@@ -340,7 +340,14 @@ const agent = {
       modes: [{ id: "code", name: "Code" }, { id: "plan", name: "Plan" }],
       reasoningLevels: ["minimal", "low", "medium", "high", "max"],
       skills: fixtureSkills.map((skill) => ({ ...skill })),
-      mcpServers: [{ name: "Fixture MCP", toolCount: 2 }],
+      mcpServersAvailable: true,
+      mcpServers: [{
+        name: "Fixture MCP", status: "connected", authStatus: "oauth", serverName: "Fixture MCP server",
+        serverVersion: "1.0", tools: [
+          { name: "read_status", description: "Read a safe fixture status." },
+          { name: "host_info", description: "Text only: <script>alert(1)</script>." },
+        ], toolCount: 2, resourceCount: 1, resourceTemplateCount: 0, discoveryFailed: false,
+      }],
       plugins: [{ id: "reviewer@official", name: "Review helper", marketplace: "Fixture official",
         description: "Показывает результаты ревью изменений.", capabilities: ["review", "summaries"], sourceType: "remote",
         installed: fixturePluginInstalled, enabled: true, installable: !fixturePluginInstalled,

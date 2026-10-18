@@ -267,6 +267,20 @@ export class AcpClient extends EventEmitter {
     return { pluginCatalog, installedPlugins, apps, installedApps };
   }
 
+  /** Read only the MCP connections already associated with one Codex thread. */
+  async listMobileMcpServers(threadId: string): Promise<CodexMcpServerStatus[]> {
+    const servers: CodexMcpServerStatus[] = [];
+    let cursor: string | undefined;
+    do {
+      const response = await this.request("mcpServerStatus/list", {
+        threadId, detail: "full", limit: 100, ...(cursor ? { cursor } : {}),
+      }) as { data?: CodexMcpServerStatus[]; nextCursor?: string | null };
+      servers.push(...(response?.data ?? []));
+      cursor = response?.nextCursor ?? undefined;
+    } while (cursor);
+    return servers;
+  }
+
   /** Read the current skill inventory for one authorized project directory. */
   async listMobileSkills(cwd: string): Promise<CodexSkillInfo[]> {
     const response = await this.request("skills/list", { cwds: [cwd], forceReload: true }) as {
