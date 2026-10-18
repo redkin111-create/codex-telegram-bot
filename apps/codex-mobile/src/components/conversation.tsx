@@ -16,7 +16,7 @@ export type FollowUpMode = "queue" | "steer";
 export function Conversation({
   session, history, activity, events, queue, connected, connecting, loading, streamConnected,
   error, includeTools, onToggleTools, onConnect, onCancel, onFork, forking, onCreateSideChat, sideChatting, onReturnToParent, onCompact, compacting, onSend, onQueueRemove, onQueueResume, onQueueOpen, onLoadSkills,
-  onLoadEditableTurns, onEditAndRetry, onTranscribeAudio, onLoadRealtimeVoices, onStartRealtime, onStopRealtime, onUploadAttachment, onRemoveAttachment,
+  onLoadEditableTurns, onEditAndRetry, onTranscribeAudio, onLoadRealtimeVoices, onStartRealtime, onStopRealtime, onUploadAttachment, onRemoveAttachment, onOpenReviewLocation,
 }: {
   session?: MobileSession;
   history: HistoryEntry[];
@@ -52,6 +52,7 @@ export function Conversation({
   onStopRealtime: () => Promise<void>;
   onUploadAttachment: (sessionId: string, file: File) => Promise<MobileAttachment>;
   onRemoveAttachment: (sessionId: string, id: string) => Promise<{ removed: boolean }>;
+  onOpenReviewLocation: (location: { path: string; line?: number }) => void;
 }) {
   const activeSessionId = useRef(session?.id);
   activeSessionId.current = session?.id;
@@ -333,6 +334,7 @@ export function Conversation({
             <h3 className="mt-2 break-words text-sm font-semibold text-[#f4e4b2]">{segment.title}</h3>
             <p className="mt-1 break-all font-mono text-[11px] text-[#c8b783]">{segment.file}{segment.start !== undefined ? `:${segment.start}${segment.end !== undefined && segment.end !== segment.start ? `–${segment.end}` : ""}` : ""}</p>
             <div className="mt-2 text-xs leading-5 text-[#e7dfc9]"><SafeMarkdown text={segment.body} /></div>
+            <Button type="button" variant="ghost" className="mt-2 min-h-9 px-2 text-xs" onClick={() => onOpenReviewLocation({ path: segment.file, ...(segment.start === undefined ? {} : { line: segment.start }) })}>Открыть diff</Button>
           </section> : segment.text ? <SafeMarkdown key={`text-${segmentIndex}`} text={segment.text} /> : null)}</div> : <SafeMarkdown text={entry.text} />}
         </article>)}
         {events.filter((event) => event.kind === "transcript" && event.text && event.role).map((event) => <article key={`voice-${event.id}`} className={`max-w-[94%] rounded-2xl border px-4 py-3 ${event.role === "user" ? "ml-auto border-[#46533d] bg-[#20291b]" : "mr-auto border-border bg-panel"}`}>

@@ -54,6 +54,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const [gitOpen, setGitOpen] = useState(false);
+  const [gitReviewLocation, setGitReviewLocation] = useState<{ sessionId: string; path: string; line?: number }>();
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [pendingApproval, setPendingApproval] = useState<MobileApproval>();
   const [approvalOpen, setApprovalOpen] = useState(false);
@@ -618,7 +619,7 @@ export default function App() {
         <Button variant="ghost" className="min-h-10 px-2" aria-label="Обновить" onClick={() => void refreshSnapshot(true)} disabled={refreshing}>{refreshing ? <LoaderCircle size={17} className="animate-spin" /> : <RefreshCw size={17} />}</Button>
         {pendingApproval && <Button variant="outline" className="min-h-10 px-2 text-[#f2c66d]" aria-label="Открыть подтверждение" onClick={() => setApprovalOpen(true)}><ShieldAlert size={17} /></Button>}
         <Button variant="ghost" className="min-h-10 px-2" aria-label="Файлы проекта" onClick={() => setFilesOpen(true)} disabled={!selectedId}><FolderOpen size={17} /></Button>
-        <Button variant="ghost" className="min-h-10 px-2" aria-label="Git и изменения" onClick={() => setGitOpen(true)} disabled={!selectedId}><GitBranch size={17} /></Button>
+        <Button variant="ghost" className="min-h-10 px-2" aria-label="Git и изменения" onClick={() => { setGitReviewLocation(undefined); setGitOpen(true); }} disabled={!selectedId}><GitBranch size={17} /></Button>
         <Button variant="ghost" className="min-h-10 px-2" aria-label="Терминал проекта" onClick={() => setTerminalOpen(true)} disabled={!selectedId}><Terminal size={17} /></Button>
         <Button variant="ghost" className="min-h-10 px-2" aria-label="Настройки Codex" onClick={() => setSettingsOpen(true)}><SlidersHorizontal size={17} /></Button>
         <Button variant="ghost" className="min-h-10 px-2" aria-label="Устройства и безопасность" onClick={() => setDevicesOpen(true)}><Shield size={17} /><span className="sr-only">Устройства</span></Button>
@@ -648,12 +649,13 @@ export default function App() {
         onUploadAttachment={(sessionId, file) => uploadAttachment(sessionId, file, csrf)}
         onRemoveAttachment={(sessionId, id) => removeAttachment(sessionId, id, csrf)}
         onQueueRemove={(id) => void removeQueued(id)} onQueueResume={() => void resumeQueue()}
+        onOpenReviewLocation={(location) => { if (!selectedId) return; setGitReviewLocation({ sessionId: selectedId, ...location }); setGitOpen(true); }}
         onQueueOpen={readQueue} />
     </div>
     {devicesOpen && <DevicePanel current={device} csrf={csrf} onClose={() => setDevicesOpen(false)} onLogout={() => { setDevicesOpen(false); expireSession(); }} onSignOut={() => void signOut()} />}
     {settingsOpen && <SettingsPanel sessionId={selectedId} connected={connected} csrf={csrf} onAccountChanged={() => void refreshSnapshot(true)} onClose={() => setSettingsOpen(false)} onOperation={(op: MobileOperation, args) => operation(op, args)} />}
     {filesOpen && selectedId && <FilesPanel sessionId={selectedId} connected={connected} onClose={() => setFilesOpen(false)} onOperation={(op: MobileOperation, args) => operation(op, args)} />}
-    {gitOpen && selectedId && <GitPanel key={selectedId} sessionId={selectedId} connected={connected} onClose={() => setGitOpen(false)} onOperation={(op: MobileOperation, args) => operation(op, args)} onWorktreeCreated={async (id, path) => { await operation("select", { sessionId: id }); setSelectedSearchSession(undefined); setSelectedId(id); setSelectedProject(path); setGitOpen(false); setWorkspaceOpen(false); }} />}
+    {gitOpen && selectedId && <GitPanel key={selectedId} sessionId={selectedId} connected={connected} initialReviewLocation={gitReviewLocation?.sessionId === selectedId ? gitReviewLocation : undefined} onClose={() => { setGitOpen(false); setGitReviewLocation(undefined); }} onOperation={(op: MobileOperation, args) => operation(op, args)} onWorktreeCreated={async (id, path) => { await operation("select", { sessionId: id }); setSelectedSearchSession(undefined); setSelectedId(id); setSelectedProject(path); setGitOpen(false); setGitReviewLocation(undefined); setWorkspaceOpen(false); }} />}
     {terminalOpen && selectedId && selectedSession && <Suspense fallback={<div role="status" className="fixed inset-0 z-50 grid place-items-center bg-background text-sm text-muted">Открываю терминал…</div>}><TerminalPanel sessionId={selectedId} cwd={selectedSession.cwd} connected={connected} onClose={() => setTerminalOpen(false)} onOperation={(op: MobileOperation, args) => operation(op, args)} /></Suspense>}
     {approvalOpen && pendingApproval && <ApprovalPanel approval={pendingApproval} onResolve={answerApproval} onClose={() => setApprovalOpen(false)} />}
   </div>;

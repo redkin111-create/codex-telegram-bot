@@ -81,7 +81,7 @@ const history = new Map<string, Array<{ role: "user" | "assistant" | "tool"; tex
     { role: "assistant", text: "В тестовом проекте появилась функция приветствия.", timestamp: Date.now() - 85_000 },
     { role: "user", text: "Проверь экран Codex Mobile и сообщи, что видишь.", timestamp: Date.now() - 70_000 },
     { role: "assistant", text: "## Проверка готова\n\n- История загружена\n- **Безопасная разметка**\n\n[небезопасная ссылка](javascript:alert(1)) <img src=x onerror=alert(1)>", timestamp: Date.now() - 60_000 },
-    { role: "assistant", text: 'Ревью завершено.\n\n::code-comment{title="[P1] Не исполнять недоверенный текст" body="Этот текст содержит <img src=x onerror=alert(1)> и должен оставаться текстом." file="src/main.ts" start=3 end=5 priority=1}', timestamp: Date.now() - 58_000 },
+    { role: "assistant", text: 'Ревью завершено.\n\n::code-comment{title="[P1] Не исполнять недоверенный текст" body="Этот текст содержит <img src=x onerror=alert(1)> и должен оставаться текстом." file="src/main.ts" start=1 end=1 priority=1}', timestamp: Date.now() - 58_000 },
     { role: "tool", tool: "read_file", text: "Секретный вывод инструмента для теста.\nВ браузере показывается только по запросу.", timestamp: Date.now() - 55_000 },
   ]],
   [secondSession, [{ role: "assistant", text: "API fixture для переключения сеанса.", timestamp: Date.now() - 15_000 }]],

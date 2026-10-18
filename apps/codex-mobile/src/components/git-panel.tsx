@@ -6,12 +6,13 @@ import { hasUnresolvedMergeMarkers, isUnmergedGitChange } from "../lib/git-confl
 import { DiffViewer } from "./diff-viewer.js";
 import { Badge, Button, Card, Input, Textarea } from "./ui/primitives.js";
 
-export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktreeCreated }: {
+export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktreeCreated, initialReviewLocation }: {
   sessionId: string;
   connected: boolean;
   onClose: () => void;
   onOperation: (op: MobileOperation, args: Record<string, unknown>) => Promise<unknown>;
   onWorktreeCreated: (sessionId: string, path: string) => void | Promise<void>;
+  initialReviewLocation?: { path: string; line?: number };
 }) {
   const [status, setStatus] = useState<MobileGitStatus>();
   const [diff, setDiff] = useState<MobileGitDiff>();
@@ -40,11 +41,11 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
   const [conflictError, setConflictError] = useState("");
   const [conflictSaving, setConflictSaving] = useState(false);
 
-  async function refresh() {
+  async function refresh(scope: { path: string; previousPath?: string } | undefined = diffScope) {
     setLoading(true);
     setError("");
     try {
-      const [nextStatus, nextDiff] = await Promise.all([readGitStatus(sessionId), readGitDiff(sessionId, diffScope?.path, diffScope?.previousPath)]);
+      const [nextStatus, nextDiff] = await Promise.all([readGitStatus(sessionId), readGitDiff(sessionId, scope?.path, scope?.previousPath)]);
       setStatus(nextStatus);
       setBranchTarget((current) => nextStatus.branches.includes(current) ? current : nextStatus.branch);
       setRemoteBranchTarget((current) => nextStatus.remoteBranches.includes(current) ? current : nextStatus.remoteBranches[0] ?? "");
@@ -56,7 +57,11 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
     finally { setLoading(false); }
   }
 
-  useEffect(() => { void refresh(); }, [sessionId]);
+  useEffect(() => {
+    const scope = initialReviewLocation ? { path: initialReviewLocation.path } : undefined;
+    if (scope) setDiffScope(scope);
+    void refresh(scope);
+  }, [sessionId, initialReviewLocation?.path]);
 
   async function loadDiff(path?: string, previousPath?: string) {
     setLoadingDiffPath(path ?? "*");
@@ -158,6 +163,7 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
   }
 
   const patch = view === "staged" ? diff?.staged ?? "" : diff?.unstaged ?? "";
+  const focusedReviewLine = diffScope?.path === initialReviewLocation?.path ? initialReviewLocation?.line : undefined;
   const stagedCount = status?.changes.filter((change) => change.indexStatus !== " " && change.indexStatus !== "?").length ?? 0;
   const selectedRemote = status?.remotes.find((remote) => remote.name === remoteName);
   const remoteTargets = remoteAction === "push" ? selectedRemote?.pushTargets : selectedRemote?.fetchTargets;
@@ -217,8 +223,8 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
             <p className="text-[11px] leading-relaxed text-muted">Показаны уже загруженные на ноутбук ссылки. Здесь можно переключиться на существующую удалённую ветку.</p>
           </form>}
           <div className="mt-5 flex flex-wrap gap-2">{diffScope && <Button variant="ghost" className="min-h-10 px-3" onClick={() => void loadDiff()}>Все файлы</Button>}<Button variant={view === "unstaged" ? "outline" : "ghost"} className="min-h-10 px-3" onClick={() => setView("unstaged")}>Рабочая папка</Button><Button variant={view === "staged" ? "outline" : "ghost"} className="min-h-10 px-3" onClick={() => setView("staged")}>Индекс</Button><Button type="button" className="ml-auto min-h-10 px-3" disabled={!connected || Boolean(busyAction)} onClick={() => setReviewDialogOpen(true)}><ClipboardCheck size={15} />Ревью Codex</Button></div>
-          <p className="mt-2 break-all text-[11px] text-muted">{diffScope ? `Diff: ${diffScope.previousPath ? `${diffScope.previousPath} → ` : ""}${diffScope.path}` : "Diff всех файлов"}</p>
-          <Card className="mt-2 min-h-48 overflow-hidden"><DiffViewer patch={patch} loading={Boolean(loadingDiffPath)} emptyMessage={status.clean ? "Нет незакоммиченных изменений." : "Git не создал текстовый diff для этих изменений."} /></Card>
+          <p className="mt-2 break-all text-[11px] text-muted">{diffScope ? `Diff: ${diffScope.previousPath ? `${diffScope.previousPath} → ` : ""}${diffScope.path}` : "Diff всех файлов"}{focusedReviewLine !== undefined ? ` · строка ${focusedReviewLine} из ревью` : ""}</p>
+          <Card className="mt-2 min-h-48 overflow-hidden"><DiffViewer patch={patch} loading={Boolean(loadingDiffPath)} emptyMessage={status.clean ? "Нет незакоммиченных изменений." : "Git не создал текстовый diff для этих изменений."} focusLine={focusedReviewLine} /></Card>
           <form className="mt-4 flex flex-col gap-2 sm:flex-row" onSubmit={(event) => { event.preventDefault(); void mutate("gitCommit", { message: commitMessage }, "Изменения сохранены коммитом"); }}>
             <Input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder="Сообщение коммита" aria-label="Сообщение коммита" maxLength={200} />
             <Button type="submit" className="min-h-10 shrink-0" disabled={!connected || stagedCount === 0 || !commitMessage.trim() || Boolean(busyAction)}><GitCommit size={16} />{busyAction === "gitCommit" ? "Сохраняю" : `Коммит (${stagedCount})`}</Button>
