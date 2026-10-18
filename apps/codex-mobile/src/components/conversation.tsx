@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { GitFork, ImagePlus, LoaderCircle, Minimize2, Play, Send, Sparkles, Square, Trash2, Wrench } from "lucide-react";
+import { GitFork, ImagePlus, LoaderCircle, Minimize2, Pencil, Play, Send, Sparkles, Square, Trash2, Wrench } from "lucide-react";
 import "../../../../apps/mini-app/public/photo-input.js";
-import type { HistoryEntry, MobileActivity, MobileCapabilities, MobileLiveEvent, MobileQueue, MobileSession } from "../types.js";
+import type { HistoryEntry, MobileActivity, MobileCapabilities, MobileEditableTurn, MobileLiveEvent, MobileQueue, MobileSession } from "../types.js";
 import { imageUrl } from "../api.js";
 import { SafeMarkdown } from "../markdown.js";
 import { isMobileSkillNameSafe, prependMobileSkill } from "../skill-prompt.js";
@@ -14,6 +14,7 @@ export type FollowUpMode = "queue" | "steer";
 export function Conversation({
   session, history, activity, events, queue, connected, connecting, loading, streamConnected,
   error, includeTools, onToggleTools, onConnect, onCancel, onFork, forking, onCompact, compacting, onSend, onQueueRemove, onQueueResume, onQueueOpen, onLoadSkills,
+  onLoadLatestEditableTurn, onEditAndRetry,
 }: {
   session?: MobileSession;
   history: HistoryEntry[];
@@ -38,6 +39,8 @@ export function Conversation({
   onQueueResume: () => void;
   onQueueOpen: () => void;
   onLoadSkills: () => Promise<MobileCapabilities["skills"]>;
+  onLoadLatestEditableTurn: () => Promise<MobileEditableTurn>;
+  onEditAndRetry: (turnId: string, text: string) => Promise<void>;
 }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<PromptImage[]>([]);
@@ -52,12 +55,56 @@ export function Conversation({
   const [skillPickerLoading, setSkillPickerLoading] = useState(false);
   const [skillPickerError, setSkillPickerError] = useState("");
   const [availableSkills, setAvailableSkills] = useState<MobileCapabilities["skills"]>([]);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editLoading, setEditLoading] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editTurn, setEditTurn] = useState<MobileEditableTurn>();
+  const [editText, setEditText] = useState("");
+  const [editError, setEditError] = useState("");
+  const [editNotice, setEditNotice] = useState("");
 
   useEffect(() => {
     setSkillPickerOpen(false);
     setAvailableSkills([]);
     setSkillPickerError("");
+    setEditOpen(false);
+    setEditTurn(undefined);
+    setEditError("");
+    setEditNotice("");
   }, [session?.id]);
+
+  async function openEditDialog() {
+    setEditOpen(true);
+    setEditLoading(true);
+    setEditTurn(undefined);
+    setEditText("");
+    setEditError("");
+    setEditNotice("");
+    try {
+      const latest = await onLoadLatestEditableTurn();
+      setEditTurn(latest);
+      setEditText(typeof latest.text === "string" ? latest.text : "");
+    } catch (cause) {
+      setEditError(cause instanceof Error ? cause.message : "Не удалось загрузить последний запрос Codex");
+    } finally {
+      setEditLoading(false);
+    }
+  }
+
+  async function submitEdit() {
+    if (!editTurn?.editable || !editTurn.turnId || !editText.trim() || editSaving) return;
+    setEditSaving(true);
+    setEditError("");
+    try {
+      await onEditAndRetry(editTurn.turnId, editText.trim());
+      setEditOpen(false);
+      setEditNotice("Запрос повторно отправлен. Файлы и команды сами не откатывались.");
+    } catch (cause) {
+      setEditError(cause instanceof Error ? cause.message : "Не удалось повторно отправить запрос");
+    } finally {
+      setEditSaving(false);
+    }
+  }
 
   async function toggleSkillPicker() {
     if (skillPickerOpen) { setSkillPickerOpen(false); return; }
@@ -133,6 +180,10 @@ export function Conversation({
           {compacting ? <LoaderCircle size={14} className="animate-spin" /> : <Minimize2 size={14} />}
           Сократить контекст
         </Button>}
+        {connected && !session.archived && <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" onClick={() => void openEditDialog()} disabled={turnBusy || editLoading || editSaving} aria-label="Редактировать последний запрос">
+          {editLoading ? <LoaderCircle size={14} className="animate-spin" /> : <Pencil size={14} />}
+          Редактировать запрос
+        </Button>}
       </div>
       {toolEvents.length > 0 && <div className="mt-3 flex gap-2 overflow-x-auto pb-0.5" aria-label="Текущие события Codex">
         {toolEvents.map((event) => <span key={`${event.id}-${event.kind}`} className="flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-panel px-2.5 py-1 text-[11px] text-muted">{event.kind === "tool" ? <Wrench size={12} className="text-accent" /> : null}{event.label || event.status || "Событие"}</span>)}
@@ -164,6 +215,7 @@ export function Conversation({
     {error && <p className="mx-3 mb-2 rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd] sm:mx-5 md:mx-8" role="alert">{error}</p>}
     {imageError && <p className="mx-3 mb-2 rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd] sm:mx-5 md:mx-8" role="alert">{imageError}</p>}
     {compactNotice && <p className="mx-3 mb-2 rounded-xl border border-[#46533d] bg-[#20291b] px-3 py-2 text-sm text-[#d5f49c] sm:mx-5 md:mx-8" role="status">{compactNotice}</p>}
+    {editNotice && <p className="mx-3 mb-2 rounded-xl border border-[#46533d] bg-[#20291b] px-3 py-2 text-sm text-[#d5f49c] sm:mx-5 md:mx-8" role="status">{editNotice}</p>}
 
     {connected && turnBusy && <div className="border-t border-border bg-[#141815] px-3 pt-2 sm:px-5 md:px-8" role="group" aria-label="Как передать следующее сообщение">
       <div className="mx-auto flex max-w-4xl gap-2">
@@ -199,6 +251,32 @@ export function Conversation({
       <Button variant="outline" className="absolute right-4 top-4 z-10 min-h-11 px-4" aria-label="Закрыть скриншот" onClick={() => setOpenImage(undefined)}>Закрыть</Button>
       <img src={imageUrl(session.id, openImage.path)} alt={openImage.name} className="max-h-[88svh] max-w-full rounded-xl object-contain" />
       <span className="sr-only">{openImage.name}</span>
+    </div>}
+    {editOpen && <div className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-black/75 p-3 sm:p-5" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !editSaving) setEditOpen(false); }}>
+      <section className="my-auto w-full max-w-lg rounded-2xl border border-border bg-panel p-4 shadow-soft sm:p-5" role="dialog" aria-modal="true" aria-labelledby="edit-turn-title" aria-describedby="edit-turn-description">
+        <h2 id="edit-turn-title" className="text-base font-semibold">Редактировать последний запрос</h2>
+        <p id="edit-turn-description" className="mt-2 text-sm leading-6 text-muted">При подтверждении Codex удалит этот ход и последующие ходы из истории, затем отправит новый запрос. Уже сделанные изменения файлов, запущенные команды и внешние действия не отменяются.</p>
+        {editLoading ? <p className="mt-4 flex items-center gap-2 py-4 text-sm text-muted" role="status"><LoaderCircle size={16} className="animate-spin" /> Загружаю запрос…</p>
+          : editTurn?.editable && editTurn.turnId ? <>
+            {editTurn.skillNames?.length ? <p className="mt-3 text-xs text-muted">Сохранятся навыки: {editTurn.skillNames.join(", ")}</p> : null}
+            <label htmlFor="edit-turn-text" className="mt-3 block text-xs font-medium text-muted">Текст запроса</label>
+            <Textarea id="edit-turn-text" value={editText} onChange={(event) => setEditText(event.target.value)} rows={6} maxLength={16000} className="mt-1 max-h-[35svh] resize-y" aria-label="Новый текст запроса" />
+            <p className="mt-1 text-right text-[11px] text-muted">{editText.length}/16000</p>
+          </> : <div className="mt-4 rounded-xl border border-border bg-[#111613] p-3 text-sm text-muted">
+            <p className="font-medium text-text">Последний запрос нельзя безопасно редактировать</p>
+            {editTurn?.reason && <p className="mt-1">{editTurn.reason}</p>}
+            {(editTurn?.attachmentCount ?? 0) > 0 && <p className="mt-1">Вложения: {editTurn?.attachmentCount}. Чтобы не потерять их, отправьте новый запрос отдельно.</p>}
+            {!editTurn?.reason && !(editTurn?.attachmentCount ?? 0) && <p className="mt-1">Codex не нашёл подходящий текстовый запрос.</p>}
+          </div>}
+        <p className="mt-3 rounded-xl border border-[#5f4d2d] bg-[#292316] p-3 text-xs leading-5 text-[#f0d995]">Редактирование меняет историю сеанса. Оно не возвращает файлы к прежнему состоянию и не отменяет уже выполненные команды.</p>
+        {editError && <p className="mt-3 rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd]" role="alert">{editError}</p>}
+        <div className="mt-4 flex flex-wrap justify-end gap-2">
+          <Button type="button" variant="ghost" disabled={editSaving} onClick={() => setEditOpen(false)}>Отмена</Button>
+          <Button type="button" disabled={editLoading || editSaving || !editTurn?.editable || !editTurn.turnId || !editText.trim()} onClick={() => void submitEdit()}>
+            {editSaving ? <LoaderCircle size={15} className="animate-spin" /> : <Pencil size={15} />}{editSaving ? "Отправляю…" : "Заменить и отправить"}
+          </Button>
+        </div>
+      </section>
     </div>}
     {compactConfirm && <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/75 p-4" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !compacting) setCompactConfirm(false); }}>
       <section className="w-full max-w-md rounded-2xl border border-border bg-panel p-5 shadow-soft" role="dialog" aria-modal="true" aria-labelledby="compact-title" aria-describedby="compact-description">

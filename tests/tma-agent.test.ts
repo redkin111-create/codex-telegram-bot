@@ -35,7 +35,7 @@ test("mobile background process controls are limited to an owned thread and a pr
     isConnected:true,
     listProjects:async()=>[{id:"project",name:"Fixture",roots:[dir]}],
     listThreads:async()=>threads,
-    listAllThreads:async()=>threads,
+    listAllThreads:async(params?:{archived?:boolean})=>params?.archived?[]:threads,
     async listMobileBackgroundTerminals(threadId:string){listCalls.push(threadId);return [{itemId:"item-1",processId:"42"}];},
     async terminateMobileBackgroundTerminal(threadId:string,processId:string){if(threadId!==sessionId||processId!=="42")throw new Error("Фоновый процесс не найден в выбранном сеансе");terminateCalls.push({threadId,processId});},
     availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],
@@ -60,6 +60,83 @@ test("mobile background process controls are limited to an owned thread and a pr
     assert.deepEqual(stopped,{stopped:true,processId:"42"});
     assert.deepEqual(terminateCalls,[{threadId:sessionId,processId:"42"}]);
     assert.ok(listCalls.every((threadId)=>threadId===sessionId));
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("mobile edit and retry only reverts the latest owned idle text turn and submits through the shared runtime",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-turn-edit-"));
+  const sessionId="98989898-9898-4989-8989-989898989898";
+  const foreignId="99999999-9999-4999-8999-999999999999";
+  const threads=[
+    {id:sessionId,name:"Editable fixture",cwd:dir,source:"appServer",createdAt:1,updatedAt:2,recencyAt:2},
+    {id:foreignId,name:"Foreign fixture",cwd:dir,source:"appServer",createdAt:1,updatedAt:1,recencyAt:1},
+  ];
+  let latestTurn={turnId:"12345678-1234-4234-8234-123456789abc",text:"$fixture-review old prompt",skillNames:["fixture-review"],attachmentCount:0,editable:true};
+  let busy=false;
+  let activeTurn=false;
+  const reverts:Array<{threadId:string;turnId:string}>=[];
+  const submitted:Array<{userId:number;text:string;skillNames?:string[]}>=[];
+  const acp=Object.assign(new EventEmitter(),{
+    isConnected:true,
+    listProjects:async()=>[{id:"project",name:"Fixture",roots:[dir]}],
+    listThreads:async()=>threads,
+    listAllThreads:async(params?:{archived?:boolean})=>params?.archived?[]:threads,
+    hasActiveTurn:(id:string)=>id===sessionId&&activeTurn,
+    async readMobileLatestEditableTurn(threadId:string){assert.equal(threadId,sessionId);return {...latestTurn};},
+    async revertMobileThread(threadId:string,turnId:string){reverts.push({threadId,turnId});latestTurn={turnId:"abcdef01-2345-4234-8234-123456789abc",text:"edited prompt",skillNames:[],attachmentCount:0,editable:true};},
+    availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],
+    currentModelId:"default",currentModeId:"code",accountState:async()=>({}),
+  }) as unknown as AcpClient;
+  const runtime={get isBusy(){return busy;},queueLength:0};
+  const controller={list:()=>[],foreground:()=>({sessionId}),switchTo:async()=>({sessionId})};
+  const registry={
+    get:()=>({sessionId}),
+    controller:()=>controller,
+    runtimeForSession:()=>runtime,
+    async submitPrompt(userId:number,input:{text:string;skillNames?:string[]}){submitted.push({userId,text:input.text,skillNames:input.skillNames});return {kind:"submitted",outcome:{stopReason:"end_turn"}};},
+  } as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101","202"])} as AppConfig;
+  const owners=new TelegramSessionRegistry(dir);
+  owners.recordMobile(sessionId,101,dir,"Fixture");
+  owners.recordMobile(foreignId,202,dir,"Fixture");
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  const turnId="12345678-1234-4234-8234-123456789abc";
+  const args={sessionId,turnId,text:"$fixture-review updated prompt",requestId:"mobile-edit-123456"};
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
+    const last=await agent.executeMobile({op:"latestEditableTurn",userId:101,args:{sessionId}}) as {editable:boolean;turnId:string};
+    assert.equal(last.editable,true);
+    assert.equal(last.turnId,turnId);
+    await assert.rejects(agent.executeMobile({op:"editAndRetry",userId:202,args}),/Доступ к сеансу запрещён/);
+    latestTurn={...latestTurn,turnId:"fedcba98-7654-4321-8765-abcdefabcdef"};
+    await assert.rejects(agent.executeMobile({op:"editAndRetry",userId:101,args}),/изменился/i);
+    assert.deepEqual(reverts,[]);
+    latestTurn={...latestTurn,turnId};
+    busy=true;
+    await assert.rejects(agent.executeMobile({op:"editAndRetry",userId:101,args}),/Дождитесь завершения/);
+    assert.deepEqual(reverts,[]);
+    busy=false;
+    activeTurn=true;
+    await assert.rejects(agent.executeMobile({op:"editAndRetry",userId:101,args}),/Дождитесь завершения/);
+    assert.deepEqual(reverts,[]);
+    activeTurn=false;
+    const result=await agent.executeMobile({op:"editAndRetry",userId:101,args}) as {result:unknown};
+    assert.deepEqual(result.result,{stopReason:"end_turn"});
+    const duplicate=await agent.executeMobile({op:"editAndRetry",userId:101,args}) as {result:unknown};
+    assert.deepEqual(duplicate,result);
+    assert.deepEqual(reverts,[{threadId:sessionId,turnId}]);
+    assert.deepEqual(submitted,[{userId:101,text:"$fixture-review updated prompt",skillNames:["fixture-review"]}]);
+    const mismatchedAgent=new MiniAppAgent({cfg,acp,registry});
+    try{
+      await assert.rejects(mismatchedAgent.executeMobile({op:"editAndRetry",userId:101,args:{...args,text:"different prompt"}}),/ID задания уже использован/);
+    }finally{mismatchedAgent.stop();}
+    const replayAgent=new MiniAppAgent({cfg,acp,registry});
+    try{
+      const replay=await replayAgent.executeMobile({op:"editAndRetry",userId:101,args}) as {result:unknown};
+      assert.deepEqual(replay,result);
+    }finally{replayAgent.stop();}
+    assert.deepEqual(reverts,[{threadId:sessionId,turnId}]);
+    assert.deepEqual(submitted,[{userId:101,text:"$fixture-review updated prompt",skillNames:["fixture-review"]}]);
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 

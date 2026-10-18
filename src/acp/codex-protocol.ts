@@ -169,6 +169,14 @@ export interface CodexBackgroundTerminal {
   processId: string;
 }
 
+export interface CodexMobileEditableTurn {
+  turnId: string;
+  text: string;
+  skillNames: string[];
+  attachmentCount: number;
+  editable: boolean;
+}
+
 // ── turns ────────────────────────────────────────────────────────────────────
 
 export type CodexUserInput =

@@ -58,6 +58,7 @@ import type {
   CodexThreadListResponse,
   CodexThreadSummary,
   CodexBackgroundTerminal,
+  CodexMobileEditableTurn,
 } from "./codex-protocol.js";
 import type {
   ContentBlock,
@@ -331,6 +332,57 @@ export class AcpClient extends EventEmitter {
     }
     const result = await this.request("thread/backgroundTerminals/terminate", { threadId, processId }) as { terminated?: unknown };
     if (result?.terminated !== true) throw new AcpError("Codex не подтвердил остановку фонового процесса");
+  }
+
+  /** Read only the newest user turn in a form that can be safely edited on mobile. */
+  async readMobileLatestEditableTurn(threadId: string): Promise<CodexMobileEditableTurn | undefined> {
+    if (!/^[a-z0-9_-]{8,128}$/i.test(threadId)) throw new Error("Неверный сеанс Codex для редактирования запроса");
+    const response = await this.request("thread/turns/list", {
+      threadId, limit: 1, sortDirection: "desc", itemsView: "full",
+    }) as { data?: unknown };
+    if (!Array.isArray(response?.data)) throw new AcpError("Codex вернул неверный список запросов");
+    const turn = response.data[0];
+    if (!turn || typeof turn !== "object") return undefined;
+    const record = turn as Record<string, unknown>;
+    if (typeof record.id !== "string" || !/^[a-z0-9_-]{8,128}$/i.test(record.id) || !Array.isArray(record.items)) return undefined;
+    const userMessages = record.items.filter((item) => item && typeof item === "object" &&
+      (item as Record<string, unknown>).type === "userMessage") as Array<Record<string, unknown>>;
+    if (userMessages.length !== 1 || !Array.isArray(userMessages[0]!.content)) return undefined;
+    const skillNames: string[] = [];
+    const text: string[] = [];
+    let attachmentCount = 0;
+    let hasUnsupportedContent = false;
+    for (const value of userMessages[0]!.content) {
+      if (!value || typeof value !== "object") { hasUnsupportedContent = true; continue; }
+      const item = value as Record<string, unknown>;
+      if (item.type === "text" && typeof item.text === "string") text.push(item.text);
+      else if (item.type === "skill" && typeof item.name === "string" && /^[a-z0-9][a-z0-9._-]{0,79}$/i.test(item.name)) skillNames.push(item.name);
+      else { attachmentCount++; hasUnsupportedContent = true; }
+    }
+    const joinedText = text.join("\n").trim();
+    const status = typeof record.status === "string" ? record.status : "";
+    const terminalTurn = status === "completed" || status === "interrupted" || status === "failed";
+    return {
+      turnId: record.id,
+      text: joinedText,
+      skillNames: [...new Set(skillNames)],
+      attachmentCount,
+      editable: Boolean(joinedText) && !hasUnsupportedContent && terminalTurn,
+    };
+  }
+
+  /** Revalidate the latest turn and then use Codex's current history-revert API. */
+  async revertMobileThread(threadId: string, beforeTurnId: string): Promise<void> {
+    if (!/^[a-z0-9_-]{8,128}$/i.test(threadId) || !/^[a-z0-9_-]{8,128}$/i.test(beforeTurnId)) {
+      throw new Error("Неверный запрос для редактирования истории Codex");
+    }
+    const latest = await this.readMobileLatestEditableTurn(threadId);
+    if (!latest || latest.turnId !== beforeTurnId) throw new AcpError("История Codex изменилась. Обновите последний запрос перед редактированием");
+    if (!latest.editable) throw new AcpError("Последний запрос нельзя безопасно редактировать с телефона");
+    const result = await this.request("thread/revert", { threadId, beforeTurnId }) as {
+      thread?: { id?: unknown };
+    };
+    if (result?.thread?.id !== threadId) throw new AcpError("Codex не подтвердил изменение истории сеанса");
   }
 
   /** Read only the MCP connections already associated with one Codex thread. */

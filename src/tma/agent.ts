@@ -95,7 +95,7 @@ interface MobilePtyRecord {
   expiry?:NodeJS.Timeout;dataSubscription?:{dispose():void};exitSubscription?:{dispose():void};
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "searchThreads" | "listMoreThreads" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "mcpOAuthLogin" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+export type MobileLocalOperation = "capabilities" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "editAndRetry" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "mcpOAuthLogin" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 export class MiniAppAgent {
   private readonly abort=new AbortController();
@@ -402,6 +402,74 @@ export class MiniAppAgent {
         });
         const nextOffset=offset+page.length;
         return {sessions,...(nextOffset<visible.length?{nextOffset}:{})};
+      }
+      case "latestEditableTurn":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        await this.thread(sessionId,chatId);
+        if(await this.isArchivedThread(sessionId,chatId))throw new Error("Сначала восстановите сеанс из архива");
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        if(typeof acp.readMobileLatestEditableTurn!=="function")throw new Error("Эта версия Codex не поддерживает редактирование последнего запроса");
+        const turn=await acp.readMobileLatestEditableTurn(sessionId);
+        return turn??{editable:false,reason:"Последний запрос Codex не найден"};
+      }
+      case "editAndRetry":{
+        const turnId=argumentString(args,"turnId",128);
+        const message=argumentString(args,"text",16000).trim();
+        if(!message)throw new Error("Введите текст запроса для повтора");
+        const requestId=argumentString(args,"requestId",80);
+        if(!/^[a-zA-Z0-9_-]{12,80}$/.test(requestId))throw new Error("Неверный идентификатор запроса");
+        const fingerprint=tmaPromptFingerprint("edit-and-retry:"+turnId+":"+message,[]);
+        const key=chatId+":"+sessionId+":"+requestId;
+        const existing=this.sends.get(key);
+        if(existing){
+          if(existing.fingerprint!==fingerprint)throw new Error("Нельзя переиспользовать ID для другого задания");
+          return existing.promise;
+        }
+        let dispatched=false;
+        let reserved=false;
+        const pending=(async()=>{
+          try{
+            if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+            await this.thread(sessionId,chatId);
+            const recorded=this.promptJournal.lookup(key,fingerprint);
+            if(recorded.found)return recorded.result;
+            if(await this.isArchivedThread(sessionId,chatId))throw new Error("Сначала восстановите сеанс из архива");
+            if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+            if(!runtime)throw new Error("Сначала подключите этот сеанс Codex");
+            if(runtime.isBusy||runtime.queueLength>0||(typeof acp.hasActiveTurn==="function"&&acp.hasActiveTurn(sessionId)))throw new Error("Дождитесь завершения текущей задачи и очереди перед редактированием");
+            if(typeof acp.readMobileLatestEditableTurn!=="function"||typeof acp.revertMobileThread!=="function")throw new Error("Эта версия Codex не поддерживает редактирование последнего запроса");
+            const latest=await acp.readMobileLatestEditableTurn(sessionId);
+            if(!latest||latest.turnId!==turnId)throw new Error("Последний запрос Codex изменился. Обновите его перед редактированием");
+            if(!latest.editable)throw new Error("Последний запрос нельзя безопасно редактировать с телефона");
+            const controller=registry.controller(chatId);
+            if(controller.foreground().sessionId!==sessionId)await controller.switchTo(sessionId);
+            const current=registry.runtimeForSession(chatId,sessionId);
+            if(!current||current.isBusy||current.queueLength>0||(typeof acp.hasActiveTurn==="function"&&acp.hasActiveTurn(sessionId)))throw new Error("Сеанс изменил состояние. Обновите его перед редактированием");
+            this.promptJournal.reserve(key,fingerprint);
+            reserved=true;
+            dispatched=true;
+            await acp.revertMobileThread!(sessionId,turnId);
+            this.historyCache.delete(sessionId+":chat");
+            this.historyCache.delete(sessionId+":tools");
+            const input=textPrompt(message);
+            input.skillNames=latest.skillNames;
+            const result=await registry.submitPrompt(chatId,input);
+            const answer={result:result.kind==="submitted"?result.outcome:result.kind};
+            this.promptJournal.complete(key,answer);
+            return answer;
+          }catch(error){
+            if(dispatched)this.promptJournal.uncertain(key);
+            else if(reserved)this.promptJournal.clearBeforeDispatch(key);
+            throw error;
+          }
+        })();
+        this.sends.set(key,{fingerprint,promise:pending,at:Date.now()});
+        void pending.catch(()=>{if(!dispatched)this.sends.delete(key);});
+        if(this.sends.size>180){
+          for(const [k,v] of this.sends)if(Date.now()-v.at>60*60*1000)this.sends.delete(k);
+          if(this.sends.size>180)this.sends.delete(this.sends.keys().next().value!);
+        }
+        return pending;
       }
       case "terminalExec":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");

@@ -37,7 +37,7 @@ full Desktop replacement while any row below has open work.
 | Desktop area | Current mobile coverage | Remaining for parity |
 | --- | --- | --- |
 | Projects, sessions, history, live status and screenshots | Browse projects and sessions, read history, tool output and authorized screenshots; reconnect the event stream; rename, archive, restore and fork sessions; native Codex search reaches older active or archived sessions with cursor paging and owner filtering; unfiltered active/archive lists continue in 100-session pages scoped to the selected project and owner | Richer live task details, pinning, side-chat and remaining Desktop session actions |
-| Prompting and queue | Send text/images, stop, queue, resume and remove queued prompts; steer a confirmed active turn | Desktop-equivalent attachment types, edit/retry behavior and remaining turn controls |
+| Prompting and queue | Send text/images, stop, queue, resume and remove queued prompts; steer a confirmed active turn; edit/retry the latest idle text-only request through Codex's `thread/revert` and the shared runtime, preserving selected skills and durable duplicate protection | Editing requests with attachments, earlier turns and remaining turn controls; a history edit does not roll back files or commands |
 | Approvals | Owner-scoped phone cards for the active session; allow/deny choices are checked server-side; no phone response falls back to Telegram after 45 seconds | More approval cases and parity checks for supported Codex builds |
 | Files and edits | Browse the authorized session folder, create text files in existing folders, read UTF-8 text, edit/save up to 512 KB with stale-file detection; safely preview PNG/JPEG/WebP/GIF up to 3 MiB after path, owner and file-signature checks; hides common secret folders/files, skips symlinks and blocks writes while the connected Codex session is busy; read unified diffs with line numbers and distinct added/removed lines; start Codex's native inline reviewer against uncommitted changes, a base branch, a commit or custom instructions, with a phone confirmation | Other binary formats, inline review comments and Desktop-equivalent file-change navigation |
 | Terminal and Git | Interactive PTY shell in the authorized project folder with an explicit start warning, same-shell reattachment after closing/reopening the panel, bounded scrollback, input, resize, stop and 30-minute idle cleanup; retain the one-shot command mode with a 60-second timeout and bounded text output; list Codex background processes for the selected thread and stop one only after a phone confirmation and fresh thread-scoped Codex check; Git branch/status, staged/unstaged diff with line-numbered added/removed hunks, and per-file diff review (including renames); stage/unstage one reported project path, commit staged changes, list local branches, create a branch, switch to an existing local branch, create an isolated worktree plus Codex session from the current commit, and track an already-fetched remote branch locally; fetch from a configured safe remote, and push only the current branch after a phone confirmation | Conflict resolution, inline review comments and richer Desktop-equivalent review actions |
@@ -52,11 +52,18 @@ fixture. That proves the web flow and authorization boundary, not compatibility
 with every installed Codex Desktop build. Keep the remaining rows visible until
 they have both server-side authorization tests and browser coverage.
 
+Latest-turn editing reads Codex's native `thread/turns/list` result, checks that
+the turn is still current, and uses `thread/revert` with `beforeTurnId`; see the
+[Codex turn-list schema](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/schema/typescript/v2/ThreadTurnsListParams.ts)
+and [revert schema](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/schema/typescript/v2/ThreadRevertParams.ts).
+Requests with non-text input are rejected for editing rather than silently
+losing attachments.
+
 ## Verification checkpoint (2026-10-18)
 
 - Root TypeScript check: passed.
 - Mobile app TypeScript check and production build: passed.
-- Current full root test suite: 224/224 passed, including plugin/app redaction, native MCP OAuth URL validation, owner/thread/idle restrictions, paired-device/Origin/CSRF checks, live ACP install/uninstall checks, isolated worktree attach/rollback, owner-filtered native search and active/archive paging, owner-checked native review start and busy-turn rejection, unified-diff parsing and line numbering, bounded one-shot and interactive terminal checks, thread-scoped background process list/termination and explicit Codex termination confirmation, remote fetch/current-branch push authorization, image path/signature checks, skill enable/disable authorization and explicit skill input resolution, and thread-scoped MCP pagination/redaction.
+- Current full root test suite: 229/229 passed, including plugin/app redaction, native MCP OAuth URL validation, owner/thread/idle restrictions, paired-device/Origin/CSRF checks, live ACP install/uninstall checks, isolated worktree attach/rollback, owner-filtered native search and active/archive paging, owner-checked native review start and busy-turn rejection, unified-diff parsing and line numbering, bounded one-shot and interactive terminal checks, thread-scoped background process list/termination and explicit Codex termination confirmation, remote fetch/current-branch push authorization, image path/signature checks, skill enable/disable authorization and explicit skill input resolution, thread-scoped MCP pagination/redaction, latest-turn stale-status and attachment rejection, and edit/retry journal replay.
 - Focused branch-list/switch and API authorization checks: 2/2 passed.
 - Per-file Git diff filtering validates paths inside the authorized project and passes both names for a selected rename.
 - Mobile app `npm audit`: 0 vulnerabilities.
@@ -127,6 +134,14 @@ they have both server-side authorization tests and browser coverage.
   fixture and refresh the process list. Codex's explicit positive termination
   response is required; an absent or negative response remains an error. The
   fixture did not start or stop a host process.
+- Latest edit/retry was also checked through ACP/server tests: only a confirmed
+  terminal turn is editable, stale turns, unknown statuses, active Codex turns,
+  foreign sessions and repeated request IDs are rejected or replayed safely.
+- Browser skill at 574×637: open the latest-request editor, cancel it without
+  changing history, verify an attachment-bearing request is blocked, preserve
+  the draft after a simulated Codex error, then retry successfully and verify
+  the fake history contains the replacement prompt. The fixture did not call
+  Codex or change files.
 - Browser skill at 574×637: enable and disable a user-scope fixture skill,
   confirm the warning before each write, verify its status and next action
   update, and confirm an admin-scope skill has no toggle. The fake Codex fixture

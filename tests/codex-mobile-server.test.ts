@@ -426,6 +426,52 @@ test("listing Codex background processes requires an authenticated device and an
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
+test("editable-turn reads and edit-and-retry are paired, session-scoped and CSRF protected", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const url = f.origin + "/api/operations";
+    const read = (sessionId = allowedSession) => JSON.stringify({ op: "latestEditableTurn", args: { sessionId } });
+    const mutation = (sessionId = allowedSession) => JSON.stringify({ op: "editAndRetry", args: {
+      sessionId, turnId: "11111111-1111-4111-8111-111111111111", text: "Заменённый запрос", requestId: "mobile-edit-request-0001",
+    } });
+
+    const anonymousRead = await fetch(url, { method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: read() });
+    assert.equal(anonymousRead.status, 401);
+    const foreignRead = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: read(foreignSession),
+    });
+    assert.equal(foreignRead.status, 403);
+    const allowedRead = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: read(),
+    });
+    assert.equal(allowedRead.status, 200);
+    assert.equal((await allowedRead.json() as { op: string }).op, "latestEditableTurn");
+
+    const anonymousMutation = await fetch(url, { method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: mutation() });
+    assert.equal(anonymousMutation.status, 401);
+    const noCsrf = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: mutation(),
+    });
+    assert.equal(noCsrf.status, 403);
+    const wrongOrigin = await fetch(url, {
+      method: "POST", headers: { origin: "https://attacker.example", cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: mutation(),
+    });
+    assert.equal(wrongOrigin.status, 403);
+    const foreignMutation = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: mutation(foreignSession),
+    });
+    assert.equal(foreignMutation.status, 403);
+    assert.equal(f.calls.filter((call) => call.op === "editAndRetry").length, 0);
+
+    const accepted = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: mutation(),
+    });
+    assert.equal(accepted.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "editAndRetry");
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
 test("worktree creation requires the paired device, same Origin, CSRF and an owned session", async () => {
   const f = await startFixture();
   try {

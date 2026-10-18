@@ -96,6 +96,9 @@ const fixtureBackgroundProcesses = new Map<string, Array<{ itemId: string; proce
   [firstSession, [{ itemId: "fixture-command-item", processId: "4242" }]],
 ]);
 let fixtureBackgroundTerminalFailure = false;
+let fixtureLatestTurnId = "11111111-1111-4111-8111-111111111111";
+let fixtureEditUnavailable = false;
+let fixtureEditFailure = false;
 const fixtureFiles = new Map<string, string>([
   ["README.md", "# Fixture project\n\nRead-only history is followed by mobile file access.\n"],
   ["src/main.ts", "export function greet() {\n  return \"Hello from fixture\";\n}\n"],
@@ -197,6 +200,27 @@ const agent = {
   async executeMobile(job: { op: string; userId: number; args: Record<string, unknown> }): Promise<unknown> {
     const args = job.args;
     const sessionId = String(args.sessionId ?? "");
+    if (job.op === "latestEditableTurn") {
+      if (sessionId !== firstSession) throw new Error("Сеанс не найден");
+      return fixtureEditUnavailable
+        ? { editable: false, reason: "В запросе есть вложение, которое нельзя безопасно восстановить.", attachmentCount: 1 }
+        : { turnId: fixtureLatestTurnId, text: "Проверь экран Codex Mobile и сообщи, что видишь.", skillNames: [], attachmentCount: 0, editable: true };
+    }
+    if (job.op === "editAndRetry") {
+      if (fixtureEditFailure) { fixtureEditFailure = false; throw new Error("Тестовая ошибка Codex при повторной отправке"); }
+      if (sessionId !== firstSession || args.turnId !== fixtureLatestTurnId) throw new Error("Последний запрос Codex изменился");
+      if (fixtureEditUnavailable) throw new Error("Последний запрос нельзя безопасно редактировать с телефона");
+      const entries = history.get(sessionId) ?? [];
+      let lastUserIndex = -1;
+      for (let index = entries.length - 1; index >= 0; index--) if (entries[index]?.role === "user") { lastUserIndex = index; break; }
+      if (lastUserIndex < 0) throw new Error("Последний запрос не найден");
+      entries.splice(lastUserIndex);
+      entries.push({ role: "user", text: String(args.text ?? ""), timestamp: Date.now() });
+      entries.push({ role: "assistant", text: "Запрос повторно обработан из изолированной тестовой среды. Настоящий Codex не запускался.", timestamp: Date.now() });
+      history.set(sessionId, entries);
+      fixtureLatestTurnId = randomUUID();
+      return { result: "end_turn" };
+    }
     if (job.op === "searchThreads") {
       const query = String(args.query ?? "").trim().toLowerCase();
       const source = args.archived === true ? archivedSessions : sessions;
@@ -593,6 +617,15 @@ process.stdin.on("data", (chunk: string) => {
       } else if (command.command === "backgroundTerminalsReset") {
         fixtureBackgroundTerminalFailure = false;
         process.stdout.write("Fixture background terminal errors disabled.\n");
+      } else if (command.command === "turnEditUnavailable") {
+        fixtureEditUnavailable = true;
+        process.stdout.write("Fixture turn edit is unavailable because of an attachment.\n");
+      } else if (command.command === "turnEditReset") {
+        fixtureEditUnavailable = false;
+        process.stdout.write("Fixture turn edit is available.\n");
+      } else if (command.command === "turnEditError") {
+        fixtureEditFailure = true;
+        process.stdout.write("Fixture turn edit failure enabled.\n");
       }
     } catch { process.stdout.write("Fixture control command was ignored.\n"); }
   }
