@@ -693,7 +693,7 @@ const agent = {
       if (String(args.path ?? "") !== "src/conflict.ts" || fixtureConflictResolved) throw new Error("Файл не находится в состоянии конфликта Git");
       return {
         project: "codex-mobile", path: "src/conflict.ts",
-        base: "export const greeting = \"Hello\";\n",
+        base: "export const greeting = \"Hello\";\n// <img src=x onerror=alert(1)>\n",
         ours: "export const greeting = \"Hello\";\n",
         theirs: "export const greeting = \"Hi\";\n",
       };
