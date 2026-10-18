@@ -5,7 +5,7 @@ export function asLiveEvent(message: { id?: number; event: string; data: string 
   try {
     const value = JSON.parse(message.data) as Partial<MobileLiveEvent>;
     if (!Number.isSafeInteger(value.id) || typeof value.sessionId !== "string" ||
-        !["text", "tool", "status", "activity", "approval", "transcript", "plan", "compaction"].includes(String(value.kind))) return undefined;
+        !["text", "tool", "status", "activity", "approval", "elicitation", "transcript", "plan", "compaction"].includes(String(value.kind))) return undefined;
     if (value.kind === "plan") {
       if (!Array.isArray(value.plan) || value.plan.length > 30 || typeof value.at !== "number" || !Number.isFinite(value.at) ||
           value.explanation !== undefined && (typeof value.explanation !== "string" || value.explanation.length > 1000) ||
@@ -40,6 +40,10 @@ export function asLiveEvent(message: { id?: number; event: string; data: string 
           typeof approval.title !== "string" || typeof approval.kind !== "string" || !Array.isArray(approval.options) ||
           approval.options.length === 0 || approval.options.length > 8 ||
           approval.options.some((option) => !option || typeof option.id !== "string" || typeof option.label !== "string")) return undefined;
+    }
+    if (value.kind === "elicitation") {
+      if (value.label !== "MCP ждёт ответ" || typeof value.at !== "number" || !Number.isFinite(value.at)) return undefined;
+      return { id: value.id as number, sessionId: value.sessionId, kind: "elicitation", label: value.label, at: value.at };
     }
     return value as MobileLiveEvent;
   } catch { return undefined; }

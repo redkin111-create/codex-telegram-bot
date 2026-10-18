@@ -43,3 +43,16 @@ test("mobile SSE parser accepts only the fixed context-compaction confirmation",
   });
   assert.equal(event("Выполнено <img src=x onerror=alert(1)>"),undefined);
 });
+
+test("mobile SSE exposes only an MCP elicitation signal, never its form values or callback URL",()=>{
+  const event=asLiveEvent({id:10,event:"message",data:JSON.stringify({
+    id:10,sessionId,kind:"elicitation",at:125,label:"MCP ждёт ответ",
+    elicitation:{id:"55555555-5555-4555-8555-555555555555",url:"https://accounts.example/authorize?token=secret"},
+    privateData:"MUST_NOT_LEAK",
+  })});
+  assert.deepEqual(event,{id:10,sessionId,kind:"elicitation",at:125,label:"MCP ждёт ответ"});
+  const unsafe=asLiveEvent({id:11,event:"message",data:JSON.stringify({
+    id:11,sessionId,kind:"elicitation",at:126,label:"Open <img onerror=alert(1)>",
+  })});
+  assert.equal(unsafe,undefined);
+});

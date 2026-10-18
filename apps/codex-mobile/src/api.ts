@@ -1,5 +1,5 @@
 import type {
-  MobileAccountAction, MobileAccountsSnapshot, MobileActivity, MobileApproval, MobileAttachment, MobileCapabilities, MobileDevice, MobileFile, MobileFileListing, MobileGitConflictStages, MobileGitDiff, MobileGitStatus, MobileHistory, MobileOperation, MobileSnapshot,
+  MobileAccountAction, MobileAccountsSnapshot, MobileActivity, MobileApproval, MobileAttachment, MobileCapabilities, MobileDevice, MobileElicitation, MobileElicitationAction, MobileFile, MobileFileListing, MobileGitConflictStages, MobileGitDiff, MobileGitStatus, MobileHistory, MobileOperation, MobileSnapshot,
 } from "./types.js";
 
 export class MobileApiError extends Error {
@@ -58,6 +58,10 @@ export function readCapabilities(sessionId: string) {
 
 export function readApprovals(sessionId: string) {
   return jsonRequest<{ approvals: MobileApproval[] }>(`/api/approvals?sessionId=${encodeURIComponent(sessionId)}`);
+}
+
+export function readElicitations(sessionId: string) {
+  return jsonRequest<{ elicitations: MobileElicitation[] }>(`/api/elicitations?sessionId=${encodeURIComponent(sessionId)}`);
 }
 
 export function readFileListing(sessionId: string, path: string, offset?: number) {
@@ -119,6 +123,19 @@ export function resolveApproval(id: string, sessionId: string, optionId: string,
   return jsonRequest<{ resolved: boolean }>(`/api/approvals/${encodeURIComponent(id)}`, {
     method: "POST", headers: { "X-CSRF-Token": csrfToken },
     body: JSON.stringify({ sessionId, optionId }),
+  });
+}
+
+export function resolveElicitation(
+  id: string,
+  sessionId: string,
+  action: MobileElicitationAction,
+  content: Record<string, unknown> | undefined,
+  csrfToken: string,
+) {
+  return jsonRequest<{ resolved: boolean }>(`/api/elicitations/${encodeURIComponent(id)}`, {
+    method: "POST", headers: { "X-CSRF-Token": csrfToken },
+    body: JSON.stringify({ sessionId, action, ...(content ? { content } : {}) }),
   });
 }
 

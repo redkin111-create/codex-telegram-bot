@@ -36,6 +36,7 @@ import type {
   CodexCollaborationModeInfo,
   CodexCollaborationModeListResult,
   CodexItem,
+  CodexMcpElicitationResponse,
   CodexMcpServerStatus,
   CodexAccountInfo,
   CodexRateLimitSnapshot,
@@ -208,6 +209,7 @@ export class AcpClient extends EventEmitter {
   private readonly itemThread = new Map<string, string>();
 
   permissionHandler?: (params: RequestPermissionParams) => Promise<PermissionOutcome>;
+  elicitationHandler?: (params: Record<string, unknown>) => Promise<CodexMcpElicitationResponse>;
 
   get isConnected(): boolean {
     return this.connected;
@@ -1300,6 +1302,15 @@ export class AcpClient extends EventEmitter {
     params: Record<string, unknown>,
   ): Promise<void> {
     try {
+      if (method === "mcpServer/elicitation/request") {
+        let result: CodexMcpElicitationResponse = { action: "decline", content: null };
+        if (this.elicitationHandler) {
+          try { result = await this.elicitationHandler(params); }
+          catch { result = { action: "cancel", content: null }; }
+        }
+        this.send({ id, result });
+        return;
+      }
       if (method === "item/permissions/requestApproval") {
         const result = await decidePermissionsApproval(params, this.opts.trustAllTools, this.permissionHandler);
         this.send({ id, result });

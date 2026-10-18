@@ -141,7 +141,7 @@ export interface MobileAttachment {
 export interface MobileLiveEvent {
   id: number;
   sessionId: string;
-  kind: "text" | "tool" | "status" | "activity" | "approval" | "transcript" | "plan" | "compaction";
+  kind: "text" | "tool" | "status" | "activity" | "approval" | "elicitation" | "transcript" | "plan" | "compaction";
   text?: string;
   role?: "user" | "assistant";
   label?: string;
@@ -152,6 +152,32 @@ export interface MobileLiveEvent {
   plan?: Array<{ step: string; status: "pending" | "inProgress" | "completed" }>;
   at: number;
 }
+
+export interface MobileElicitationField {
+  name: string;
+  label: string;
+  type: "string" | "number" | "integer" | "boolean";
+  required: boolean;
+  description?: string;
+  options?: string[];
+  secret?: boolean;
+  minLength?: number;
+  maxLength?: number;
+  minimum?: number;
+  maximum?: number;
+}
+
+export interface MobileElicitation {
+  id: string;
+  serverName: string;
+  message: string;
+  mode: "form" | "url";
+  fields?: MobileElicitationField[];
+  url?: string;
+  urlHost?: string;
+}
+
+export type MobileElicitationAction = "accept" | "decline" | "cancel";
 
 export interface MobileApproval {
   id: string;

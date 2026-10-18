@@ -16,10 +16,33 @@ export interface LiveApproval {
   summary?:string;
   options:Array<{id:string;label:string}>;
 }
+export interface LiveElicitationField {
+  name:string;
+  label:string;
+  type:"string"|"number"|"integer"|"boolean";
+  required:boolean;
+  description?:string;
+  options?:string[];
+  secret?:boolean;
+  minLength?:number;
+  maxLength?:number;
+  minimum?:number;
+  maximum?:number;
+}
+export interface LiveElicitation {
+  id:string;
+  serverName:string;
+  message:string;
+  mode:"form"|"url";
+  fields?:LiveElicitationField[];
+  /** Only HTTPS links are sent; the UI displays the separately sanitized hostname. */
+  url?:string;
+  urlHost?:string;
+}
 export interface LiveEvent {
   id:number;
   sessionId:string;
-  kind:"text"|"tool"|"status"|"activity"|"approval"|"transcript"|"plan"|"compaction";
+  kind:"text"|"tool"|"status"|"activity"|"approval"|"elicitation"|"transcript"|"plan"|"compaction";
   text?:string;
   role?:"user"|"assistant";
   label?:string;

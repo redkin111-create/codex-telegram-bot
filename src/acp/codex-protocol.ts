@@ -394,6 +394,11 @@ export interface CodexMcpServerStatus {
   authStatus?: unknown;
 }
 
+export interface CodexMcpElicitationResponse {
+  action: "accept" | "decline" | "cancel";
+  content: Record<string, unknown> | null;
+}
+
 export interface CodexAccountInfo {
   type: "apiKey" | "chatgpt" | "amazonBedrock";
   email?: string | null;

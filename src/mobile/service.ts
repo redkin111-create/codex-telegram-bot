@@ -8,7 +8,7 @@ import type { TmaLiveFeed } from "../tma/live.js";
 import { createLogger } from "../logger.js";
 import { MobileAuthStore } from "./auth.js";
 import { getOrCreateMobileAdminToken, startMobileControlChannel } from "./control.js";
-import { createMobileServer, type MobileAgent, type MobileApprovals } from "./server.js";
+import { createMobileServer, type MobileAgent, type MobileApprovals, type MobileElicitations } from "./server.js";
 import type { MobileAccountController } from "./accounts.js";
 
 const log = createLogger("mobile");
@@ -51,6 +51,7 @@ export interface StartCodexMobileOptions {
   allowedOrigins?: string[];
   staticRoot?: string;
   approvals?: MobileApprovals;
+  elicitations?: MobileElicitations;
   accounts?: MobileAccountController;
 }
 
@@ -73,6 +74,7 @@ export async function startCodexMobileService(
     agent,
     accounts: options.accounts,
     approvals: options.approvals,
+    elicitations: options.elicitations,
     feed,
     dataDir: cfg.dataDir,
     staticRoot,

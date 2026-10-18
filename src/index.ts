@@ -8,7 +8,7 @@ import { MiniAppAgent, startMiniAppAgent } from "./tma/agent.js";
 import { enabledLocalTma, startLocalTma, type LocalTmaService } from "./tma/local.js";
 import { TmaLiveFeed } from "./tma/live.js";
 import { codexMobileEnabled, startCodexMobileService, type CodexMobileService } from "./mobile/service.js";
-import { MobileApprovalBroker } from "./mobile/approvals.js";
+import { MobileApprovalBroker, MobileElicitationBroker } from "./mobile/approvals.js";
 import { MobileAccountController } from "./mobile/accounts.js";
 import { createBot } from "./bot/bot.js";
 import { CANONICAL_DIR, loadConfig } from "./config.js";
@@ -71,7 +71,7 @@ async function main(): Promise<void> {
   const miniApp = enabledLocalTma() ? undefined : startMiniAppAgent({ cfg, acp, registry });
   let mobile: CodexMobileService | undefined;
   let mobileOwnedFeed: TmaLiveFeed | undefined;
-  let restoreMobileApproval: (() => void) | undefined;
+  let restoreMobileHandlers: (() => void) | undefined;
   if (codexMobileEnabled()) {
     try {
       // Use the adapters created by local TMA / remote TMA when available.
@@ -83,8 +83,12 @@ async function main(): Promise<void> {
       const previousApproval = acp.permissionHandler;
       const approvals = new MobileApprovalBroker(feed, registry, cfg.allowedUsers, previousApproval);
       acp.permissionHandler = approvals.handle;
-      restoreMobileApproval = () => {
+      const previousElicitation = acp.elicitationHandler;
+      const elicitations = new MobileElicitationBroker(feed, registry, cfg.allowedUsers);
+      acp.elicitationHandler = elicitations.handle;
+      restoreMobileHandlers = () => {
         if (acp.permissionHandler === approvals.handle) acp.permissionHandler = previousApproval;
+        if (acp.elicitationHandler === elicitations.handle) acp.elicitationHandler = previousElicitation;
       };
       const mobileAccounts = new MobileAccountController({
         allowedOwners: cfg.allowedUsers,
@@ -94,10 +98,10 @@ async function main(): Promise<void> {
         acp,
         registry,
       });
-      mobile = await startCodexMobileService(cfg, agent, feed, { approvals, accounts: mobileAccounts });
+      mobile = await startCodexMobileService(cfg, agent, feed, { approvals, elicitations, accounts: mobileAccounts });
     } catch (error) {
-      restoreMobileApproval?.();
-      restoreMobileApproval = undefined;
+      restoreMobileHandlers?.();
+      restoreMobileHandlers = undefined;
       mobileOwnedFeed?.dispose();
       mobileOwnedFeed = undefined;
       log.error("Could not start Codex Mobile (Telegram bot remains available):", error);
@@ -114,8 +118,8 @@ async function main(): Promise<void> {
     scheduler.stop();
     updater.stop();
     miniApp?.stop();
-    restoreMobileApproval?.();
-    restoreMobileApproval = undefined;
+    restoreMobileHandlers?.();
+    restoreMobileHandlers = undefined;
     void mobile?.stop().catch(error => log.warn("Codex Mobile shutdown:", error));
     mobileOwnedFeed?.dispose();
     void localTma?.stop().catch(error => log.warn("TMA shutdown:", error));

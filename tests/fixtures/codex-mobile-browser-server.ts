@@ -7,7 +7,7 @@ import { createServer, type Server } from "node:http";
 import { MobileAuthStore } from "../../src/mobile/auth.js";
 import type { MobilePromptAttachment } from "../../src/mobile/attachments.js";
 import { createMobileServer } from "../../src/mobile/server.js";
-import { MobileApprovalBroker } from "../../src/mobile/approvals.js";
+import { MobileApprovalBroker, MobileElicitationBroker } from "../../src/mobile/approvals.js";
 import { MiniAppAgent, type MobileLocalJob } from "../../src/tma/agent.js";
 import type { LiveEvent, TmaLiveFeed } from "../../src/tma/live.js";
 import type { TmaJob } from "../../src/tma/protocol.js";
@@ -877,12 +877,14 @@ const agent = {
   },
 };
 
+const fixtureRegistry = { ownerChatForSession: (id: string) => sessions.some((session) => session.id === id) ? ownerId : undefined } as unknown as RuntimeRegistry;
 const mobileApprovals = new MobileApprovalBroker(
     feed as unknown as TmaLiveFeed,
-    { ownerChatForSession: (id: string) => sessions.some((session) => session.id === id) ? ownerId : undefined } as unknown as RuntimeRegistry,
+    fixtureRegistry,
     new Set([String(ownerId)]),
     async () => ({ outcome: { outcome: "cancelled" } }),
   );
+const mobileElicitations = new MobileElicitationBroker(feed as unknown as TmaLiveFeed, fixtureRegistry, new Set([String(ownerId)]));
 let fixtureAccountActive = "fixture-personal";
 let fixtureAccountAutoRotate = false;
 const fixtureAccounts = [
@@ -917,7 +919,8 @@ const mobileAccounts = {
   },
 };
 const server: Server = createMobileServer({
-  auth, agent, accounts: mobileAccounts as never, feed: feed as unknown as TmaLiveFeed, approvals: mobileApprovals, dataDir,
+  auth, agent, accounts: mobileAccounts as never, feed: feed as unknown as TmaLiveFeed, approvals: mobileApprovals,
+  elicitations: mobileElicitations, dataDir,
   staticRoot: resolve("apps/codex-mobile/dist"), port: 0,
 });
 server.listen(0, "127.0.0.1");
@@ -989,6 +992,27 @@ process.stdin.on("data", (chunk: string) => {
             ? "Codex запрашивает файловые и сетевые права."
             : "Нужен доступ для выполнения команды проверки.",
         }).then((result) => process.stdout.write(JSON.stringify({ fixtureApprovalResult: result }) + "\n"));
+      } else if (command.command === "mcpElicitationForm" || command.command === "mcpElicitationUrl") {
+        const form = command.command === "mcpElicitationForm";
+        void mobileElicitations.handle({
+          threadId: firstSession,
+          serverName: "fixture-account",
+          mode: form ? "form" : "url",
+          message: form ? "Проверьте параметры запроса и ответьте MCP-серверу." : "Продолжите тестовый вход, затем вернитесь сюда.",
+          ...(form ? { requestedSchema: {
+            type: "object",
+            properties: {
+              account_id: { type: "string", title: "Account ID", description: "<img src=x onerror=alert(1)>", maxLength: 80 },
+              region: { type: "string", title: "Регион", enum: ["eu", "us"] },
+              count: { type: "integer", title: "Количество", minimum: 1, maximum: 10 },
+              enabled: { type: "boolean", title: "Разрешить доступ" },
+              api_token: { type: "string", title: "Ключ API", format: "password", minLength: 8, maxLength: 32 },
+            },
+            required: ["account_id", "region", "api_token"],
+          } } : {
+            url: "https://accounts.example.test/authorize?token=fixture-secret",
+          }),
+        }).then((result) => process.stdout.write(JSON.stringify({ fixtureElicitationResult: result }) + "\n"));
       } else if (command.command === "backgroundTerminalsError") {
         fixtureBackgroundTerminalFailure = true;
         process.stdout.write("Fixture background terminal errors enabled.\n");

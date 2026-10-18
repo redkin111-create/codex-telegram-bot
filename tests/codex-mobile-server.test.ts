@@ -30,7 +30,7 @@ class FixtureFeed {
   }
 }
 
-async function startFixture() {
+async function startFixture(extensions: Record<string, unknown> = {}) {
   const dataDir = await mkdtemp(join(tmpdir(), "codex-mobile-server-"));
   const auth = new MobileAuthStore(dataDir, { allowedOwners: new Set(["101"]) });
   const feed = new FixtureFeed();
@@ -114,6 +114,7 @@ async function startFixture() {
     staticRoot: join(dataDir, "no-static-app"),
     port: 0,
   };
+  Object.assign(options, extensions);
   const server = createMobileServer(options);
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -1039,6 +1040,47 @@ test("mobile approval cards are session scoped and decisions require Origin plus
     });
     assert.equal(decision.status, 200);
     assert.deepEqual(f.approvalDecisions, [{ ownerId: 101, sessionId: allowedSession, id: f.approvalId, optionId: "accept" }]);
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("MCP elicitation forms require the paired owner, session, Origin and CSRF", async () => {
+  const decisions: Array<{ ownerId: number; sessionId: string; id: string; action: string; content?: unknown }> = [];
+  const elicitation = {
+    id: "55555555-5555-4555-8555-555555555555", serverName: "fixture-account", message: "Enter account id",
+    mode: "form", fields: [{ name: "account_id", label: "Account id", type: "string", required: true }],
+  };
+  const f = await startFixture({
+    elicitations: {
+      listFor(ownerId: number, sessionId: string) { return ownerId === 101 && sessionId === allowedSession ? [elicitation] : []; },
+      resolve(ownerId: number, sessionId: string, id: string, action: string, content: unknown) {
+        if (ownerId !== 101 || sessionId !== allowedSession || id !== elicitation.id) return false;
+        decisions.push({ ownerId, sessionId, id, action, ...(content !== undefined ? { content } : {}) });
+        return true;
+      },
+    },
+  });
+  try {
+    const login = await pair(f.origin, f.auth);
+    const list = await fetch(f.origin + `/api/elicitations?sessionId=${allowedSession}`, {
+      headers: { origin: f.origin, cookie: login.sessionCookie },
+    });
+    assert.equal(list.status, 200);
+    assert.deepEqual((await list.json() as { elicitations: unknown[] }).elicitations, [elicitation]);
+
+    const foreign = await fetch(f.origin + `/api/elicitations?sessionId=${foreignSession}`, {
+      headers: { origin: f.origin, cookie: login.sessionCookie },
+    });
+    assert.equal(foreign.status, 403);
+    const payload = JSON.stringify({ sessionId: allowedSession, action: "accept", content: { account_id: "customer-7" } });
+    const noCsrf = await fetch(f.origin + `/api/elicitations/${elicitation.id}`, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: payload,
+    });
+    assert.equal(noCsrf.status, 403);
+    const answer = await fetch(f.origin + `/api/elicitations/${elicitation.id}`, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: payload,
+    });
+    assert.equal(answer.status, 200);
+    assert.deepEqual(decisions, [{ ownerId: 101, sessionId: allowedSession, id: elicitation.id, action: "accept", content: { account_id: "customer-7" } }]);
   } finally { await cleanup(f.server, f.dataDir); }
 });
 

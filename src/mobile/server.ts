@@ -5,7 +5,7 @@ import { extname, relative, resolve, sep } from "node:path";
 import type { TmaJob, TmaOperation } from "../tma/protocol.js";
 import { MobileAttachmentStore, MAX_MOBILE_ATTACHMENT_BYTES, type MobilePromptAttachment } from "./attachments.js";
 import type { MiniAppAgent, MobileLocalJob, MobileLocalOperation } from "../tma/agent.js";
-import type { LiveEvent, TmaLiveFeed } from "../tma/live.js";
+import type { LiveElicitation, LiveEvent, TmaLiveFeed } from "../tma/live.js";
 import { MobileAuthStore } from "./auth.js";
 import type { MobileAccountController } from "./accounts.js";
 
@@ -32,11 +32,17 @@ export interface MobileApprovals {
   resolve(ownerId: number, sessionId: string, id: string, optionId: string): boolean;
 }
 
+export interface MobileElicitations {
+  listFor(ownerId: number, sessionId: string): LiveElicitation[];
+  resolve(ownerId: number, sessionId: string, id: string, action: string, content?: unknown): boolean;
+}
+
 export interface MobileServerOptions {
   auth: MobileAuthStore;
   agent: MobileAgent;
   accounts?: MobileAccountController;
   approvals?: MobileApprovals;
+  elicitations?: MobileElicitations;
   feed: TmaLiveFeed;
   dataDir?: string;
   staticRoot?: string;
@@ -391,6 +397,27 @@ export function createMobileServer(options: MobileServerOptions): Server {
       }
       const resolved = options.approvals?.resolve(device.ownerId, sessionId, approval[1]!, optionId) ?? false;
       json(res, resolved ? 200 : 409, resolved ? { resolved: true } : { error: "Запрос истёк или уже обработан" });
+      return;
+    }
+    if (path === "/api/elicitations" && method === "GET") {
+      const sessionId = url.searchParams.get("sessionId") ?? "";
+      if (!safeSessionId(sessionId) || !await options.agent.canReadSession(sessionId, device.ownerId)) {
+        json(res, 403, { error: "Доступ к MCP-запросу запрещён" }); return;
+      }
+      json(res, 200, { elicitations: options.elicitations?.listFor(device.ownerId, sessionId) ?? [] });
+      return;
+    }
+    const elicitation = /^\/api\/elicitations\/([a-f0-9-]{36})$/.exec(path);
+    if (elicitation && method === "POST") {
+      const body = await readJson(req, 16_384);
+      const sessionId = typeof body.sessionId === "string" ? body.sessionId : "";
+      const action = typeof body.action === "string" ? body.action : "";
+      if (!safeSessionId(sessionId) || !["accept", "decline", "cancel"].includes(action) ||
+          !await options.agent.canReadSession(sessionId, device.ownerId)) {
+        json(res, 403, { error: "Доступ к MCP-запросу запрещён" }); return;
+      }
+      const resolved = options.elicitations?.resolve(device.ownerId, sessionId, elicitation[1]!, action, body.content) ?? false;
+      json(res, resolved ? 200 : 409, resolved ? { resolved: true } : { error: "Запрос истёк или ответ недопустим" });
       return;
     }
     if (path === "/api/capabilities" && method === "GET") {

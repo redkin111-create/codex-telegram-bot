@@ -1,10 +1,11 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FolderOpen, GitBranch, LoaderCircle, Menu, RefreshCw, Shield, ShieldAlert, SlidersHorizontal, Terminal } from "lucide-react";
 import {
-  asLiveEvent, logout, MobileApiError, openEventStream, parseSseBlock, readActivity, readApprovals,
-  readCapabilities, readHistory, readSession, readSnapshot, removeAttachment, resolveApproval, runOperation, transcribeAudio as transcribeAudioRequest, uploadAttachment,
+  asLiveEvent, logout, MobileApiError, openEventStream, parseSseBlock, readActivity, readApprovals, readElicitations,
+  readCapabilities, readHistory, readSession, readSnapshot, removeAttachment, resolveApproval, resolveElicitation, runOperation, transcribeAudio as transcribeAudioRequest, uploadAttachment,
 } from "./api.js";
 import { ApprovalPanel } from "./components/approval-panel.js";
+import { ElicitationPanel } from "./components/elicitation-panel.js";
 import { Conversation, type FollowUpMode, type PromptImage } from "./components/conversation.js";
 import { DevicePanel } from "./components/device-panel.js";
 import { FilesPanel } from "./components/files-panel.js";
@@ -13,7 +14,7 @@ import { Pairing } from "./components/pairing.js";
 import { SettingsPanel } from "./components/settings-panel.js";
 import { Workspace } from "./components/workspace.js";
 import type {
-  HistoryEntry, MobileActivity, MobileApproval, MobileAttachment, MobileDevice, MobileEditableTurns, MobileHistorySearch, MobileLiveEvent, MobileQueue, MobileRealtimeVoices, MobileSession, MobileSnapshot,
+  HistoryEntry, MobileActivity, MobileApproval, MobileAttachment, MobileDevice, MobileElicitation, MobileElicitationAction, MobileEditableTurns, MobileHistorySearch, MobileLiveEvent, MobileQueue, MobileRealtimeVoices, MobileSession, MobileSnapshot,
   MobileOperation,
 } from "./types.js";
 import { Button } from "./components/ui/primitives.js";
@@ -58,6 +59,8 @@ export default function App() {
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [pendingApproval, setPendingApproval] = useState<MobileApproval>();
   const [approvalOpen, setApprovalOpen] = useState(false);
+  const [pendingElicitation, setPendingElicitation] = useState<MobileElicitation>();
+  const [elicitationOpen, setElicitationOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const eventCursor = useRef(0);
   const eventEpoch = useRef("");
@@ -163,13 +166,22 @@ export default function App() {
       setQueue(emptyQueue);
       setPendingApproval(undefined);
       setApprovalOpen(false);
+      setPendingElicitation(undefined);
+      setElicitationOpen(false);
       return;
     }
     setPendingApproval(undefined);
+    setPendingElicitation(undefined);
+    setElicitationOpen(false);
     void readApprovals(selectedId).then(({ approvals }) => {
       const current = approvals[0];
       setPendingApproval(current);
       if (current) setApprovalOpen(true);
+    }).catch(handleApiError);
+    void readElicitations(selectedId).then(({ elicitations }) => {
+      const current = elicitations[0];
+      setPendingElicitation(current);
+      if (current) setElicitationOpen(true);
     }).catch(handleApiError);
     let alive = true;
     const load = async () => {
@@ -241,6 +253,13 @@ export default function App() {
                   if (event.kind === "approval" && event.approval) {
                     setPendingApproval(event.approval);
                     setApprovalOpen(true);
+                  } else if (event.kind === "elicitation") {
+                    void readElicitations(selectedId).then(({ elicitations }) => {
+                      if (selectedIdRef.current !== selectedId) return;
+                      const current = elicitations[0];
+                      setPendingElicitation(current);
+                      setElicitationOpen(Boolean(current));
+                    }).catch(handleApiError);
                   } else if (event.kind === "status") {
                     void readApprovals(selectedId).then(({ approvals }) => {
                       const current = approvals[0];
@@ -595,6 +614,16 @@ export default function App() {
     } catch (cause) { handleApiError(cause); throw cause; }
   }
 
+  async function answerElicitation(action: MobileElicitationAction, content?: Record<string, unknown>) {
+    if (!pendingElicitation || !selectedId) return;
+    try {
+      await resolveElicitation(pendingElicitation.id, selectedId, action, content, csrf);
+      setPendingElicitation(undefined);
+      setElicitationOpen(false);
+      setError("");
+    } catch (cause) { handleApiError(cause); throw cause; }
+  }
+
   const onAuthenticated = useCallback((nextDevice: MobileDevice, nextCsrf: string) => {
     setDevice(nextDevice);
     setCsrf(nextCsrf);
@@ -618,6 +647,7 @@ export default function App() {
         <span className="hidden text-[11px] text-muted sm:inline">{streamConnected ? "Поток активен" : "Переподключение…"}</span>
         <Button variant="ghost" className="min-h-10 px-2" aria-label="Обновить" onClick={() => void refreshSnapshot(true)} disabled={refreshing}>{refreshing ? <LoaderCircle size={17} className="animate-spin" /> : <RefreshCw size={17} />}</Button>
         {pendingApproval && <Button variant="outline" className="min-h-10 px-2 text-[#f2c66d]" aria-label="Открыть подтверждение" onClick={() => setApprovalOpen(true)}><ShieldAlert size={17} /></Button>}
+        {pendingElicitation && <Button variant="outline" className="min-h-10 px-2 text-accent" aria-label="Открыть запрос MCP" onClick={() => setElicitationOpen(true)}><ShieldAlert size={17} /></Button>}
         <Button variant="ghost" className="min-h-10 px-2" aria-label="Файлы проекта" onClick={() => setFilesOpen(true)} disabled={!selectedId}><FolderOpen size={17} /></Button>
         <Button variant="ghost" className="min-h-10 px-2" aria-label="Git и изменения" onClick={() => { setGitReviewLocation(undefined); setGitOpen(true); }} disabled={!selectedId}><GitBranch size={17} /></Button>
         <Button variant="ghost" className="min-h-10 px-2" aria-label="Терминал проекта" onClick={() => setTerminalOpen(true)} disabled={!selectedId}><Terminal size={17} /></Button>
@@ -659,5 +689,6 @@ export default function App() {
     {gitOpen && selectedId && <GitPanel key={selectedId} sessionId={selectedId} connected={connected} initialReviewLocation={gitReviewLocation?.sessionId === selectedId ? gitReviewLocation : undefined} onClose={() => { setGitOpen(false); setGitReviewLocation(undefined); }} onOperation={(op: MobileOperation, args) => operation(op, args)} onWorktreeCreated={async (id, path) => { await operation("select", { sessionId: id }); setSelectedSearchSession(undefined); setSelectedId(id); setSelectedProject(path); setGitOpen(false); setGitReviewLocation(undefined); setWorkspaceOpen(false); }} />}
     {terminalOpen && selectedId && selectedSession && <Suspense fallback={<div role="status" className="fixed inset-0 z-50 grid place-items-center bg-background text-sm text-muted">Открываю терминал…</div>}><TerminalPanel sessionId={selectedId} cwd={selectedSession.cwd} connected={connected} onClose={() => setTerminalOpen(false)} onOperation={(op: MobileOperation, args) => operation(op, args)} /></Suspense>}
     {approvalOpen && pendingApproval && <ApprovalPanel approval={pendingApproval} onResolve={answerApproval} onClose={() => setApprovalOpen(false)} />}
+    {elicitationOpen && pendingElicitation && <ElicitationPanel elicitation={pendingElicitation} onResolve={answerElicitation} onClose={() => setElicitationOpen(false)} />}
   </div>;
 }
