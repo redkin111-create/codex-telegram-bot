@@ -141,7 +141,7 @@ export interface MobileAttachment {
 export interface MobileLiveEvent {
   id: number;
   sessionId: string;
-  kind: "text" | "tool" | "status" | "activity" | "approval" | "transcript" | "plan";
+  kind: "text" | "tool" | "status" | "activity" | "approval" | "transcript" | "plan" | "compaction";
   text?: string;
   role?: "user" | "assistant";
   label?: string;

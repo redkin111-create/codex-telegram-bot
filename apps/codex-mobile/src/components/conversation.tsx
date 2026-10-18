@@ -68,6 +68,9 @@ export function Conversation({
   const [queueOpen, setQueueOpen] = useState(false);
   const [compactConfirm, setCompactConfirm] = useState(false);
   const [compactNotice, setCompactNotice] = useState("");
+  const [compactAwaitingConfirmation, setCompactAwaitingConfirmation] = useState(false);
+  const compactEventStart = useRef(0);
+  const compactConfirmationSeen = useRef(false);
   const [followUpMode, setFollowUpMode] = useState<FollowUpMode>("queue");
   const [openImage, setOpenImage] = useState<{ path: string; name: string }>();
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
@@ -104,6 +107,10 @@ export function Conversation({
     editLoadRequest.current++;
     setHistorySearchOpen(false);
     setHistorySearch("");
+    setCompactNotice("");
+    setCompactAwaitingConfirmation(false);
+    compactEventStart.current = 0;
+    compactConfirmationSeen.current = false;
     fullHistoryRequest.current++;
     setFullHistoryQuery("");
     setFullHistoryResults(undefined);
@@ -123,6 +130,26 @@ export function Conversation({
     setAttachments([]);
     setAttachmentError("");
   }, [session?.id]);
+
+  useEffect(() => {
+    if (!compactAwaitingConfirmation || !session?.id) return;
+    const confirmed = events.some((event) => event.kind === "compaction" && event.sessionId === session.id && event.id > compactEventStart.current);
+    if (confirmed) {
+      compactConfirmationSeen.current = true;
+      setCompactAwaitingConfirmation(false);
+      setCompactNotice("Codex подтвердил сокращение контекста.");
+    }
+  }, [events, compactAwaitingConfirmation, session?.id]);
+
+  useEffect(() => {
+    if (!compactAwaitingConfirmation) return;
+    const timeout = window.setTimeout(() => {
+      if (compactConfirmationSeen.current) return;
+      setCompactAwaitingConfirmation(false);
+      setCompactNotice("Статус неизвестен: Codex не подтвердил завершение сокращения контекста.");
+    }, 60_000);
+    return () => window.clearTimeout(timeout);
+  }, [compactAwaitingConfirmation]);
 
   async function searchFullHistory(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -332,7 +359,7 @@ export function Conversation({
 
   const status = session.archived ? "В архиве" : activity?.liveLabel || session.liveLabel || "Статус неизвестен";
   const turnBusy = session.busy || activity?.busy === true || queue.busy;
-  const toolEvents = events.filter((event) => event.kind === "tool" || event.kind === "status" || event.kind === "activity").slice(-5);
+  const toolEvents = events.filter((event) => event.kind === "tool" || event.kind === "status" || event.kind === "activity" || event.kind === "compaction").slice(-5);
   const currentPlanEvent = [...events].reverse().find((event) => event.kind === "plan");
   const currentPlan = currentPlanEvent?.plan ?? [];
   const completedPlanSteps = currentPlan.filter((step) => step.status === "completed").length;
@@ -366,7 +393,7 @@ export function Conversation({
           {forking ? <LoaderCircle size={14} className="animate-spin" /> : <GitFork size={14} />}
           {forking ? "Создаю…" : "Создать ответвление"}
         </Button>}
-        {connected && !session.ephemeral && <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" onClick={() => { setCompactNotice(""); setCompactConfirm(true); }} disabled={compacting || turnBusy || session.archived} aria-label="Сократить контекст сеанса">
+        {connected && !session.ephemeral && <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" onClick={() => { setCompactNotice(""); setCompactConfirm(true); }} disabled={compacting || compactAwaitingConfirmation || turnBusy || session.archived} aria-label="Сократить контекст сеанса">
           {compacting ? <LoaderCircle size={14} className="animate-spin" /> : <Minimize2 size={14} />}
           Сократить контекст
         </Button>}
@@ -447,7 +474,7 @@ export function Conversation({
     {attachmentError && <p className="mx-3 mb-2 rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd] sm:mx-5 md:mx-8" role="alert">{attachmentError}</p>}
     {voiceError && <p className="mx-3 mb-2 rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd] sm:mx-5 md:mx-8" role="alert">{voiceError}</p>}
     {transcribing && <p className="mx-3 mb-2 flex items-center gap-2 rounded-xl border border-border bg-panel px-3 py-2 text-xs text-muted sm:mx-5 md:mx-8" role="status"><LoaderCircle size={14} className="animate-spin" />Распознаю речь. Текст появится в черновике.</p>}
-    {compactNotice && <p className="mx-3 mb-2 rounded-xl border border-[#46533d] bg-[#20291b] px-3 py-2 text-sm text-[#d5f49c] sm:mx-5 md:mx-8" role="status">{compactNotice}</p>}
+    {compactNotice && <p className={`mx-3 mb-2 rounded-xl border px-3 py-2 text-sm sm:mx-5 md:mx-8 ${compactNotice.startsWith("Статус неизвестен") || compactNotice.includes("не подтвердил") ? "border-[#735c35] bg-[#302719] text-[#f0d995]" : "border-[#46533d] bg-[#20291b] text-[#d5f49c]"}`} role="status">{compactNotice}</p>}
     {editNotice && <p className="mx-3 mb-2 rounded-xl border border-[#46533d] bg-[#20291b] px-3 py-2 text-sm text-[#d5f49c] sm:mx-5 md:mx-8" role="status">{editNotice}</p>}
 
     {connected && turnBusy && <div className="border-t border-border bg-[#141815] px-3 pt-2 sm:px-5 md:px-8" role="group" aria-label="Как передать следующее сообщение">
@@ -538,7 +565,20 @@ export function Conversation({
         <p id="compact-description" className="mt-2 text-sm leading-6 text-muted">Codex подготовит краткое изложение старой части истории, чтобы освободить место для дальнейшей работы. Это действие изменит контекст сеанса.</p>
         <div className="mt-5 flex justify-end gap-2">
           <Button type="button" variant="ghost" disabled={compacting} onClick={() => setCompactConfirm(false)}>Отмена</Button>
-          <Button type="button" disabled={compacting || turnBusy} onClick={() => { setCompactNotice(""); void onCompact().then(() => { setCompactConfirm(false); setCompactNotice("Запрос принят Codex. Факт завершения будет показан только после подтверждения runtime."); }).catch(() => setCompactConfirm(false)); }}>
+          <Button type="button" disabled={compacting || compactAwaitingConfirmation || turnBusy} onClick={() => {
+            setCompactNotice("");
+            compactConfirmationSeen.current = false;
+            compactEventStart.current = events.filter((event) => event.sessionId === session?.id).reduce((latest, event) => Math.max(latest, event.id), 0);
+            setCompactAwaitingConfirmation(true);
+            void onCompact().then(() => {
+              setCompactConfirm(false);
+              if (!compactConfirmationSeen.current) setCompactNotice("Запрос принят Codex. Ожидается подтверждение завершения.");
+            }).catch(() => {
+              setCompactAwaitingConfirmation(false);
+              setCompactConfirm(false);
+              setCompactNotice("Codex не подтвердил принятие запроса.");
+            });
+          }}>
             {compacting ? <LoaderCircle size={15} className="animate-spin" /> : <Minimize2 size={15} />}Сократить контекст
           </Button>
         </div>

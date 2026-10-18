@@ -19,7 +19,7 @@ export interface LiveApproval {
 export interface LiveEvent {
   id:number;
   sessionId:string;
-  kind:"text"|"tool"|"status"|"activity"|"approval"|"transcript"|"plan";
+  kind:"text"|"tool"|"status"|"activity"|"approval"|"transcript"|"plan"|"compaction";
   text?:string;
   role?:"user"|"assistant";
   label?:string;
@@ -130,7 +130,10 @@ export class TmaLiveFeed {
     const turn=p.turn&&typeof p.turn==="object"?p.turn as Record<string,unknown>:{};
     const id=str(p.threadId||turn.threadId,128);
     if(!id)return;
-    if(method==="turn/started"){
+    if(method==="item/completed"&&p.item&&typeof p.item==="object"&&
+      (p.item as Record<string,unknown>).type==="contextCompaction"){
+      this.publish(id,{kind:"compaction",label:"Codex подтвердил сокращение контекста"});
+    }else if(method==="turn/started"){
       this.publish(id,{kind:"plan",turnId:str(turn.id,128),plan:[]});
       this.status(id,"working","Codex выполняет задание");
     }

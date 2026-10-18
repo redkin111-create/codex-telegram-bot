@@ -113,6 +113,20 @@ test("live feed publishes bounded current-turn plans without forwarding extra pr
   }finally{stop();feed.dispose();}
 });
 
+test("live feed marks context compaction complete only for Codex's completed compaction item",()=>{
+  const acp=new EventEmitter() as AcpClient;
+  const feed=new TmaLiveFeed(acp);
+  const received:Array<{kind:string;label?:string}>=[];
+  const stop=feed.subscribe(sid,0,event=>received.push(event));
+  try{
+    acp.emit("notification","item/started",{threadId:sid,item:{id:"compact-1",type:"contextCompaction",status:"inProgress"}});
+    assert.equal(received.length,0);
+    acp.emit("notification","item/completed",{threadId:sid,item:{id:"compact-1",type:"contextCompaction",status:"completed",privateData:"MUST_NOT_LEAK"}});
+    assert.deepEqual(received.map(({kind,label})=>({kind,label})),[{kind:"compaction",label:"Codex подтвердил сокращение контекста"}]);
+    assert(!JSON.stringify(received).includes("MUST_NOT_LEAK"));
+  }finally{stop();feed.dispose();}
+});
+
 test("live feed bounds realtime transcripts and publishes generic connection endings",()=>{
   const acp=new EventEmitter() as AcpClient;
   const feed=new TmaLiveFeed(acp);

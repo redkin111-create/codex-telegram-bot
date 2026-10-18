@@ -25,6 +25,7 @@ const projectTwo = "C:\\fixture\\other-project";
 const screenshotPath = "C:\\fixture\\codex-mobile\\screenshots\\sample.png";
 const fixturePinnedSection = { id: "01984de2-8f74-7c91-a3b2-5c5e937cf318", name: "Закреплённые", builtIn: true };
 const fixtureSectionsAvailable = process.env.CODEX_MOBILE_FIXTURE_SECTIONS_UNAVAILABLE !== "1";
+const fixtureCompactionUnconfirmed = process.env.CODEX_MOBILE_FIXTURE_COMPACTION_UNCONFIRMED === "1";
 const fixtureSections = [{ id: "88888888-8888-4888-8888-888888888888", name: "В работе" }];
 type FixtureSession = { id: string; title: string; cwd: string; updatedAt: number; source: string; section?: { id: string; name: string; builtIn?: boolean }; ephemeral?: boolean; parentThreadId?: string };
 
@@ -567,6 +568,7 @@ const agent = {
     if (job.op === "compactThread") {
       if (controlled.get(sessionId)?.busy) throw new Error("Нельзя сократить контекст, пока Codex выполняет задачу");
       feed.publish(sessionId, { kind: "activity", label: "Запрос на сокращение контекста принят тестовой средой" });
+      if (!fixtureCompactionUnconfirmed) feed.publish(sessionId, { kind: "compaction", label: "Codex подтвердил сокращение контекста" });
       return { started: true };
     }
     if (job.op === "installPlugin") {

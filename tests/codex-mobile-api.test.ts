@@ -33,3 +33,13 @@ test("mobile SSE parser rejects malformed or oversized plan events",()=>{
   assert.equal(event(Array.from({length:31},(_,index)=>({step:`Шаг ${index}`,status:"pending"}))),undefined);
   assert.equal(event([{step:"Шаг",status:"pending"}],"x".repeat(1001)),undefined);
 });
+
+test("mobile SSE parser accepts only the fixed context-compaction confirmation",()=>{
+  const event=(label:string)=>asLiveEvent({id:9,event:"message",data:JSON.stringify({
+    id:9,sessionId,kind:"compaction",label,at:124,privateData:"MUST_NOT_LEAK",
+  })});
+  assert.deepEqual(event("Codex подтвердил сокращение контекста"),{
+    id:9,sessionId,kind:"compaction",label:"Codex подтвердил сокращение контекста",at:124,
+  });
+  assert.equal(event("Выполнено <img src=x onerror=alert(1)>"),undefined);
+});
