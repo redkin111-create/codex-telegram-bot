@@ -76,6 +76,11 @@ const archivedSessions: FixtureSession[] = [
   { id: archivedFixtureSession, title: "Старый архивный сеанс", cwd: projectOne, updatedAt: Date.now() - 30_000, source: "appServer" },
   { id: olderArchivedFixtureSession, title: "Ещё один архивный сеанс", cwd: projectOne, updatedAt: Date.now() - 60_000, source: "cli" },
 ];
+const fixtureReadStates = new Map<string, { firstUnread: null | { type: "threadStart" } | { type: "turn"; turnId: string }; revision: string }>([
+  [firstSession, { firstUnread: { type: "turn", turnId: "fixture-unread-turn" }, revision: "fixture-rev-1" }],
+  [secondSession, { firstUnread: null, revision: "fixture-rev-1" }],
+]);
+let fixtureReadStateConflict = process.env.CODEX_MOBILE_FIXTURE_READ_STATE_CONFLICT === "1";
 const history = new Map<string, Array<{ role: "user" | "assistant" | "tool"; text: string; tool?: string; timestamp: number }>>([
   [firstSession, [
     { role: "user", text: "Старый запрос: добавь функцию приветствия.", timestamp: Date.now() - 90_000 },
@@ -274,6 +279,36 @@ const agent = {
       const entries = beforeOffset === 1 ? allMatches.slice(0, 1) : allMatches.slice(-100);
       const startOffset = beforeOffset === 1 ? 0 : Math.max(allMatches.length - entries.length, 0);
       return { entries, total: allMatches.length, skippedLargeRecords: 0, startOffset, ...(startOffset > 0 ? { nextOffset: startOffset } : {}), revision: "0123456789abcdef" };
+    }
+    if (job.op === "listThreadReadStates") {
+      if (job.userId !== ownerId || !Array.isArray(args.sessionIds) || args.sessionIds.length > 1000) throw new Error("Доступ к сеансу запрещён");
+      const states: Record<string, { firstUnread: null | { type: "threadStart" } | { type: "turn"; turnId: string }; revision: string }> = {};
+      for (const id of args.sessionIds) {
+        if (typeof id === "string" && [...sessions, ...archivedSessions].some((session) => session.id === id)) {
+          const state = fixtureReadStates.get(id);
+          if (state) states[id] = state;
+        }
+      }
+      return { states };
+    }
+    if (job.op === "updateThreadReadState") {
+      if (job.userId !== ownerId || ![...sessions, ...archivedSessions].some((session) => session.id === sessionId)) throw new Error("Доступ к сеансу запрещён");
+      const state = fixtureReadStates.get(sessionId);
+      if (!state) throw new Error("Codex не предоставляет управление статусом прочтения для этого сеанса");
+      if (fixtureReadStateConflict) {
+        fixtureReadStateConflict = false;
+        const nextRevision = Number.parseInt(state.revision.split("-").at(-1) ?? "1", 10) + 1;
+        fixtureReadStates.set(sessionId, { ...state, revision: `fixture-rev-${nextRevision}` });
+        throw new Error("Статус прочтения изменился в Codex Desktop. Обновите список сеансов.");
+      }
+      if (args.expectedRevision !== state.revision) throw new Error("Статус прочтения изменился. Обновите список сеансов и повторите действие.");
+      if (args.operation !== "read" && args.operation !== "unread") throw new Error("Неизвестное действие со статусом прочтения");
+      const updated = {
+        firstUnread: args.operation === "read" ? null : { type: "threadStart" as const },
+        revision: `fixture-rev-${Number.parseInt(state.revision.split("-").at(-1) ?? "1", 10) + 1}`,
+      };
+      fixtureReadStates.set(sessionId, updated);
+      return { sessionId, readState: updated };
     }
     if (job.op === "listThreadSections") return fixtureSections.map((section) => ({ ...section }));
     if (job.op === "createThreadSection") {

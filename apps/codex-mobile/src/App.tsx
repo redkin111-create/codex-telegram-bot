@@ -295,10 +295,20 @@ export default function App() {
       if (op === "create" || op === "forkThread" || op === "archiveThread" || op === "unarchiveThread" || op === "renameThread" || op === "deleteThread" || op === "createWorktree") {
         setSessionPages({});
       }
-      if (!op.startsWith("terminal") && op !== "listMoreThreads" && op !== "searchThreads" && op !== "searchHistory") void refreshSnapshot();
+      if (!op.startsWith("terminal") && op !== "listMoreThreads" && op !== "searchThreads" && op !== "searchHistory" && op !== "updateThreadReadState") void refreshSnapshot();
       return result;
     } catch (cause) { handleApiError(cause); throw cause; }
   }, [csrf, handleApiError, refreshSnapshot]);
+
+  const updateSessionReadState = useCallback(async (sessionId: string, expectedRevision: string, readOperation: "read" | "unread") => {
+    try {
+      await operation("updateThreadReadState", { sessionId, expectedRevision, operation: readOperation });
+      await refreshSnapshot();
+    } catch (cause) {
+      void refreshSnapshot();
+      throw cause;
+    }
+  }, [operation, refreshSnapshot]);
 
   useEffect(() => {
     const query = search.trim();
@@ -666,7 +676,7 @@ export default function App() {
         onSelect={selectWorkspaceSession} onCreate={() => void createSession()} onClose={() => setWorkspaceOpen(false)}
         onArchive={archiveSession} onUnarchive={unarchiveSession} onRename={renameSession} onDelete={deleteSession}
         onCreateSection={createThreadSection} onRenameSection={renameThreadSection} onDeleteSection={deleteThreadSection}
-        onMoveSession={moveSessionToSection} />
+        onMoveSession={moveSessionToSection} onUpdateReadState={updateSessionReadState} />
       <Conversation session={selectedSession} history={history} activity={activity} events={events} queue={queue}
         connected={connected} connecting={connecting} loading={loading} streamConnected={streamConnected}
         error={error} includeTools={includeTools} onToggleTools={() => setIncludeTools((value) => !value)}

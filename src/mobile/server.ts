@@ -8,6 +8,7 @@ import type { MiniAppAgent, MobileLocalJob, MobileLocalOperation } from "../tma/
 import type { LiveElicitation, LiveEvent, TmaLiveFeed } from "../tma/live.js";
 import { MobileAuthStore } from "./auth.js";
 import type { MobileAccountController } from "./accounts.js";
+import { parseCodexThreadReadState } from "../acp/codex-protocol.js";
 
 const SESSION_COOKIE = "__Host-codex-mobile-session";
 const PAIR_COOKIE = "__Host-codex-mobile-pair";
@@ -17,9 +18,9 @@ const MAX_MOBILE_DOWNLOAD_BYTES = 10 * 1024 * 1024;
 const MUTATING_OPERATIONS = new Set<TmaOperation>([
   "create", "select", "send", "cancel", "queue", "queueRemove", "queueResume",
 ]);
-const MOBILE_MUTATING_OPERATIONS = new Set<MobileLocalOperation>(["createThreadSection", "renameThreadSection", "deleteThreadSection", "moveThreadToSection", "editAndRetry", "transcribeAudio", "startRealtime", "stopRealtime", "setModel", "setMode", "setReasoning", "setGoal", "clearGoal", "setSkillEnabled", "setMcpConfigEnabled", "restartCodex", "mcpOAuthLogin", "callMcpTool", "readMcpResource", "steer", "forkThread", "createSideChat", "compactThread", "reviewThread", "archiveThread", "unarchiveThread", "renameThread", "deleteThread", "installPlugin", "uninstallPlugin", "addMarketplace", "removeMarketplace", "upgradeMarketplace", "createWorktree", "terminalExec", "terminalStart", "terminalInput", "terminalResize", "terminalStop", "stopBackgroundTerminal", "writeFile", "createFile", "createDirectory", "renameProjectEntry", "deleteProjectEntry", "gitResolveConflictStage", "gitStage", "gitUnstage", "gitCommit", "gitCreateBranch", "gitSwitchBranch", "gitTrackRemoteBranch", "gitFetch", "gitPush"]);
+const MOBILE_MUTATING_OPERATIONS = new Set<MobileLocalOperation>(["updateThreadReadState", "createThreadSection", "renameThreadSection", "deleteThreadSection", "moveThreadToSection", "editAndRetry", "transcribeAudio", "startRealtime", "stopRealtime", "setModel", "setMode", "setReasoning", "setGoal", "clearGoal", "setSkillEnabled", "setMcpConfigEnabled", "restartCodex", "mcpOAuthLogin", "callMcpTool", "readMcpResource", "steer", "forkThread", "createSideChat", "compactThread", "reviewThread", "archiveThread", "unarchiveThread", "renameThread", "deleteThread", "installPlugin", "uninstallPlugin", "addMarketplace", "removeMarketplace", "upgradeMarketplace", "createWorktree", "terminalExec", "terminalStart", "terminalInput", "terminalResize", "terminalStop", "stopBackgroundTerminal", "writeFile", "createFile", "createDirectory", "renameProjectEntry", "deleteProjectEntry", "gitResolveConflictStage", "gitStage", "gitUnstage", "gitCommit", "gitCreateBranch", "gitSwitchBranch", "gitTrackRemoteBranch", "gitFetch", "gitPush"]);
 const MOBILE_GLOBAL_MUTATING_OPERATIONS = new Set<MobileLocalOperation>(["createThreadSection", "renameThreadSection", "deleteThreadSection"]);
-const MOBILE_READ_OPERATIONS = new Set<MobileLocalOperation>(["listThreadSections", "searchThreads", "searchHistory", "listMoreThreads", "latestEditableTurn", "listEditableTurns", "listMcpConfig", "listRealtimeVoices", "readImage", "terminalRead", "listBackgroundTerminals"]);
+const MOBILE_READ_OPERATIONS = new Set<MobileLocalOperation>(["listThreadReadStates", "listThreadSections", "searchThreads", "searchHistory", "listMoreThreads", "latestEditableTurn", "listEditableTurns", "listMcpConfig", "listRealtimeVoices", "readImage", "terminalRead", "listBackgroundTerminals"]);
 
 export interface MobileAgent {
   canReadSession(id: string, userId: number): Promise<boolean>;
@@ -364,16 +365,43 @@ export function createMobileServer(options: MobileServerOptions): Server {
       try {
         const value = await execute("snapshot", device.ownerId, {});
         const snapshot = value && typeof value === "object" ? value as Record<string, unknown> : {};
-        const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions.map((entry) => {
+        const activeSessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
+        const archivedSessions = Array.isArray(snapshot.archivedSessions) ? snapshot.archivedSessions : [];
+        const sessionIds = [...new Set([...activeSessions, ...archivedSessions].flatMap((entry) => {
+          const id = entry && typeof entry === "object" ? (entry as Record<string, unknown>).id : undefined;
+          return typeof id === "string" && safeSessionId(id) ? [id] : [];
+        }))];
+        const readStates = new Map<string, ReturnType<typeof parseCodexThreadReadState>>();
+        if (options.agent.executeMobile && sessionIds.length > 0) {
+          try {
+            const result = await options.agent.executeMobile({ op: "listThreadReadStates", userId: device.ownerId, args: { sessionIds } });
+            const rawStates = result && typeof result === "object" ? (result as Record<string, unknown>).states : undefined;
+            if (rawStates && typeof rawStates === "object" && !Array.isArray(rawStates)) {
+              for (const id of sessionIds) {
+                if (Object.hasOwn(rawStates, id)) {
+                  const state = parseCodexThreadReadState((rawStates as Record<string, unknown>)[id]);
+                  if (state) readStates.set(id, state);
+                }
+              }
+            }
+          } catch { /* Read-state support is optional; do not make the catalogue unavailable. */ }
+        }
+        const withReadState = (entry: unknown) => {
+          const session = entry && typeof entry === "object" ? entry as Record<string, unknown> : {};
+          const state = typeof session.id === "string" ? readStates.get(session.id) : undefined;
+          return { ...session, ...(state ? { readState: state } : {}) };
+        };
+        const sessions = activeSessions.map((entry) => {
           const session = entry && typeof entry === "object" ? entry as Record<string, unknown> : {};
           const live = options.feed.getStatus(String(session.id ?? ""));
           return {
             ...session,
+            ...(typeof session.id === "string" && readStates.has(session.id) ? { readState: readStates.get(session.id) } : {}),
             liveStatus: live?.status ?? (session.busy === true ? "working" : "unknown"),
             liveLabel: live?.label ?? (session.busy === true ? "Codex работает" : "Статус неизвестен"),
           };
-        }) : [];
-        json(res, 200, { ...snapshot, sessions });
+        });
+        json(res, 200, { ...snapshot, sessions, ...(Array.isArray(snapshot.archivedSessions) ? { archivedSessions: archivedSessions.map(withReadState) } : {}) });
       }
       catch (error) { json(res, 502, { error: safeError(error) }); }
       return;

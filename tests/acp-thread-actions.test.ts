@@ -96,3 +96,50 @@ test("thread sections use Codex native list, create, update, delete and move req
     { method: "threadSection/delete", params: { sectionId: "section-3" } },
   ]);
 });
+
+test("thread read-state metadata is exposed only when Codex provides a valid receipt", async () => {
+  const client = new AcpClient({ codexCliPath: "codex", workspace: "C:\\work", trustAllTools: false });
+  const internal = client as unknown as { request: (method: string, params: unknown) => Promise<unknown> };
+  internal.request = async () => ({
+    threads: [
+      { id: "thread-unread", createdAt: 1, updatedAt: 2, recencyAt: 2 },
+      { id: "thread-ineligible", createdAt: 1, updatedAt: 1, recencyAt: 1 },
+    ],
+    readStates: {
+      "thread-unread": { firstUnread: { type: "turn", turnId: "turn-4" }, revision: "rev-4" },
+      "thread-ineligible": { firstUnread: null, revision: "" },
+    },
+  });
+  const page = await client.listThreadsPage();
+  assert.equal(page.threads[0]?.readStateEligible, true);
+  assert.deepEqual(page.threads[0]?.readState, { firstUnread: { type: "turn", turnId: "turn-4" }, revision: "rev-4" });
+  assert.equal(page.threads[1]?.readStateEligible, false, "malformed receipts must not create controls");
+
+  internal.request = async () => ({ threads: [{ id: "thread-old-server", createdAt: 1, updatedAt: 1, recencyAt: 1 }], readStates: null });
+  const oldPage = await client.listThreadsPage();
+  assert.equal(oldPage.threads[0]?.readStateEligible, undefined, "unsupported state must stay unavailable");
+});
+
+test("thread read-state update uses the exact displayed revision and never retries conflicts", async () => {
+  const client = new AcpClient({ codexCliPath: "codex", workspace: "C:\\work", trustAllTools: false });
+  const internal = client as unknown as { request: (method: string, params: unknown) => Promise<unknown> };
+  const calls: Array<{ method: string; params: unknown }> = [];
+  const receipt = { firstUnread: null, revision: "rev-5" };
+  internal.request = async (method, params) => { calls.push({ method, params }); return { readState: receipt }; };
+  const update = (client as unknown as {
+    updateThreadReadState?: (threadId: string, expectedRevision: string, operation: "read" | "unread") => Promise<unknown>;
+  }).updateThreadReadState;
+  assert.equal(typeof update, "function", "AcpClient must expose Codex's optimistic read-state update");
+  assert.deepEqual(await update!.call(client, "thread-1", "rev-5", "read"), receipt);
+  assert.deepEqual(calls, [{
+    method: "thread/readState/update",
+    params: { threadId: "thread-1", expectedRevision: "rev-5", operation: { type: "read" } },
+  }]);
+
+  calls.length = 0;
+  internal.request = async () => { calls.push({ method: "thread/readState/update", params: {
+    threadId: "thread-1", expectedRevision: "stale-rev", operation: { type: "unread" },
+  } }); throw new Error("read-state revision conflict"); };
+  await assert.rejects(update!.call(client, "thread-1", "stale-rev", "unread"), /revision conflict/i);
+  assert.equal(calls.length, 1, "a conflict must be returned without a hidden retry");
+});

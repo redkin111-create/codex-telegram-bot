@@ -21,6 +21,7 @@ import { handleServerRequest, type ServerHandlerOptions } from "./server-handler
 import { JsonRpcTransport } from "./transport.js";
 import { installedPluginExists, resolveRemotePluginInstall } from "./plugins.js";
 import { requireManagedMarketplace, validateMobileMarketplaceRef, validateMobileMarketplaceSource } from "./marketplaces.js";
+import { parseCodexThreadReadState } from "./codex-protocol.js";
 import {
   commandString,
   itemToUpdates,
@@ -60,6 +61,7 @@ import type {
   CodexThreadListParams,
   CodexThreadListResponse,
   CodexThreadSummary,
+  CodexThreadReadState,
   CodexThreadSection,
   CodexBackgroundTerminal,
   CodexMobileEditableTurn,
@@ -803,10 +805,41 @@ export class AcpClient extends EventEmitter {
   async listThreadsPage(params: CodexThreadListParams = {}): Promise<{ threads: CodexThreadSummary[]; nextCursor?: string }> {
     const response = await this.request("thread/list", params) as CodexThreadListResponse;
     const threads = response?.threads ?? response?.data ?? [];
+    const rawReadStates = response?.readStates;
+    const readStates = rawReadStates && typeof rawReadStates === "object" && !Array.isArray(rawReadStates) ? rawReadStates : undefined;
+    const readStateMetadataAvailable = readStates !== undefined;
     return {
-      threads: Array.isArray(threads) ? threads.filter((thread) => typeof thread?.id === "string") : [],
+      threads: Array.isArray(threads) ? threads.filter((thread) => typeof thread?.id === "string").map((thread) => {
+        if (!readStateMetadataAvailable) return thread;
+        const receipt = readStates && Object.hasOwn(readStates, thread.id) ? parseCodexThreadReadState(readStates[thread.id]) : undefined;
+        return {
+          ...thread,
+          readStateMetadataAvailable: true,
+          readStateEligible: receipt !== undefined,
+          ...(receipt ? { readState: receipt } : {}),
+        };
+      }) : [],
       nextCursor: typeof response?.nextCursor === "string" ? response.nextCursor : undefined,
     };
+  }
+
+  /** Update Codex's native read receipt using the exact revision shown to the caller. */
+  async updateThreadReadState(threadId: string, expectedRevision: string, operation: "read" | "unread"): Promise<CodexThreadReadState> {
+    if (typeof threadId !== "string" || !threadId.trim() || threadId.length > 200 || /[\u0000-\u001f\u007f]/.test(threadId)) {
+      throw new Error("Неверный идентификатор сеанса для изменения статуса прочтения");
+    }
+    if (typeof expectedRevision !== "string" || !expectedRevision || expectedRevision.length > 512) {
+      throw new Error("Codex не предоставил версию статуса прочтения");
+    }
+    if (operation !== "read" && operation !== "unread") throw new Error("Неизвестное действие со статусом прочтения");
+    const response = await this.request("thread/readState/update", {
+      threadId,
+      expectedRevision,
+      operation: { type: operation },
+    }) as { readState?: unknown };
+    const receipt = parseCodexThreadReadState(response?.readState);
+    if (!receipt) throw new Error("Codex вернул недопустимый статус прочтения");
+    return receipt;
   }
 
   /** Read every page of the Codex conversation catalogue. */

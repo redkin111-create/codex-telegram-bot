@@ -8,7 +8,7 @@ export function Workspace({
   sessionsMoreLoading, sessionsHasMore, onLoadMoreSessions,
   showArchived, selectedId, open, connectedIds,
   onProjectChange, onSearchChange, onArchivedChange, onLoadMore, onSelect, onCreate, onClose, onArchive, onUnarchive, onRename, onDelete,
-  onCreateSection, onRenameSection, onDeleteSection, onMoveSession,
+  onCreateSection, onRenameSection, onDeleteSection, onMoveSession, onUpdateReadState,
 }: {
   snapshot: MobileSnapshot;
   selectedProject: string;
@@ -40,6 +40,7 @@ export function Workspace({
   onRenameSection: (sectionId: string, name: string) => Promise<void>;
   onDeleteSection: (sectionId: string) => Promise<void>;
   onMoveSession: (sessionId: string, sectionId: string | null) => Promise<void>;
+  onUpdateReadState: (sessionId: string, expectedRevision: string, operation: "read" | "unread") => Promise<void>;
 }) {
   const [editingId, setEditingId] = useState("");
   const [renameValue, setRenameValue] = useState("");
@@ -55,6 +56,9 @@ export function Workspace({
   const [savingSection, setSavingSection] = useState(false);
   const [deleteSectionCandidate, setDeleteSectionCandidate] = useState<MobileThreadSection>();
   const [sectionError, setSectionError] = useState("");
+  const [readStateError, setReadStateError] = useState("");
+  const [readStateErrorId, setReadStateErrorId] = useState("");
+  const [savingReadStateId, setSavingReadStateId] = useState("");
   const nativeSearch = search.trim().length >= 2;
   const sectionsAvailable = snapshot.sectionsAvailable !== false;
   const sessions = useMemo(() => {
@@ -177,6 +181,28 @@ export function Workspace({
                 {session.section?.name && <span className="mt-1 inline-flex max-w-full truncate rounded-md border border-[#3b4832] bg-[#1c2418] px-2 py-0.5 text-[10px] text-[#bedb92]">{session.section.name}</span>}
                 <span className="mt-1 block truncate font-mono text-[10px] text-[#657066]">{session.cwd}</span>
               </button>
+              {session.readState && <div className="mt-1 flex items-center justify-between gap-2 rounded-lg bg-[#151a16] px-2 py-1.5">
+                <span className={`text-[10px] font-semibold ${session.readState.firstUnread === null ? "text-[#8d9b8d]" : "text-[#d8f58e]"}`}>
+                  {session.readState.firstUnread === null ? "Прочитано" : "Непрочитано"}
+                </span>
+                <Button type="button" variant="ghost" className="min-h-8 px-2 text-[10px]" disabled={savingReadStateId === session.id}
+                  aria-label={session.readState.firstUnread === null ? `Отметить непрочитанным: ${session.title || "Новый сеанс"}` : `Отметить прочитанным: ${session.title || "Новый сеанс"}`}
+                  onClick={() => {
+                    setReadStateError("");
+                    setReadStateErrorId("");
+                    setSavingReadStateId(session.id);
+                    const operation = session.readState?.firstUnread === null ? "unread" : "read";
+                    void onUpdateReadState(session.id, session.readState!.revision, operation)
+                      .catch((cause) => {
+                        setReadStateErrorId(session.id);
+                        setReadStateError(cause instanceof Error ? cause.message : "Не удалось изменить статус прочтения");
+                      })
+                      .finally(() => setSavingReadStateId(""));
+                  }}>
+                  {savingReadStateId === session.id ? <LoaderCircle size={13} className="animate-spin" /> : session.readState.firstUnread === null ? "Отметить непрочитанным" : "Отметить прочитанным"}
+                </Button>
+              </div>}
+              {readStateError && readStateErrorId === session.id && <p role="alert" className="mt-1 rounded-lg border border-[#733b39] bg-[#351f1e] px-2 py-1.5 text-[10px] leading-4 text-[#ffc3bd]">{readStateError}</p>}
               {editingId === session.id ? <form className="mt-2 flex gap-2" onSubmit={(event) => { event.preventDefault(); void saveRename(session); }}>
                 <Input aria-label={`Новое название ${session.title}`} value={renameValue} onChange={(event) => setRenameValue(event.target.value)} maxLength={120} autoFocus />
                 <Button type="submit" variant="outline" className="min-h-10 px-2" aria-label="Сохранить название" disabled={!renameValue.trim() || savingName}><Check size={16} /></Button>

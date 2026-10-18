@@ -155,6 +155,36 @@ export interface CodexThreadSummary {
   parentThreadId?: string;
   section?: CodexThreadSection | null;
   ephemeral?: boolean;
+  /** Present only when the app-server exposes native read-state receipts. */
+  readStateMetadataAvailable?: boolean;
+  readStateEligible?: boolean;
+  readState?: CodexThreadReadState;
+}
+
+export type CodexThreadUnreadPosition =
+  | { type: "threadStart" }
+  | { type: "turn"; turnId: string };
+
+export interface CodexThreadReadState {
+  firstUnread: CodexThreadUnreadPosition | null;
+  revision: string;
+}
+
+/** Accept only the small, documented read-state shape returned by app-server. */
+export function parseCodexThreadReadState(value: unknown): CodexThreadReadState | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const state = value as Record<string, unknown>;
+  if (typeof state.revision !== "string" || !state.revision || state.revision.length > 512) return undefined;
+  let firstUnread: CodexThreadUnreadPosition | null;
+  if (state.firstUnread === null) firstUnread = null;
+  else if (state.firstUnread && typeof state.firstUnread === "object" && !Array.isArray(state.firstUnread)) {
+    const position = state.firstUnread as Record<string, unknown>;
+    if (position.type === "threadStart") firstUnread = { type: "threadStart" };
+    else if (position.type === "turn" && typeof position.turnId === "string" && position.turnId.length > 0 && position.turnId.length <= 200) {
+      firstUnread = { type: "turn", turnId: position.turnId };
+    } else return undefined;
+  } else return undefined;
+  return { firstUnread, revision: state.revision };
 }
 
 export interface CodexThreadListParams {
@@ -173,6 +203,7 @@ export interface CodexThreadListResponse {
   threads?: CodexThreadSummary[];
   data?: CodexThreadSummary[];
   nextCursor?: string | null;
+  readStates?: Record<string, unknown> | null;
 }
 
 export interface CodexBackgroundTerminal {

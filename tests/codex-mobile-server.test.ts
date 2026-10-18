@@ -74,6 +74,10 @@ async function startFixture(extensions: Record<string, unknown> = {}) {
     async executeMobile(job: { op: string; userId: number; args: Record<string, unknown> }) {
       calls.push(job);
       if (failNext) { failNext = false; throw new Error("Codex runtime unavailable"); }
+      if (job.op === "listThreadReadStates") return { states: {
+        [allowedSession]: { firstUnread: { type: "turn", turnId: "turn-one" }, revision: "rev-one" },
+        [foreignSession]: { firstUnread: null, revision: "rev-foreign" },
+      } };
       if (job.op === "files" && job.args.offset === 250) return {
         project: "fixture", path: String(job.args.path ?? ""),
         entries: [{ name: "file-250.txt", kind: "file", size: 10, mtimeMs: 1 }], total: 260, nextOffset: 251,
@@ -169,6 +173,41 @@ test("private API and event stream reject requests without a paired device", asy
       body: JSON.stringify({ sessionId: allowedSession, after: 0, epoch: "" }),
     });
     assert.equal(events.status, 401);
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("snapshot returns only authorized Codex read receipts and read-state changes require CSRF and ownership", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const snapshotResponse = await fetch(f.origin + "/api/snapshot", {
+      headers: { origin: f.origin, cookie: login.sessionCookie },
+    });
+    assert.equal(snapshotResponse.status, 200);
+    const snapshot = await snapshotResponse.json() as { sessions: Array<{ id: string; readState?: { revision: string } }> };
+    assert.equal(snapshot.sessions.find((session) => session.id === allowedSession)?.readState?.revision, "rev-one");
+    assert.equal(snapshot.sessions.some((session) => session.id === foreignSession), false);
+
+    const body = (sessionId: string, expectedRevision = "rev-one") => JSON.stringify({
+      op: "updateThreadReadState", args: { sessionId, expectedRevision, operation: "read" },
+    });
+    const headers = { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" };
+    assert.equal((await fetch(f.origin + "/api/operations", {
+      method: "POST", headers, body: body(allowedSession),
+    })).status, 403, "state changes need CSRF protection");
+    const beforeForeign = f.calls.length;
+    assert.equal((await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { ...headers, "x-csrf-token": login.csrfToken }, body: body(foreignSession),
+    })).status, 403, "foreign sessions must be rejected before reaching the agent");
+    assert.equal(f.calls.length, beforeForeign);
+    const updated = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { ...headers, "x-csrf-token": login.csrfToken }, body: body(allowedSession, "stale-revision"),
+    });
+    assert.equal(updated.status, 200);
+    assert.deepEqual(f.calls.at(-1), {
+      op: "updateThreadReadState", userId: 101,
+      args: { sessionId: allowedSession, expectedRevision: "stale-revision", operation: "read" },
+    });
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
@@ -401,7 +440,7 @@ test("pairing cookie becomes a Secure HttpOnly session and reads the shared Code
     });
     assert.deepEqual(await snapshot.json(), {
       projects: [{ path: "C:\\work\\demo", name: "demo" }],
-      sessions: [{ id: allowedSession, title: "Demo", liveStatus: "unknown", liveLabel: "Статус неизвестен" }],
+      sessions: [{ id: allowedSession, title: "Demo", readState: { firstUnread: { type: "turn", turnId: "turn-one" }, revision: "rev-one" }, liveStatus: "unknown", liveLabel: "Статус неизвестен" }],
     });
     assert.equal(f.calls.at(-1)?.userId, 101);
   } finally { await cleanup(f.server, f.dataDir); }

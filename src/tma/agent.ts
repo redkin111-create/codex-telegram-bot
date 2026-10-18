@@ -9,7 +9,7 @@ import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "
 import { promisify } from "node:util";
 import type { AcpClient } from "../acp/client.js";
 import { mobileMcpResourceTemplateParameters, resolveMobileMcpResourceTemplate } from "../acp/mobile-mcp.js";
-import { CODEX_PINNED_THREAD_SECTION_ID, CODEX_PINNED_THREAD_SECTION_NAME, type CodexThreadSection, type CodexThreadSummary, type CodexProjectSummary, type CodexRateLimitWindow, type CodexThreadGoalStatus, type CodexReviewTarget } from "../acp/codex-protocol.js";
+import { CODEX_PINNED_THREAD_SECTION_ID, CODEX_PINNED_THREAD_SECTION_NAME, type CodexThreadSection, type CodexThreadSummary, type CodexThreadReadState, type CodexProjectSummary, type CodexRateLimitWindow, type CodexThreadGoalStatus, type CodexReviewTarget } from "../acp/codex-protocol.js";
 import { REASONING_LEVELS, textPrompt, type ReasoningEffort } from "../app/types.js";
 import type { RuntimeRegistry } from "../bot/registry.js";
 import { isVisibleThreadForChat, threadSourceKind } from "../bot/catalog.js";
@@ -160,9 +160,9 @@ interface MobileMcpResourceRef {
   ownerId:number;sessionId:string;serverName:string;uri?:string;uriTemplate?:string;expiresAt:number;
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; stt?:Pick<SttService,"enabled"|"transcribe">; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "searchHistory" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "listRealtimeVoices" | "startRealtime" | "stopRealtime" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "createSideChat" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "downloadFile" | "writeFile" | "createFile" | "createDirectory" | "renameProjectEntry" | "deleteProjectEntry" | "gitStatus" | "gitDiff" | "gitConflictStages" | "gitResolveConflictStage" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+export type MobileLocalOperation = "capabilities" | "listThreadReadStates" | "updateThreadReadState" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "searchHistory" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "listRealtimeVoices" | "startRealtime" | "stopRealtime" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "createSideChat" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "downloadFile" | "writeFile" | "createFile" | "createDirectory" | "renameProjectEntry" | "deleteProjectEntry" | "gitStatus" | "gitDiff" | "gitConflictStages" | "gitResolveConflictStage" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
-const MOBILE_GLOBAL_OPERATIONS=new Set<MobileLocalOperation>(["listThreadSections","createThreadSection","renameThreadSection","deleteThreadSection"]);
+const MOBILE_GLOBAL_OPERATIONS=new Set<MobileLocalOperation>(["listThreadReadStates","listThreadSections","createThreadSection","renameThreadSection","deleteThreadSection"]);
 export class MiniAppAgent {
   private readonly abort=new AbortController();
   private readonly stt:Pick<SttService,"enabled"|"transcribe">;
@@ -403,6 +403,43 @@ export class MiniAppAgent {
     if(job.op!=="capabilities"&&job.op!=="searchThreads"&&job.op!=="listMoreThreads"&&!MOBILE_GLOBAL_OPERATIONS.has(job.op)&&!sessionId)throw new Error("Сначала выберите сеанс Codex");
     const runtime=sessionId?registry.runtimeForSession(chatId,sessionId):undefined;
     switch(job.op){
+      case "listThreadReadStates":{
+        const raw=args.sessionIds;
+        if(!Array.isArray(raw)||raw.length>1000)throw new Error("Неверный список сеансов для проверки статуса прочтения");
+        const states:Record<string,{firstUnread:{type:"threadStart"}|{type:"turn";turnId:string}|null;revision:string}>={};
+        for(const id of new Set(raw.filter((value):value is string=>typeof value==="string"&&/^[a-z0-9_-]{8,128}$/i.test(value)))){
+          try{
+            const thread=await this.thread(id,chatId);
+            if(!thread.ephemeral&&thread.readStateEligible&&thread.readState)states[id]=thread.readState;
+          }catch{/* The mobile snapshot includes only already-authorized catalogue entries. */}
+        }
+        return {states};
+      }
+      case "updateThreadReadState":{
+        const thread=await this.thread(sessionId,chatId);
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        if(typeof acp.updateThreadReadState!=="function"||!thread.readStateEligible||!thread.readState)throw new Error("Codex не предоставляет управление статусом прочтения для этого сеанса");
+        const expectedRevision=argumentString(args,"expectedRevision",512);
+        const operation=args.operation;
+        if(operation!=="read"&&operation!=="unread")throw new Error("Неизвестное действие со статусом прочтения");
+        if(expectedRevision!==thread.readState.revision)throw new Error("Статус прочтения изменился. Обновите список сеансов и повторите действие.");
+        let readState:CodexThreadReadState;
+        try{readState=await acp.updateThreadReadState(sessionId,expectedRevision,operation);}
+        catch(error){
+          this.catalogues.delete(chatId);
+          this.archivedCatalogues.delete(chatId);
+          this.knownThreads.get(chatId)?.delete(sessionId);
+          this.archivedThreads.get(chatId)?.delete(sessionId);
+          throw error;
+        }
+        const updated={...thread,readStateMetadataAvailable:true,readStateEligible:true,readState};
+        this.knownThreads.get(chatId)?.set(sessionId,updated);
+        if(this.archivedThreads.get(chatId)?.has(sessionId))this.archivedThreads.get(chatId)?.set(sessionId,updated);
+        if(this.ownThreads.has(sessionId))this.ownThreads.set(sessionId,updated);
+        this.catalogues.delete(chatId);
+        this.archivedCatalogues.delete(chatId);
+        return {sessionId,readState};
+      }
       case "listThreadSections":{
         if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
         if(typeof acp.listThreadSections!=="function")throw new Error("Эта версия Codex не поддерживает разделы сеансов");
