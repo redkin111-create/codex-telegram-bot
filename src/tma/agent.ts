@@ -32,6 +32,7 @@ const MAX_MOBILE_PTY_BUFFER=512*1024;
 const MAX_MOBILE_PTY_READ=64*1024;
 const MOBILE_PTY_IDLE_MS=30*60*1000;
 import { normalizeMobileIntegrations, normalizeMobileMcpServers, normalizePluginInstallResult } from "../mobile/integrations.js";
+import { normalizeMobileMarketplaces } from "../mobile/marketplaces.js";
 import { gitRemoteTarget } from "../mobile/git-remotes.js";
 import { SttService } from "../app/stt.js";
 import type { MobilePromptAttachment } from "../mobile/attachments.js";
@@ -152,7 +153,7 @@ interface MobilePtyRecord {
   expiry?:NodeJS.Timeout;dataSubscription?:{dispose():void};exitSubscription?:{dispose():void};
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; stt?:Pick<SttService,"enabled"|"transcribe">; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 const MOBILE_GLOBAL_OPERATIONS=new Set<MobileLocalOperation>(["listThreadSections","createThreadSection","renameThreadSection","deleteThreadSection"]);
 export class MiniAppAgent {
@@ -921,6 +922,7 @@ export class MiniAppAgent {
             invokable:s.enabled!==false&&skillNameCounts.get(s.name)===1})),
           mcpServersAvailable,mcpServers:normalizeMobileMcpServers(mcpInventory),
           plugins:integrations.plugins,pluginCatalogAvailable:integrations.pluginCatalogAvailable,
+          marketplaces:normalizeMobileMarketplaces(rawIntegrations?.pluginCatalog,rawIntegrations?.installedPlugins),
           apps:integrations.apps,appsAvailable:integrations.appsAvailable,
           account:account.account?{type:account.account.type,email:account.account.email?.slice(0,200),plan:account.account.planType?.slice(0,100)}:undefined,
           limits,subagents,checkedAt:Date.now(),
@@ -981,6 +983,32 @@ export class MiniAppAgent {
         if(!pluginId)throw new Error("Плагин не выбран из списка Codex");
         await acp.uninstallMobilePlugin(pluginId);
         return {uninstalled:true};
+      }
+      case "addMarketplace":
+      case "removeMarketplace":
+      case "upgradeMarketplace":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        if(await this.isArchivedThread(sessionId,chatId))throw new Error("Нельзя менять каталоги Codex из архивного сеанса");
+        await this.thread(sessionId,chatId);
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        this.requireIdleMobileRuntime(sessionId,chatId);
+        if(acp.hasInflightPrompt()||registry.hasPendingWork())throw new Error("Дождитесь завершения всех задач Codex перед изменением глобального каталога");
+        if(job.op==="addMarketplace"){
+          const source=argumentString(args,"source",2048);
+          const rawRef=args.refName;
+          if(rawRef!==undefined&&typeof rawRef!=="string")throw new Error("Неверная ветка или версия каталога");
+          if(typeof acp.addMobileMarketplace!=="function")throw new Error("Эта версия Codex не поддерживает каталоги плагинов");
+          return await acp.addMobileMarketplace(source,typeof rawRef==="string"?rawRef:undefined);
+        }
+        const marketplaceName=argumentString(args,"marketplaceName",120);
+        if(job.op==="removeMarketplace"){
+          if(typeof acp.removeMobileMarketplace!=="function")throw new Error("Эта версия Codex не поддерживает удаление каталогов");
+          await acp.removeMobileMarketplace(marketplaceName);
+          return {marketplaceName,removed:true};
+        }
+        if(typeof acp.upgradeMobileMarketplace!=="function")throw new Error("Эта версия Codex не поддерживает обновление каталогов");
+        await acp.upgradeMobileMarketplace(marketplaceName);
+        return {marketplaceName,upgraded:true};
       }
       case "setSkillEnabled":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");

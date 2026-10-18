@@ -13,6 +13,9 @@ const effortLabel: Record<string, string> = {
 type PluginAction = { kind: "install" | "uninstall"; pluginId: string; };
 type PluginInstallNotice = { name: string; installUrl?: string }[];
 type SkillAction = { name: string; enabled: boolean };
+type MarketplaceAction =
+  | { kind: "add"; source: string; refName: string }
+  | { kind: "remove" | "upgrade"; marketplaceName: string };
 
 function safeLinkHost(value?: string): string | undefined {
   if (!value) return undefined;
@@ -62,6 +65,10 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
   const [pluginAction, setPluginAction] = useState<PluginAction>();
   const [pluginNotice, setPluginNotice] = useState<PluginInstallNotice>();
   const [skillAction, setSkillAction] = useState<SkillAction>();
+  const [marketplaceSource, setMarketplaceSource] = useState("");
+  const [marketplaceRef, setMarketplaceRef] = useState("");
+  const [marketplaceAction, setMarketplaceAction] = useState<MarketplaceAction>();
+  const [marketplaceNotice, setMarketplaceNotice] = useState("");
   const [mcpLoginLinks, setMcpLoginLinks] = useState<Record<string, string>>({});
 
   async function reload() {
@@ -157,6 +164,35 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
       await reload();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Не удалось изменить плагин Codex");
+    } finally { setSaving(false); }
+  }
+
+  async function confirmMarketplaceAction() {
+    const action = marketplaceAction;
+    if (!action) return;
+    setSaving(true);
+    setError("");
+    setMarketplaceNotice("");
+    try {
+      if (action.kind === "add") {
+        const result = await onOperation("addMarketplace", {
+          sessionId, source: action.source, ...(action.refName.trim() ? { refName: action.refName.trim() } : {}),
+        }) as { marketplaceName?: unknown; alreadyAdded?: unknown };
+        const name = typeof result.marketplaceName === "string" ? result.marketplaceName : "каталог";
+        setMarketplaceNotice(result.alreadyAdded === true ? `Каталог ${name} уже был подключён.` : `Каталог ${name} добавлен.`);
+      } else if (action.kind === "upgrade") {
+        await onOperation("upgradeMarketplace", { sessionId, marketplaceName: action.marketplaceName });
+        setMarketplaceNotice(`Каталог ${action.marketplaceName} обновлён.`);
+      } else {
+        await onOperation("removeMarketplace", { sessionId, marketplaceName: action.marketplaceName });
+        setMarketplaceNotice(`Каталог ${action.marketplaceName} удалён.`);
+      }
+      setMarketplaceAction(undefined);
+      setMarketplaceSource("");
+      setMarketplaceRef("");
+      await reload();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Не удалось изменить каталог плагинов Codex");
     } finally { setSaving(false); }
   }
 
@@ -272,6 +308,18 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
             </div>}
           </Card>
           <Card className="space-y-3 p-4">
+            <h3 className="flex items-center gap-2 text-sm font-semibold"><Puzzle size={16} className="text-accent" /> Каталоги плагинов</h3>
+            {capabilities.marketplaces.length ? <ul className="space-y-2">{capabilities.marketplaces.map((marketplace) => <li key={marketplace.name} className="rounded-xl border border-border bg-[#111613] p-3">
+              <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="break-words text-sm font-medium">{marketplace.name}</p><p className="mt-1 text-[11px] text-muted">{marketplace.pluginCount} плагинов · установлено {marketplace.installedPluginCount}</p></div><Badge>{marketplace.manageable ? "Управляемый" : "Только просмотр"}</Badge></div>
+              {marketplace.manageable && <div className="mt-3 flex flex-wrap justify-end gap-2"><Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label={`Обновить каталог ${marketplace.name}`} disabled={!usable} onClick={() => setMarketplaceAction({ kind: "upgrade", marketplaceName: marketplace.name })}><RefreshCw size={13} /> Обновить</Button><Button type="button" variant="outline" className="min-h-9 px-3 text-xs text-[#c58980]" aria-label={`Удалить каталог ${marketplace.name}`} disabled={!usable} onClick={() => setMarketplaceAction({ kind: "remove", marketplaceName: marketplace.name })}><Trash2 size={13} /> Удалить</Button></div>}
+            </li>)}</ul> : <p className="text-xs text-muted">Каталоги Codex недоступны или не найдены.</p>}
+            <label className="block space-y-1.5"><span className="text-xs text-muted">Добавить GitHub-каталог</span><Input aria-label="Адрес каталога плагинов" value={marketplaceSource} onChange={(event) => setMarketplaceSource(event.target.value)} maxLength={2048} placeholder="owner/repo или https://github.com/…" disabled={!usable} /></label>
+            <label className="block space-y-1.5"><span className="text-xs text-muted">Ветка или версия · необязательно</span><Input aria-label="Ветка или версия каталога" value={marketplaceRef} onChange={(event) => setMarketplaceRef(event.target.value)} maxLength={200} placeholder="stable" disabled={!usable} /></label>
+            <Button type="button" variant="outline" className="w-full" disabled={!usable || !marketplaceSource.trim()} onClick={() => setMarketplaceAction({ kind: "add", source: marketplaceSource.trim(), refName: marketplaceRef })}>Добавить каталог</Button>
+            <p className="text-[11px] leading-relaxed text-muted">Codex загрузит GitHub-репозиторий в настройки этого компьютера. Принимайте только знакомые вам каталоги: плагины могут добавлять инструкции и подключения. Для защиты компьютера мобильное добавление ограничено GitHub HTTPS; локальные пути, SSH и другие хосты не принимаются.</p>
+            {marketplaceNotice && <p role="status" className="rounded-lg border border-[#3d5630] bg-[#1c2818] p-3 text-xs text-[#c7e89a]">{marketplaceNotice}</p>}
+          </Card>
+          <Card className="space-y-3 p-4">
             <h3 className="flex items-center gap-2 text-sm font-semibold"><Plug size={16} className="text-accent" /> Приложения и подключения</h3>
             {!capabilities.appsAvailable ? <p className="text-xs leading-relaxed text-muted">Эта версия Codex не предоставляет список приложений.</p> : capabilities.apps.length ? <ul className="space-y-3">{capabilities.apps.slice(0, 80).map((app) => <li key={app.id} className="rounded-xl border border-border bg-[#111613] p-3">
               <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{app.name}</p>{app.description && <p className="mt-1 text-xs leading-relaxed text-muted">{app.description}</p>}</div><Badge>{!app.enabled ? "Отключено" : app.callable ? "Подключено" : app.accessible ? "Доступно" : "Требует входа"}</Badge></div>
@@ -307,6 +355,15 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
             <p className="mt-2 text-xs leading-relaxed text-muted">Настройка сохранится в Codex на этом компьютере и может повлиять на другие сеансы. Файл навыка не изменится.</p>
           </div>
           <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={saving} onClick={() => setSkillAction(undefined)}>Отмена</Button><Button type="button" className="flex-1" disabled={saving || !usable} onClick={() => void confirmSkillAction()}>{saving ? "Сохраняю…" : skillAction.enabled ? "Включить" : "Отключить"}</Button></div>
+        </section>
+      </div>}
+      {marketplaceAction && <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
+        <section role="alertdialog" aria-modal="true" aria-labelledby="marketplace-confirm-title" className="safe-area-bottom w-full max-w-md space-y-4 rounded-2xl border border-border bg-elevated p-5 shadow-soft">
+          <div><h3 id="marketplace-confirm-title" className="text-base font-semibold">{marketplaceAction.kind === "add" ? "Добавить каталог?" : marketplaceAction.kind === "upgrade" ? "Обновить каталог?" : "Удалить каталог?"}</h3>
+            <p className="mt-2 break-all text-sm text-text">{marketplaceAction.kind === "add" ? marketplaceAction.source : marketplaceAction.marketplaceName}{marketplaceAction.kind === "add" && marketplaceAction.refName.trim() ? ` · ${marketplaceAction.refName.trim()}` : ""}</p>
+            <p className="mt-2 text-xs leading-relaxed text-muted">{marketplaceAction.kind === "add" ? "Codex загрузит список плагинов по этому адресу. Код плагинов не запускается этой кнопкой, но их инструкции и инструменты могут повлиять на последующие задачи." : marketplaceAction.kind === "upgrade" ? "Codex получит новую версию этого каталога. Состав и инструкции плагинов могут измениться и затронуть другие сеансы." : "Codex удалит запись каталога из настроек. Плагины из него могут перестать быть доступными в других сеансах."}</p>
+          </div>
+          <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={saving} onClick={() => setMarketplaceAction(undefined)}>Отмена</Button><Button type="button" className="flex-1" disabled={saving || !usable} onClick={() => void confirmMarketplaceAction()}>{saving ? "Выполняю…" : marketplaceAction.kind === "add" ? "Добавить" : marketplaceAction.kind === "upgrade" ? "Обновить" : "Удалить"}</Button></div>
         </section>
       </div>}
     </section>

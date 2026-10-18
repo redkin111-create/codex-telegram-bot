@@ -94,6 +94,10 @@ let fixtureBranch = "feat/codex-mobile-fixture";
 let fixtureNotesCommitted = false;
 let fixtureRenameStaged = true;
 let fixturePluginInstalled = false;
+let fixtureMarketplaces = [
+  { name: "Fixture official", pluginCount: 2, installedPluginCount: 1, manageable: true },
+  { name: "Built-in catalog", pluginCount: 4, installedPluginCount: 0, manageable: false },
+];
 let fixtureMcpAuthorized = false;
 const fixtureCapabilitiesFailOnCall = Number.parseInt(process.env.CODEX_MOBILE_FIXTURE_CAPABILITIES_FAIL_ON_CALL ?? "0", 10);
 let fixtureCapabilitiesCalls = 0;
@@ -523,6 +527,29 @@ const agent = {
       fixturePluginInstalled = false;
       return { uninstalled: true };
     }
+    if (job.op === "addMarketplace") {
+      const source = typeof args.source === "string" ? args.source : "";
+      if (!/^(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}|https:\/\/github\.com\/[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}(?:\.git)?)$/i.test(source)) {
+        throw new Error("Для безопасной загрузки с телефона используйте GitHub HTTPS или owner/repo");
+      }
+      if (args.source !== "fixture/mobile-tools" || args.refName !== "stable") throw new Error("Фиктивный источник не принят");
+      if (!fixtureMarketplaces.some((marketplace) => marketplace.name === "Fixture mobile")) {
+        fixtureMarketplaces.push({ name: "Fixture mobile", pluginCount: 1, installedPluginCount: 0, manageable: true });
+      }
+      return { marketplaceName: "Fixture mobile", alreadyAdded: false };
+    }
+    if (job.op === "upgradeMarketplace") {
+      const marketplace = fixtureMarketplaces.find((entry) => entry.name === args.marketplaceName && entry.manageable);
+      if (!marketplace) throw new Error("Управляемый фиктивный каталог не найден");
+      marketplace.pluginCount += 1;
+      return { upgraded: true };
+    }
+    if (job.op === "removeMarketplace") {
+      const index = fixtureMarketplaces.findIndex((entry) => entry.name === args.marketplaceName && entry.manageable);
+      if (index < 0) throw new Error("Управляемый фиктивный каталог не найден");
+      const [removed] = fixtureMarketplaces.splice(index, 1);
+      return { marketplaceName: removed!.name, removed: true };
+    }
     if (job.op === "mcpOAuthLogin") {
       if (args.name !== "fixture-mcp" || args.sessionId !== firstSession) throw new Error("MCP-сервер не найден в выбранном сеансе");
       fixtureMcpAuthorized = true;
@@ -553,6 +580,7 @@ const agent = {
         installed: fixturePluginInstalled, enabled: true, installable: !fixturePluginInstalled,
         installPolicy: "AVAILABLE", availability: "AVAILABLE", mustShowInstallationInterstitial: false }],
       pluginCatalogAvailable: true,
+      marketplaces: fixtureMarketplaces.map((marketplace) => ({ ...marketplace })),
       apps: [{ id: "calendar", name: "Calendar connector", description: "Fixture connection status only.",
         enabled: true, accessible: false, callable: false, installUrl: "https://login.example.invalid/connect" }],
       appsAvailable: true,

@@ -81,7 +81,7 @@ async function startFixture() {
         mcpServersAvailable: true,
         mcpServers: [{ name: "fixture-mcp", status: "connected", authStatus: "oauth", tools: [], toolCount: 2, resourceCount: 0, resourceTemplateCount: 0, discoveryFailed: false }],
         limits: [], subagents: [], checkedAt: 1,
-        plugins: [], pluginCatalogAvailable: false, apps: [], appsAvailable: false,
+        plugins: [], pluginCatalogAvailable: false, marketplaces: [], apps: [], appsAvailable: false,
       };
       if (job.op === "setModel") settings.model = String(job.args.modelId);
       if (job.op === "setMode") settings.mode = String(job.args.modeId);
@@ -607,6 +607,29 @@ test("plugin changes require the paired device, same Origin, CSRF and an owned s
     const accepted = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body() });
     assert.equal(accepted.status, 200);
     assert.equal(f.calls.at(-1)?.op, "installPlugin");
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("marketplace changes require the paired owner, exact Origin, CSRF and an owned session", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const url = f.origin + "/api/operations";
+    const body = (sessionId = allowedSession) => JSON.stringify({ op: "addMarketplace", args: {
+      sessionId, source: "fixture/mobile-tools", refName: "stable",
+    } });
+    const anonymous = await fetch(url, { method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: body() });
+    assert.equal(anonymous.status, 401);
+    const noCsrf = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: body() });
+    assert.equal(noCsrf.status, 403);
+    const wrongOrigin = await fetch(url, { method: "POST", headers: { origin: "https://attacker.example", cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body() });
+    assert.equal(wrongOrigin.status, 403);
+    const foreign = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body(foreignSession) });
+    assert.equal(foreign.status, 403);
+    const approved = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body() });
+    assert.equal(approved.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "addMarketplace");
+    assert.equal(f.calls.at(-1)?.userId, 101);
   } finally { await cleanup(f.server, f.dataDir); }
 });
 

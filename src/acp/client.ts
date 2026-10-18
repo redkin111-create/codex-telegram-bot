@@ -19,6 +19,7 @@ import { decideApproval, decidePermissionsApproval } from "./approvals.js";
 import { handleServerRequest, type ServerHandlerOptions } from "./server-handlers.js";
 import { JsonRpcTransport } from "./transport.js";
 import { installedPluginExists, resolveRemotePluginInstall } from "./plugins.js";
+import { requireManagedMarketplace, validateMobileMarketplaceRef, validateMobileMarketplaceSource } from "./marketplaces.js";
 import {
   commandString,
   itemToUpdates,
@@ -301,6 +302,47 @@ export class AcpClient extends EventEmitter {
       this.request("app/installed", {}).catch(() => undefined),
     ]);
     return { pluginCatalog, installedPlugins, apps, installedApps };
+  }
+
+  /** Add a remote marketplace through Codex's native configuration RPC. */
+  async addMobileMarketplace(sourceValue: string, refValue?: string): Promise<{ marketplaceName: string; alreadyAdded: boolean }> {
+    const source = validateMobileMarketplaceSource(sourceValue);
+    const refName = validateMobileMarketplaceRef(refValue);
+    let response: unknown;
+    try {
+      response = await this.request("marketplace/add", { source, ...(refName ? { refName } : {}) });
+    } catch {
+      throw new AcpError("Codex не смог добавить каталог плагинов");
+    }
+    await this.refreshInventories();
+    const marketplaceName = (response as { marketplaceName?: unknown } | undefined)?.marketplaceName;
+    if (typeof marketplaceName !== "string" || !marketplaceName || marketplaceName.length > 120 ||
+        /[\u0000-\u001f\u007f\\/:]/.test(marketplaceName)) {
+      throw new AcpError("Codex добавил каталог, но не вернул его имя; обновите список");
+    }
+    return { marketplaceName, alreadyAdded: (response as { alreadyAdded?: unknown }).alreadyAdded === true };
+  }
+
+  /** Remove only a named marketplace that the live global Codex catalog marks as manageable. */
+  async removeMobileMarketplace(marketplaceName: string): Promise<void> {
+    let catalog: unknown;
+    try { catalog = await this.request("plugin/list", {}); }
+    catch { throw new AcpError("Codex не смог проверить список каталогов плагинов"); }
+    const name = requireManagedMarketplace(catalog, marketplaceName);
+    try { await this.request("marketplace/remove", { marketplaceName: name }); }
+    catch { throw new AcpError("Codex не смог удалить каталог плагинов"); }
+    await this.refreshInventories();
+  }
+
+  /** Upgrade one marketplace after checking it is present in the current Codex catalog. */
+  async upgradeMobileMarketplace(marketplaceName: string): Promise<void> {
+    let catalog: unknown;
+    try { catalog = await this.request("plugin/list", {}); }
+    catch { throw new AcpError("Codex не смог проверить список каталогов плагинов"); }
+    const name = requireManagedMarketplace(catalog, marketplaceName);
+    try { await this.request("marketplace/upgrade", { marketplaceName: name }); }
+    catch { throw new AcpError("Codex не смог обновить каталог плагинов"); }
+    await this.refreshInventories();
   }
 
   /** Start Codex's native OAuth flow for one MCP server already configured in an authorized thread. */

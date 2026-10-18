@@ -764,6 +764,65 @@ test("mobile MCP config is session scoped and restart refuses shared runtime wor
   }
 });
 
+test("mobile marketplace changes require an owned idle session and use the shared ACP",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-marketplace-agent-"));
+  const sessionId="34343434-3434-4434-8434-343434343434";
+  const foreignSessionId="35353535-3535-4535-8535-353535353535";
+  const threads=[
+    {id:sessionId,name:"Owned marketplace",cwd:dir,source:"appServer",createdAt:1,updatedAt:2,recencyAt:2},
+    {id:foreignSessionId,name:"Foreign marketplace",cwd:dir,source:"appServer",createdAt:1,updatedAt:1,recencyAt:1},
+  ];
+  const owners=new TelegramSessionRegistry(dir);
+  owners.recordMobile(sessionId,101,dir,"Fixture");
+  owners.recordMobile(foreignSessionId,202,dir,"Fixture");
+  let busy=false;
+  let pending=false;
+  const operations:Array<Record<string,unknown>>=[];
+  const acp=Object.assign(new EventEmitter(),{
+    isConnected:true,
+    hasInflightPrompt:()=>busy,
+    listProjects:async()=>[{id:"project",name:"Fixture",roots:[dir]}],
+    listThreads:async()=>threads,
+    listAllThreads:async(params?:{archived?:boolean})=>params?.archived?[]:threads,
+    availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],
+    currentModelId:"default",
+    async addMobileMarketplace(source:string,refName?:string){operations.push({op:"add",source,refName});return {marketplaceName:"fixture-market",alreadyAdded:false};},
+    async removeMobileMarketplace(marketplaceName:string){operations.push({op:"remove",marketplaceName});},
+    async upgradeMobileMarketplace(marketplaceName:string){operations.push({op:"upgrade",marketplaceName});},
+  }) as unknown as AcpClient;
+  const runtime={sessionId,isBusy:false,queueLength:0};
+  const registry={
+    hasPendingWork:()=>pending,
+    runtimeForSession:()=>runtime,
+    ownerChatForSession:(id:string)=>id===sessionId?101:id===foreignSessionId?202:undefined,
+    controller:()=>({list:()=>[]}),get:()=>runtime,
+  } as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101","202"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  const perform=(op:string,userId:number,args:Record<string,unknown>)=>agent.executeMobile({op,userId,args} as never);
+  try{
+    await agent.execute({id:"aabbccddeeff001122334455",op:"snapshot",userId:101,args:{}});
+    await assert.rejects(perform("addMarketplace",202,{sessionId,source:"owner/repo"}),/Доступ к сеансу запрещён/);
+    busy=true;
+    await assert.rejects(perform("upgradeMarketplace",101,{sessionId,marketplaceName:"fixture-market"}),/Дождитесь завершения/);
+    busy=false;
+    pending=true;
+    await assert.rejects(perform("removeMarketplace",101,{sessionId,marketplaceName:"fixture-market"}),/всех задач Codex/i);
+    pending=false;
+    assert.deepEqual(await perform("addMarketplace",101,{sessionId,source:"owner/repo",refName:"stable"}),
+      {marketplaceName:"fixture-market",alreadyAdded:false});
+    assert.deepEqual(await perform("upgradeMarketplace",101,{sessionId,marketplaceName:"fixture-market"}),
+      {marketplaceName:"fixture-market",upgraded:true});
+    assert.deepEqual(await perform("removeMarketplace",101,{sessionId,marketplaceName:"fixture-market"}),
+      {marketplaceName:"fixture-market",removed:true});
+    assert.deepEqual(operations,[
+      {op:"add",source:"owner/repo",refName:"stable"},
+      {op:"upgrade",marketplaceName:"fixture-market"},
+      {op:"remove",marketplaceName:"fixture-market"},
+    ]);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile session archive, restore and rename reuse the owner's Codex catalogue",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-sessions-"));
   const activeId="30303030-3030-4030-8030-303030303030";
