@@ -43,6 +43,9 @@ import type {
   CodexThreadForkResponse,
   CodexThreadGoal,
   CodexThreadGoalStatus,
+  CodexReviewTarget,
+  CodexReviewDelivery,
+  CodexReviewStartResponse,
   CodexUserInput,
   CodexTokenUsage,
   CodexTurn,
@@ -632,6 +635,13 @@ export class AcpClient extends EventEmitter {
   async compactThread(threadId: string): Promise<void> {
     if (this.hasActiveTurn(threadId)) throw new Error("Нельзя сократить контекст во время активного хода Codex");
     await this.request("thread/compact/start", { threadId });
+  }
+
+  /** Start Codex's native reviewer on an existing thread. */
+  async reviewThread(threadId: string, target: CodexReviewTarget, delivery: CodexReviewDelivery = "inline"): Promise<CodexReviewStartResponse> {
+    const response = await this.request("review/start", { threadId, target, delivery }) as CodexReviewStartResponse;
+    if (!response?.reviewThreadId || !response.turn?.id) throw new AcpError("review/start returned no review thread or turn");
+    return response;
   }
 
   hasMode(id: string): boolean {

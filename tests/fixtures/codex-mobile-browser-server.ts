@@ -205,6 +205,20 @@ const agent = {
         nextCursor: offset + page.length < matching.length ? String(offset + page.length) : undefined,
       };
     }
+    if (job.op === "reviewThread") {
+      const runtime = controlled.get(sessionId) ?? { busy: false, queue: [], paused: false };
+      if (runtime.busy) throw new Error("Нельзя запускать ревью, пока Codex работает (тестовая среда)");
+      const target = args.target as { type?: string } | undefined;
+      if (!target?.type || !["uncommittedChanges", "baseBranch", "commit", "custom"].includes(target.type)) throw new Error("Некорректная цель ревью fixture");
+      const entries = history.get(sessionId) ?? [];
+      entries.push({ role: "assistant", text: "Ревью Codex запущено в тестовой среде. Настоящий Codex не запускался.", timestamp: Date.now() });
+      history.set(sessionId, entries);
+      runtime.busy = true;
+      controlled.set(sessionId, runtime);
+      feed.status(sessionId, "working", "Ревью Codex выполняется (тест)");
+      feed.publish(sessionId, { kind: "text", text: "Ревью Codex запущено тестовой средой" });
+      return { started: true, reviewThreadId: sessionId, turnId: "fixture-review-turn" };
+    }
     if (job.op === "listMoreThreads") {
       const archived = args.archived === true;
       const source = archived ? archivedSessions : sessions;

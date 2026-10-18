@@ -587,6 +587,69 @@ test("mobile context compaction reuses the owner runtime and refuses active turn
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile native code review validates the owner thread, target and idle runtime",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-review-"));
+  const sessionId="81818181-8181-4181-8181-818181818181";
+  const thread={id:sessionId,name:"Review session",cwd:dir,source:"cli",createdAt:1,updatedAt:2,recencyAt:2};
+  const runtime={sessionId,isBusy:false};
+  let activeTurn=false;
+  const calls:Array<{threadId:string;target:unknown;delivery:string}> = [];
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"project",roots:[dir]}],
+    listThreads:async()=>[thread],
+    hasActiveTurn:()=>activeTurn,
+    reviewThread:async(threadId:string,target:unknown,delivery:"inline"|"detached"="inline")=>{
+      calls.push({threadId,target,delivery});
+      return {reviewThreadId:threadId,turn:{id:"review-turn"}};
+    },
+  }) as unknown as AcpClient;
+  const registry={runtimeForSession:(_owner:number,id:string)=>id===sessionId?runtime:undefined} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    const started=await agent.executeMobile({op:"reviewThread" as never,userId:101,args:{
+      sessionId,target:{type:"baseBranch",branch:"main"},delivery:"inline",
+    }} as never) as {started:boolean;reviewThreadId:string};
+    assert.deepEqual(started,{started:true,reviewThreadId:sessionId,turnId:"review-turn"});
+    assert.deepEqual(calls,[{threadId:sessionId,target:{type:"baseBranch",branch:"main"},delivery:"inline"}]);
+    for(const target of [
+      {type:"uncommittedChanges"},
+      {type:"commit",sha:"abcdef1234567",title:"Fixture commit"},
+      {type:"custom",instructions:"Check for unsafe file handling"},
+    ]){
+      const result=await agent.executeMobile({op:"reviewThread" as never,userId:101,args:{sessionId,target}} as never) as {started:boolean};
+      assert.equal(result.started,true);
+    }
+    assert.deepEqual(calls.slice(1).map((call)=>call.target),[
+      {type:"uncommittedChanges"},
+      {type:"commit",sha:"abcdef1234567",title:"Fixture commit"},
+      {type:"custom",instructions:"Check for unsafe file handling"},
+    ]);
+    await assert.rejects(agent.executeMobile({op:"reviewThread" as never,userId:202,args:{
+      sessionId,target:{type:"uncommittedChanges"},delivery:"inline",
+    }} as never),/не разрешён/i);
+    await assert.rejects(agent.executeMobile({op:"reviewThread" as never,userId:101,args:{
+      sessionId,target:{type:"baseBranch",branch:"../outside"},delivery:"inline",
+    }} as never),/ветк|цель|review/i);
+    await assert.rejects(agent.executeMobile({op:"reviewThread" as never,userId:101,args:{
+      sessionId,target:{type:"commit",sha:"--all"},delivery:"inline",
+    }} as never),/SHA коммита/i);
+    await assert.rejects(agent.executeMobile({op:"reviewThread" as never,userId:101,args:{
+      sessionId,target:{type:"custom",instructions:"x".repeat(1001)},delivery:"inline",
+    }} as never),/1000 символов/i);
+    runtime.isBusy=true;
+    await assert.rejects(agent.executeMobile({op:"reviewThread" as never,userId:101,args:{
+      sessionId,target:{type:"uncommittedChanges"},delivery:"inline",
+    }} as never),/выполняет задачу/i);
+    runtime.isBusy=false;
+    activeTurn=true;
+    await assert.rejects(agent.executeMobile({op:"reviewThread" as never,userId:101,args:{
+      sessionId,target:{type:"uncommittedChanges"},delivery:"inline",
+    }} as never),/активн|выполняет/i);
+    assert.equal(calls.length,4,"invalid, unauthorized, and busy review requests must not reach Codex");
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile project files stay inside the authorized session, hide secrets and save with a stale-file check",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-files-"));
   const project=join(dir,"project");

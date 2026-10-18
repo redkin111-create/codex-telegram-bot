@@ -420,6 +420,31 @@ test("unfiltered session pages require the paired device, allowed Origin and CSR
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
+test("native review requires a paired device, same Origin, CSRF and an owned session", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const url = f.origin + "/api/operations";
+    const args = { sessionId: allowedSession, target: { type: "uncommittedChanges" }, delivery: "inline" };
+    const payload = JSON.stringify({ op: "reviewThread", args });
+    const anonymous = await fetch(url, { method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: payload });
+    assert.equal(anonymous.status, 401);
+    const noCsrf = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: payload });
+    assert.equal(noCsrf.status, 403);
+    const foreign = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ op: "reviewThread", args: { ...args, sessionId: foreignSession } }),
+    });
+    assert.equal(foreign.status, 403);
+    const accepted = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: payload,
+    });
+    assert.equal(accepted.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "reviewThread");
+    assert.deepEqual(f.calls.at(-1)?.args, args);
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
 test("terminal commands require the paired device, same Origin, CSRF and an owned session", async () => {
   const f = await startFixture();
   try {

@@ -8,7 +8,7 @@ import { execFile as execFileCallback, execFileSync } from "node:child_process";
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { AcpClient } from "../acp/client.js";
-import type { CodexThreadSummary, CodexProjectSummary, CodexRateLimitWindow, CodexThreadGoalStatus } from "../acp/codex-protocol.js";
+import type { CodexThreadSummary, CodexProjectSummary, CodexRateLimitWindow, CodexThreadGoalStatus, CodexReviewTarget } from "../acp/codex-protocol.js";
 import { REASONING_LEVELS, textPrompt, type ReasoningEffort } from "../app/types.js";
 import type { RuntimeRegistry } from "../bot/registry.js";
 import { isVisibleThreadForChat, threadSourceKind } from "../bot/catalog.js";
@@ -35,6 +35,32 @@ import { gitRemoteTarget } from "../mobile/git-remotes.js";
 
 const log=createLogger("tma:agent");
 const MAX_IMG=3*1024*1024;
+function mobileReviewTarget(value:unknown):CodexReviewTarget{
+  if(!value||typeof value!=="object"||Array.isArray(value))throw new Error("Укажите, что нужно проверить");
+  const target=value as Record<string,unknown>;
+  if(target.type==="uncommittedChanges")return {type:"uncommittedChanges"};
+  if(target.type==="baseBranch"){
+    if(typeof target.branch!=="string")throw new Error("Укажите базовую ветку для ревью");
+    const branch=target.branch.trim();
+    if(!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/.test(branch)||branch.includes("..")||branch.includes("//")||branch.endsWith("/"))
+      throw new Error("Недопустимое имя базовой ветки для ревью");
+    return {type:"baseBranch",branch};
+  }
+  if(target.type==="commit"){
+    if(typeof target.sha!=="string"||!/^[a-f0-9]{7,64}$/i.test(target.sha.trim()))throw new Error("Укажите корректный SHA коммита для ревью");
+    const sha=target.sha.trim();
+    if(target.title!==undefined&&typeof target.title!=="string")throw new Error("Название коммита должно быть текстом");
+    const title=typeof target.title==="string"?target.title.trim().slice(0,180):undefined;
+    return {type:"commit",sha,...(title?{title}:{})};
+  }
+  if(target.type==="custom"){
+    if(typeof target.instructions!=="string")throw new Error("Укажите инструкции для ревью");
+    const instructions=target.instructions.trim();
+    if(!instructions||instructions.length>1000)throw new Error("Инструкции для ревью должны содержать от 1 до 1000 символов");
+    return {type:"custom",instructions};
+  }
+  throw new Error("Неизвестный тип ревью");
+}
 function selectedMobileSkillName(text:string):string|undefined{
   const match=/^\$([\p{L}\p{N}][\p{L}\p{N}_.:-]{0,159})(?=$|[\t \r\n])/u.exec(text.trim());
   return match?.[1];
@@ -69,7 +95,7 @@ interface MobilePtyRecord {
   expiry?:NodeJS.Timeout;dataSubscription?:{dispose():void};exitSubscription?:{dispose():void};
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "searchThreads" | "listMoreThreads" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+export type MobileLocalOperation = "capabilities" | "searchThreads" | "listMoreThreads" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 export class MiniAppAgent {
   private readonly abort=new AbortController();
@@ -486,6 +512,17 @@ export class MiniAppAgent {
         if(runtime?.isBusy||acp.hasActiveTurn(sessionId))throw new Error("Нельзя сократить контекст, пока Codex выполняет задачу");
         await acp.compactThread(sessionId);
         return {started:true};
+      }
+      case "reviewThread":{
+        const thread=await this.thread(sessionId,chatId);
+        if(await this.isArchivedThread(sessionId,chatId))throw new Error("Восстановите сеанс из архива перед запуском ревью");
+        if(!thread.cwd)throw new Error("Для сеанса не определена папка проекта");
+        if(runtime?.isBusy||acp.hasActiveTurn(sessionId))throw new Error("Нельзя запускать ревью, пока Codex выполняет задачу");
+        if(args.delivery!==undefined&&args.delivery!=="inline")throw new Error("Мобильное ревью запускается в выбранном сеансе");
+        const target=mobileReviewTarget(args.target);
+        const result=await acp.reviewThread(sessionId,target,"inline");
+        if(result.reviewThreadId!==sessionId)throw new Error("Codex вернул другой сеанс для встроенного ревью");
+        return {started:true,reviewThreadId:sessionId,turnId:result.turn.id};
       }
       case "archiveThread":{
         const thread=await this.thread(sessionId,chatId);

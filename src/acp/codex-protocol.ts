@@ -62,6 +62,14 @@ export interface CodexThreadForkResponse {
   modelProvider?: string;
 }
 
+export type CodexReviewTarget =
+  | { type: "uncommittedChanges" }
+  | { type: "baseBranch"; branch: string }
+  | { type: "commit"; sha: string; title?: string }
+  | { type: "custom"; instructions: string };
+export type CodexReviewDelivery = "inline" | "detached";
+export interface CodexReviewStartResponse { reviewThreadId: string; turn: CodexTurn; }
+
 export type CodexThreadGoalStatus = "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete";
 
 export interface CodexThreadGoal {

@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { CloudDownload, CloudUpload, FolderPlus, GitBranch, GitCommit, Plus, RefreshCw, X } from "lucide-react";
+import { ClipboardCheck, CloudDownload, CloudUpload, FolderPlus, GitBranch, GitCommit, Plus, RefreshCw, X } from "lucide-react";
 import { readGitDiff, readGitStatus } from "../api.js";
 import type { MobileGitDiff, MobileGitStatus, MobileOperation } from "../types.js";
-import { Badge, Button, Card, Input } from "./ui/primitives.js";
+import { Badge, Button, Card, Input, Textarea } from "./ui/primitives.js";
 
 export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktreeCreated }: {
   sessionId: string;
@@ -28,6 +28,11 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
   const [remoteAction, setRemoteAction] = useState<"fetch" | "push">();
   const [worktreeBranchName, setWorktreeBranchName] = useState("");
   const [worktreeDialogOpen, setWorktreeDialogOpen] = useState(false);
+  const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
+  const [reviewTargetType, setReviewTargetType] = useState<"uncommittedChanges" | "baseBranch" | "commit" | "custom">("uncommittedChanges");
+  const [reviewBranch, setReviewBranch] = useState("");
+  const [reviewCommit, setReviewCommit] = useState("");
+  const [reviewInstructions, setReviewInstructions] = useState("");
 
   async function refresh() {
     setLoading(true);
@@ -38,6 +43,8 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
       setBranchTarget((current) => nextStatus.branches.includes(current) ? current : nextStatus.branch);
       setRemoteBranchTarget((current) => nextStatus.remoteBranches.includes(current) ? current : nextStatus.remoteBranches[0] ?? "");
       setRemoteName((current) => nextStatus.remotes.some((remote) => remote.name === current) ? current : nextStatus.remotes[0]?.name ?? "");
+      const reviewBranches = [...new Set([...nextStatus.branches, ...nextStatus.remoteBranches])];
+      setReviewBranch((current) => reviewBranches.includes(current) ? current : reviewBranches.find((branch) => branch !== nextStatus.branch) ?? "");
       setDiff(nextDiff);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось прочитать Git"); }
     finally { setLoading(false); }
@@ -96,6 +103,16 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
     if (result !== undefined) setRemoteAction(undefined);
   }
 
+  async function startReview() {
+    let target: Record<string, string>;
+    if (reviewTargetType === "uncommittedChanges") target = { type: "uncommittedChanges" };
+    else if (reviewTargetType === "baseBranch") target = { type: "baseBranch", branch: reviewBranch };
+    else if (reviewTargetType === "commit") target = { type: "commit", sha: reviewCommit.trim() };
+    else target = { type: "custom", instructions: reviewInstructions.trim() };
+    const result = await mutate("reviewThread", { target, delivery: "inline" }, "Codex начал ревью в этом сеансе");
+    if (result !== undefined) setReviewDialogOpen(false);
+  }
+
   const patch = view === "staged" ? diff?.staged ?? "" : diff?.unstaged ?? "";
   const stagedCount = status?.changes.filter((change) => change.indexStatus !== " " && change.indexStatus !== "?").length ?? 0;
   const selectedRemote = status?.remotes.find((remote) => remote.name === remoteName);
@@ -152,7 +169,7 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
             </div>
             <p className="text-[11px] leading-relaxed text-muted">Показаны уже загруженные на ноутбук ссылки. Здесь можно переключиться на существующую удалённую ветку.</p>
           </form>}
-          <div className="mt-5 flex flex-wrap gap-2">{diffScope && <Button variant="ghost" className="min-h-10 px-3" onClick={() => void loadDiff()}>Все файлы</Button>}<Button variant={view === "unstaged" ? "outline" : "ghost"} className="min-h-10 px-3" onClick={() => setView("unstaged")}>Рабочая папка</Button><Button variant={view === "staged" ? "outline" : "ghost"} className="min-h-10 px-3" onClick={() => setView("staged")}>Индекс</Button></div>
+          <div className="mt-5 flex flex-wrap gap-2">{diffScope && <Button variant="ghost" className="min-h-10 px-3" onClick={() => void loadDiff()}>Все файлы</Button>}<Button variant={view === "unstaged" ? "outline" : "ghost"} className="min-h-10 px-3" onClick={() => setView("unstaged")}>Рабочая папка</Button><Button variant={view === "staged" ? "outline" : "ghost"} className="min-h-10 px-3" onClick={() => setView("staged")}>Индекс</Button><Button type="button" className="ml-auto min-h-10 px-3" disabled={!connected || Boolean(busyAction)} onClick={() => setReviewDialogOpen(true)}><ClipboardCheck size={15} />Ревью Codex</Button></div>
           <p className="mt-2 break-all text-[11px] text-muted">{diffScope ? `Diff: ${diffScope.previousPath ? `${diffScope.previousPath} → ` : ""}${diffScope.path}` : "Diff всех файлов"}</p>
           <Card className="mt-2 min-h-48 overflow-auto"><pre className="whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-relaxed text-[#dce3da] sm:p-4">{loadingDiffPath ? "Читаю diff…" : patch || (status.clean ? "Нет незакоммиченных изменений." : "Git не создал текстовый diff для этих изменений.")}</pre></Card>
           <form className="mt-4 flex flex-col gap-2 sm:flex-row" onSubmit={(event) => { event.preventDefault(); void mutate("gitCommit", { message: commitMessage }, "Изменения сохранены коммитом"); }}>
@@ -189,6 +206,22 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
         <label className="block space-y-1.5"><span className="text-xs text-muted">Имя новой ветки</span><Input aria-label="Имя ветки рабочей копии" value={worktreeBranchName} onChange={(event) => setWorktreeBranchName(event.target.value)} maxLength={80} placeholder="например mobile/experiment" disabled={Boolean(busyAction)} /></label>
         <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={Boolean(busyAction)} onClick={() => setWorktreeDialogOpen(false)}>Отмена</Button><Button type="button" className="flex-1" disabled={!connected || !worktreeBranchName.trim() || Boolean(busyAction)} onClick={() => void createWorktree()}>{busyAction === "createWorktree" ? "Создаю…" : "Создать"}</Button></div>
       </section>
+    </div>}
+    {reviewDialogOpen && <div className="fixed inset-0 z-[80] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
+      <form className="safe-area-bottom w-full max-w-md space-y-4 rounded-2xl border border-border bg-elevated p-5 shadow-soft" role="alertdialog" aria-modal="true" aria-labelledby="review-confirm-title" onSubmit={(event) => { event.preventDefault(); void startReview(); }}>
+        <div><h3 id="review-confirm-title" className="text-base font-semibold">Запустить ревью Codex?</h3><p className="mt-2 text-xs leading-relaxed text-muted">Codex проверит выбранные изменения и добавит ответ в текущий сеанс. Ревью нельзя начать, пока в сеансе идёт другая задача.</p></div>
+        <label className="block space-y-1.5"><span className="text-xs text-muted">Что проверить</span><select aria-label="Что проверить" className="min-h-11 w-full rounded-xl border border-border bg-[#111613] px-3 text-sm text-text" value={reviewTargetType} onChange={(event) => setReviewTargetType(event.target.value as typeof reviewTargetType)}>
+          <option value="uncommittedChanges">Незакоммиченные изменения</option><option value="baseBranch">Сравнить с веткой</option><option value="commit">Один коммит</option><option value="custom">Свои инструкции</option>
+        </select></label>
+        {reviewTargetType === "baseBranch" && <label className="block space-y-1.5"><span className="text-xs text-muted">Базовая ветка</span><select aria-label="Базовая ветка ревью" className="min-h-11 w-full rounded-xl border border-border bg-[#111613] px-3 text-sm text-text" value={reviewBranch} onChange={(event) => setReviewBranch(event.target.value)}>
+          <option value="">Выберите ветку</option>{[...new Set([...(status?.branches ?? []), ...(status?.remoteBranches ?? [])])].map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+        </select></label>}
+        {reviewTargetType === "commit" && <label className="block space-y-1.5"><span className="text-xs text-muted">SHA коммита</span><Input aria-label="SHA коммита для ревью" value={reviewCommit} onChange={(event) => setReviewCommit(event.target.value)} maxLength={64} placeholder="например abc1234" autoCapitalize="none" autoCorrect="off" />
+        </label>}
+        {reviewTargetType === "custom" && <label className="block space-y-1.5"><span className="text-xs text-muted">Инструкции</span><Textarea aria-label="Инструкции для ревью" value={reviewInstructions} onChange={(event) => setReviewInstructions(event.target.value)} maxLength={1000} placeholder="Например: проверь обработку ошибок и граничные случаи" />
+        </label>}
+        <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={Boolean(busyAction)} onClick={() => setReviewDialogOpen(false)}>Отмена</Button><Button type="submit" className="flex-1" disabled={!connected || Boolean(busyAction) || (reviewTargetType === "baseBranch" && !reviewBranch) || (reviewTargetType === "commit" && !reviewCommit.trim()) || (reviewTargetType === "custom" && !reviewInstructions.trim())}>{busyAction === "reviewThread" ? "Проверяю…" : "Запустить ревью"}</Button></div>
+      </form>
     </div>}
   </div>;
 }
