@@ -19,12 +19,15 @@ export interface LiveApproval {
 export interface LiveEvent {
   id:number;
   sessionId:string;
-  kind:"text"|"tool"|"status"|"activity"|"approval"|"transcript";
+  kind:"text"|"tool"|"status"|"activity"|"approval"|"transcript"|"plan";
   text?:string;
   role?:"user"|"assistant";
   label?:string;
   status?:LiveStatus;
   approval?:LiveApproval;
+  turnId?:string;
+  explanation?:string;
+  plan?:Array<{step:string;status:"pending"|"inProgress"|"completed"}>;
   at:number;
 }
 const LIMIT=160;
@@ -101,7 +104,25 @@ export class TmaLiveFeed {
     const turn=p.turn&&typeof p.turn==="object"?p.turn as Record<string,unknown>:{};
     const id=str(p.threadId||turn.threadId,128);
     if(!id)return;
-    if(method==="turn/started")this.status(id,"working","Codex выполняет задание");
+    if(method==="turn/started"){
+      this.publish(id,{kind:"plan",turnId:str(turn.id,128),plan:[]});
+      this.status(id,"working","Codex выполняет задание");
+    }
+    else if(method==="turn/plan/updated"){
+      const rawPlan=Array.isArray(p.plan)?p.plan.slice(0,30):[];
+      const plan=rawPlan.flatMap((raw)=>{
+        if(!raw||typeof raw!=="object")return [];
+        const value=raw as Record<string,unknown>;
+        if(typeof value.step!=="string")return [];
+        const step=value.step.slice(0,300).replace(/[\u0000-\u001f\u007f]/g," ").trim();
+        if(!step)return [];
+        const status:"pending"|"inProgress"|"completed"=value.status==="completed"||value.status==="inProgress"?value.status:"pending";
+        return [{step,status}];
+      });
+      const explanation=typeof p.explanation==="string"
+        ?p.explanation.slice(0,1000).replace(/[\u0000-\u001f\u007f]/g," ").trim():"";
+      this.publish(id,{kind:"plan",turnId:str(p.turnId,128),explanation,plan});
+    }
     else if(method==="turn/completed"){
       const turnStatus=str(turn.status);
       this.status(id,turnStatus==="failed"?"failed":turnStatus==="interrupted"?"cancelled":"completed",

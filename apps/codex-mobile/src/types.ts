@@ -132,12 +132,15 @@ export interface MobileAttachment {
 export interface MobileLiveEvent {
   id: number;
   sessionId: string;
-  kind: "text" | "tool" | "status" | "activity" | "approval" | "transcript";
+  kind: "text" | "tool" | "status" | "activity" | "approval" | "transcript" | "plan";
   text?: string;
   role?: "user" | "assistant";
   label?: string;
   status?: LiveStatus;
   approval?: MobileApproval;
+  turnId?: string;
+  explanation?: string;
+  plan?: Array<{ step: string; status: "pending" | "inProgress" | "completed" }>;
   at: number;
 }
 

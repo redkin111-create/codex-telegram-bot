@@ -27,13 +27,13 @@ test("live feed publishes safe tool names and confirmed turn/approval statuses",
       rawInput:{env:{PASSWORD:"NEVER_LEAK_THIS_PASSWORD"}}});
     feed.status(sid,"approval","Нужно разрешение");
     acp.emit("notification","turn/completed",{threadId:sid,turn:{id:"turn1",status:"completed"}});
-    assert.deepEqual(received.map(e=>e.kind),["status","text","tool","status","status"]);
+    assert.deepEqual(received.map(e=>e.kind),["plan","status","text","tool","status","status"]);
     assert.deepEqual(received.filter(e=>e.kind==="status").map(e=>e.status),
       ["working","approval","completed"]);
     assert(!JSON.stringify(received).includes("NEVER_LEAK_THIS_PASSWORD"));
     const replay:number[]=[];
     const unsub=feed.subscribe(sid,3,e=>replay.push(e.id));
-    assert.deepEqual(replay,[4,5]);unsub();
+    assert.deepEqual(replay,[4,5,6]);unsub();
   }finally{stop();feed.dispose();}
 });
 
@@ -54,6 +54,35 @@ test("live feed reports MCP OAuth completion without forwarding provider errors"
       kind:"activity",label:"Вход в MCP-сервер fixture-mcp не выполнен",sessionId:sid,
     }]);
     assert(!JSON.stringify(received).includes("SECRET_PROVIDER_ERROR"));
+  }finally{stop();feed.dispose();}
+});
+
+test("live feed publishes bounded current-turn plans without forwarding extra protocol fields",()=>{
+  const acp=new EventEmitter() as AcpClient;
+  const feed=new TmaLiveFeed(acp);
+  const received:Array<{kind:string;turnId?:string;explanation?:string;plan?:Array<{step:string;status:string}>}>=[];
+  const stop=feed.subscribe(sid,0,e=>received.push(e));
+  try{
+    acp.emit("notification","turn/plan/updated",{
+      threadId:sid,turnId:"turn-1",explanation:"Проверка и исправление",
+      plan:[
+        {step:"Проверить файлы",status:"completed"},
+        {step:"Исправить <img src=x onerror=alert(1)>",status:"inProgress"},
+        {step:"Запустить тесты",status:"future-status"},
+      ],
+      privateAccountData:"MUST_NOT_LEAK",
+    });
+    acp.emit("notification","turn/plan/updated",{
+      turnId:"turn-without-thread",plan:[{step:"Не должно попасть в ленту",status:"pending"}],
+    });
+    assert.deepEqual(received.map(({kind,turnId,explanation,plan})=>({kind,turnId,explanation,plan})),[{
+      kind:"plan",turnId:"turn-1",explanation:"Проверка и исправление",plan:[
+        {step:"Проверить файлы",status:"completed"},
+        {step:"Исправить <img src=x onerror=alert(1)>",status:"inProgress"},
+        {step:"Запустить тесты",status:"pending"},
+      ],
+    }]);
+    assert(!JSON.stringify(received).includes("MUST_NOT_LEAK"));
   }finally{stop();feed.dispose();}
 });
 

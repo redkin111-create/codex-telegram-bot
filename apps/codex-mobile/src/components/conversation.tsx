@@ -262,6 +262,9 @@ export function Conversation({
   const status = session.archived ? "В архиве" : activity?.liveLabel || session.liveLabel || "Статус неизвестен";
   const turnBusy = session.busy || activity?.busy === true || queue.busy;
   const toolEvents = events.filter((event) => event.kind === "tool" || event.kind === "status" || event.kind === "activity").slice(-5);
+  const currentPlanEvent = [...events].reverse().find((event) => event.kind === "plan");
+  const currentPlan = currentPlanEvent?.plan ?? [];
+  const completedPlanSteps = currentPlan.filter((step) => step.status === "completed").length;
 
   return <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-transparent">
     <header className="sticky top-0 z-10 border-b border-border bg-[#111512]/95 px-4 py-3 backdrop-blur md:px-6">
@@ -295,6 +298,17 @@ export function Conversation({
       {toolEvents.length > 0 && <div className="mt-3 flex gap-2 overflow-x-auto pb-0.5" aria-label="Текущие события Codex">
         {toolEvents.map((event) => <span key={`${event.id}-${event.kind}`} className="flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-panel px-2.5 py-1 text-[11px] text-muted">{event.kind === "tool" ? <Wrench size={12} className="text-accent" /> : null}{event.label || event.status || "Событие"}</span>)}
       </div>}
+      {currentPlan.length > 0 && <section className="mx-auto mt-3 max-w-4xl rounded-xl border border-border bg-panel px-3 py-2.5" aria-label="План текущего задания">
+        <div className="flex items-center justify-between gap-3"><h2 className="text-xs font-semibold">План задания</h2><span className="shrink-0 text-[11px] text-muted">{completedPlanSteps} из {currentPlan.length} готово</span></div>
+        {currentPlanEvent?.explanation && <p className="mt-1 text-[11px] leading-4 text-muted">{currentPlanEvent.explanation}</p>}
+        <ol className="mt-2 max-h-36 space-y-1 overflow-y-auto" aria-label="Шаги плана">
+          {currentPlan.map((step, index) => <li key={`${index}-${step.step}`} className="flex items-start gap-2 text-xs leading-5">
+            <span className={`mt-1 shrink-0 text-[10px] ${step.status === "completed" ? "text-[#a7c278]" : step.status === "inProgress" ? "text-accent" : "text-muted"}`} aria-label={step.status === "completed" ? "Готово" : step.status === "inProgress" ? "Выполняется" : "Ожидает"}>{step.status === "completed" ? "✓" : step.status === "inProgress" ? "●" : "○"}</span>
+            <span className="min-w-0 flex-1 break-words">{step.step}</span>
+            <span className="shrink-0 text-[10px] text-muted">{step.status === "completed" ? "Готово" : step.status === "inProgress" ? "Сейчас" : "Дальше"}</span>
+          </li>)}
+        </ol>
+      </section>}
       {historySearchOpen && <div className="mx-auto mt-3 flex max-w-4xl items-center gap-2" role="search" aria-label="Поиск в загруженной истории">
         <label className="relative min-w-0 flex-1"><Search size={15} className="pointer-events-none absolute left-3 top-3.5 text-muted" /><Input value={historySearch} onChange={(event) => setHistorySearch(event.target.value)} placeholder="Найти сообщение или вывод инструмента" aria-label="Поиск по загруженной истории" className="pl-9" /></label>
         <span className="shrink-0 text-[11px] text-muted" role="status">{historySearch.trim() ? `Сообщений: ${visibleHistory.length}` : `История: ${history.length}`}</span>

@@ -882,6 +882,14 @@ process.stdin.on("data", (chunk: string) => {
       } else if (command.command === "voiceError") {
         feed.publish(selected, { kind: "activity", label: "Ошибка голосового соединения Codex" });
         process.stdout.write("Fixture realtime voice failed remotely.\n");
+      } else if (command.command === "planUpdated") {
+        feed.publish(selected, { kind: "plan", turnId: "fixture-turn", explanation: "Изолированная проверка плана",
+          plan: [
+            { step: "Прочитать историю", status: "completed" },
+            { step: "Проверить <img src=x onerror=alert(1)>", status: "inProgress" },
+            { step: "Сверить изменения", status: "pending" },
+          ] });
+        process.stdout.write("Fixture current-turn plan published.\n");
       } else if (command.command === "deleteThreadError") {
         fixtureDeleteFailure = true;
         process.stdout.write("Fixture Codex deletion error enabled.\n");

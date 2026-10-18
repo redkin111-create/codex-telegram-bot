@@ -1,5 +1,5 @@
 import type {
-  MobileAccountAction, MobileAccountsSnapshot, MobileActivity, MobileApproval, MobileAttachment, MobileCapabilities, MobileDevice, MobileFile, MobileFileListing, MobileGitDiff, MobileGitStatus, MobileHistory, MobileLiveEvent, MobileOperation, MobileSnapshot,
+  MobileAccountAction, MobileAccountsSnapshot, MobileActivity, MobileApproval, MobileAttachment, MobileCapabilities, MobileDevice, MobileFile, MobileFileListing, MobileGitDiff, MobileGitStatus, MobileHistory, MobileOperation, MobileSnapshot,
 } from "./types.js";
 
 export class MobileApiError extends Error {
@@ -218,21 +218,4 @@ export function parseSseBlock(block: string): ParsedSseMessage | undefined {
   return { id, event, data: data.join("\n") };
 }
 
-export function asLiveEvent(message: ParsedSseMessage): MobileLiveEvent | undefined {
-  if (message.event !== "message") return undefined;
-  try {
-    const value = JSON.parse(message.data) as Partial<MobileLiveEvent>;
-    if (!Number.isSafeInteger(value.id) || typeof value.sessionId !== "string" ||
-        !["text", "tool", "status", "activity", "approval", "transcript"].includes(String(value.kind))) return undefined;
-    if (value.kind === "transcript" && (value.role !== "user" && value.role !== "assistant" ||
-        typeof value.text !== "string" || value.text.length === 0 || value.text.length > 4000)) return undefined;
-    if (value.kind === "approval") {
-      const approval = value.approval as Partial<MobileApproval> | undefined;
-      if (!approval || typeof approval.id !== "string" || !/^[a-f0-9-]{36}$/.test(approval.id) ||
-          typeof approval.title !== "string" || typeof approval.kind !== "string" || !Array.isArray(approval.options) ||
-          approval.options.length === 0 || approval.options.length > 8 ||
-          approval.options.some((option) => !option || typeof option.id !== "string" || typeof option.label !== "string")) return undefined;
-    }
-    return value as MobileLiveEvent;
-  } catch { return undefined; }
-}
+export { asLiveEvent } from "./lib/live-event.js";
