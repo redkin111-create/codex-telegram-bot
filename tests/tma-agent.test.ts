@@ -656,6 +656,9 @@ test("mobile capability inventory is redacted and settings reuse the owner's exi
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-capabilities-"));
   const sessionId="10101010-1010-4010-8010-101010101010";
   let inventoryRefreshes=0;
+  let nativeModel:string|null="fixture-model";
+  let nativeEffort:string|null="low";
+  const nativeSettingsUpdates:Array<{threadId:string;patch:{modelId?:string|null;modeId?:string|null;effort?:string|null}}>=[];
   const mcpResourceReads:Array<{threadId:string;server:string;uri:string;uriTemplate?:string}>=[];
   const runtime={
     sessionId,model:"fixture-model",agent:"code",reasoning:"medium" as ReasoningEffort,
@@ -689,6 +692,15 @@ test("mobile capability inventory is redacted and settings reuse the owner's exi
     ],
     hasModel:(id:string)=>id==="fixture-model",
     hasMode:(id:string)=>id==="code",
+    async readMobileThreadSettings(threadId:string){
+      assert.equal(threadId,sessionId);
+      return {model:nativeModel,effort:nativeEffort};
+    },
+    async updateMobileThreadSettings(threadId:string,patch:{modelId?:string|null;modeId?:string|null;effort?:string|null}){
+      nativeSettingsUpdates.push({threadId,patch});
+      if(patch.modelId!==undefined)nativeModel=patch.modelId;
+      if(patch.effort!==undefined)nativeEffort=patch.effort;
+    },
   }) as unknown as AcpClient;
   Object.defineProperty(acp,"isConnected",{value:true});
   const registry={
@@ -703,7 +715,7 @@ test("mobile capability inventory is redacted and settings reuse the owner's exi
   try{
     await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
     const capabilities=await agent.executeMobile({op:"capabilities",userId:101,args:{sessionId}}) as {
-      skills:Array<{name:string}>;mcpServers:Array<{toolCount:number;resources?:Array<{id:string;name:string;parameters?:string[]}>}>;subagents:Array<{id:string}>;limits:Array<{primary?:{usedPercent:number}}>;
+      skills:Array<{name:string}>;mcpServers:Array<{toolCount:number;resources?:Array<{id:string;name:string;parameters?:string[]}>}>;subagents:Array<{id:string}>;limits:Array<{primary?:{usedPercent:number}}>;model:string;reasoning:string;
     };
     assert.equal(inventoryRefreshes,1);
     assert.equal(capabilities.skills[0]?.name,"fixture-skill");
@@ -713,6 +725,8 @@ test("mobile capability inventory is redacted and settings reuse the owner's exi
     assert.deepEqual(templateResource.parameters,["account_id"]);
     assert.deepEqual(capabilities.subagents.map((entry)=>entry.id),["own-agent"]);
     assert.equal(capabilities.limits[0]?.primary?.usedPercent,12);
+    assert.equal(capabilities.model,"fixture-model");
+    assert.equal(capabilities.reasoning,"low");
     assert.doesNotMatch(JSON.stringify(capabilities),/C:\\\\private|must not escape|fixture:\/\//);
     const resourceId=capabilities.mcpServers[0]!.resources![0]!.id;
     const resourceResult=await agent.executeMobile({op:"readMcpResource",userId:101,args:{sessionId,resourceId}}) as {text:string};
@@ -730,10 +744,17 @@ test("mobile capability inventory is redacted and settings reuse the owner's exi
     await agent.executeMobile({op:"setModel",userId:101,args:{sessionId,modelId:"fixture-model"}});
     await agent.executeMobile({op:"setMode",userId:101,args:{sessionId,modeId:"code"}});
     await agent.executeMobile({op:"setReasoning",userId:101,args:{sessionId,effort:"high"}});
+    assert.deepEqual(nativeSettingsUpdates,[
+      {threadId:sessionId,patch:{modelId:"fixture-model"}},
+      {threadId:sessionId,patch:{modeId:"code"}},
+      {threadId:sessionId,patch:{effort:"high"}},
+    ]);
     assert.equal(runtime.model,"fixture-model");
     assert.equal(runtime.agent,"code");
     assert.equal(runtime.reasoning,"high");
     await assert.rejects(agent.executeMobile({op:"setReasoning",userId:101,args:{sessionId,effort:"unsafe"}}),/Недопустимый уровень/);
+    await assert.rejects(agent.executeMobile({op:"setModel",userId:101,args:{sessionId:"99999999-9999-4999-8999-999999999999",modelId:"fixture-model"}}),/Доступ к сеансу запрещён/);
+    assert.equal(nativeSettingsUpdates.length,3);
     await assert.rejects(agent.executeMobile({op:"capabilities",userId:202,args:{}}),/Пользователь не разрешён/);
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });

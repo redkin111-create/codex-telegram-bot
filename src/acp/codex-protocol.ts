@@ -151,6 +151,10 @@ export interface CodexThreadSummary {
   recencyAt: number | null;
   status?: string | { type?: string };
   source?: CodexThreadSource;
+  /** Current model selection when the running app-server exposes it. */
+  model?: string | null;
+  /** Current reasoning effort when the running app-server exposes it. */
+  reasoningEffort?: string | null;
   projectId?: string;
   parentThreadId?: string;
   section?: CodexThreadSection | null;
@@ -159,6 +163,16 @@ export interface CodexThreadSummary {
   readStateMetadataAvailable?: boolean;
   readStateEligible?: boolean;
   readState?: CodexThreadReadState;
+}
+
+export interface CodexThreadSettingsUpdateParams {
+  threadId: string;
+  model?: string | null;
+  effort?: string | null;
+  collaborationMode?: {
+    mode: "default" | "plan";
+    settings: { model: string; reasoning_effort: string | null; developer_instructions: string | null };
+  } | null;
 }
 
 export type CodexThreadUnreadPosition =

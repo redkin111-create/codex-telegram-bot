@@ -1034,6 +1034,11 @@ export class MiniAppAgent {
         if(sessionId&&!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
         if(acp.isConnected)await acp.refreshInventories();
         const integrationThread=sessionId?await this.thread(sessionId,chatId).catch(()=>undefined):undefined;
+        let nativeSettings:{model?:string|null;effort?:string|null}|undefined;
+        if(sessionId&&integrationThread&&acp.isConnected&&typeof acp.readMobileThreadSettings==="function"){
+          try{nativeSettings=await acp.readMobileThreadSettings(sessionId);}
+          catch{/* Some app-server versions omit live settings; retain the runtime's known values. */}
+        }
         const rawIntegrations=acp.isConnected&&typeof acp.mobileIntegrationInventory==="function"
           ? await acp.mobileIntegrationInventory(integrationThread?.cwd,sessionId||undefined).catch(()=>undefined)
           : undefined;
@@ -1073,9 +1078,9 @@ export class MiniAppAgent {
         }));
         return {
           online:acp.isConnected,
-          model:runtime?.model||acp.currentModelId||"default",
+          model:nativeSettings&&"model" in nativeSettings?(nativeSettings.model||"default"):runtime?.model||acp.currentModelId||"default",
           mode:runtime?.agent||acp.currentModeId||"",
-          reasoning:runtime?.reasoning||"medium",
+          reasoning:nativeSettings&&"effort" in nativeSettings?(nativeSettings.effort||runtime?.reasoning||"medium"):runtime?.reasoning||"medium",
           models:acp.availableModels.slice(0,100).map(m=>({id:m.modelId.slice(0,160),name:m.name.slice(0,160),description:m.description?.slice(0,400)})),
           modes:acp.availableModes.slice(0,60).map(m=>({id:m.id.slice(0,100),name:m.name.slice(0,120),description:m.description?.slice(0,300)})),
           reasoningLevels:REASONING_LEVELS,
@@ -1282,8 +1287,12 @@ export class MiniAppAgent {
       case "setModel":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
         if(!runtime)throw new Error("Сначала подключите сеанс к мобильному клиенту");
+        await this.thread(sessionId,chatId);
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
         const model=argumentString(args,"modelId",160);
         if(model!=="default"&&!acp.hasModel(model))throw new Error("Эта модель сейчас недоступна");
+        if(typeof acp.updateMobileThreadSettings!=="function")throw new Error("Эта версия Codex не поддерживает сохранение настроек сеанса");
+        await acp.updateMobileThreadSettings(sessionId,{modelId:model==="default"?null:model});
         const result=await runtime.setModelPref(model==="default"?"":model);
         if(!result.ok)throw new Error(result.error||"Не удалось сменить модель");
         return {model:model==="default"?"default":model};
@@ -1291,8 +1300,12 @@ export class MiniAppAgent {
       case "setMode":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
         if(!runtime)throw new Error("Сначала подключите сеанс к мобильному клиенту");
+        await this.thread(sessionId,chatId);
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
         const mode=argumentString(args,"modeId",100);
         if(mode!=="default"&&!acp.hasMode(mode))throw new Error("Этот режим сейчас недоступен");
+        if(typeof acp.updateMobileThreadSettings!=="function")throw new Error("Эта версия Codex не поддерживает сохранение настроек сеанса");
+        await acp.updateMobileThreadSettings(sessionId,{modeId:mode==="default"?null:mode});
         const result=await runtime.setAgentPref(mode==="default"?"":mode);
         if(!result.ok)throw new Error(result.error||"Не удалось сменить режим");
         return {mode:mode==="default"?"":mode};
@@ -1300,8 +1313,12 @@ export class MiniAppAgent {
       case "setReasoning":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
         if(!runtime)throw new Error("Сначала подключите сеанс к мобильному клиенту");
+        await this.thread(sessionId,chatId);
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
         const effort=argumentString(args,"effort",20);
         if(!REASONING_LEVELS.includes(effort as ReasoningEffort))throw new Error("Недопустимый уровень рассуждений");
+        if(typeof acp.updateMobileThreadSettings!=="function")throw new Error("Эта версия Codex не поддерживает сохранение настроек сеанса");
+        await acp.updateMobileThreadSettings(sessionId,{effort});
         runtime.setReasoningPref(effort as ReasoningEffort);
         return {reasoning:effort};
       }

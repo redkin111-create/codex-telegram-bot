@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { statSync } from "node:fs";
 import { isAbsolute } from "node:path";
+import { REASONING_LEVELS, type ReasoningEffort } from "../app/types.js";
 import { codexLaunchInfo, codexSpawn } from "../app/codex-cli.js";
 import { createLogger } from "../logger.js";
 import { killPid } from "../sessions/process.js";
@@ -65,6 +66,7 @@ import type {
   CodexThreadSummary,
   CodexThreadReadState,
   CodexThreadSection,
+  CodexThreadSettingsUpdateParams,
   CodexBackgroundTerminal,
   CodexMobileEditableTurn,
 } from "./codex-protocol.js";
@@ -239,8 +241,9 @@ export class AcpClient extends EventEmitter {
 
   private readonly metadata = new Map<string, SessionMetadata>();
   private readonly threadCwd = new Map<string, string>();
-  private readonly threadModel = new Map<string, string>();
-  private readonly threadMode = new Map<string, string>();
+  private readonly threadModel = new Map<string, string | null>();
+  private readonly threadMode = new Map<string, string | null>();
+  private readonly threadEffort = new Map<string, string | null>();
   private readonly collaborationModes = new Map<string, CodexCollaborationModeInfo>();
   private readonly subagents = new Map<string, SubagentInfo>();
   /** Threads with an active native Codex realtime voice transport. */
@@ -1125,9 +1128,78 @@ export class AcpClient extends EventEmitter {
     return this.availableModels.some((m) => m.modelId === id);
   }
 
+  /** Read the live thread model and effort settings without hydrating history. */
+  async readMobileThreadSettings(threadId: string): Promise<{ model?: string | null; effort?: string | null }> {
+    if (!/^[a-z0-9_-]{8,128}$/i.test(threadId)) throw new Error("Неверный сеанс Codex для чтения настроек");
+    const response = await this.request("thread/read", { threadId, includeTurns: false }) as {
+      thread?: { id?: unknown; model?: unknown; reasoningEffort?: unknown; reasoning_effort?: unknown };
+    };
+    const thread = response?.thread;
+    if (thread?.id !== threadId) throw new AcpError("Codex не подтвердил настройки выбранного сеанса");
+    const model = typeof thread.model === "string" ? thread.model : thread.model === null ? null : undefined;
+    const rawEffort = Object.prototype.hasOwnProperty.call(thread, "reasoningEffort")
+      ? thread.reasoningEffort
+      : thread.reasoning_effort;
+    const effort = typeof rawEffort === "string" ? rawEffort : rawEffort === null ? null : undefined;
+    if (model !== undefined) this.threadModel.set(threadId, model);
+    if (effort !== undefined) this.threadEffort.set(threadId, effort);
+    return { ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}) };
+  }
+
+  /** Persist mobile model/mode/reasoning choices on the owned native Codex thread. */
+  async updateMobileThreadSettings(
+    threadId: string,
+    patch: { modelId?: string | null; modeId?: string | null; effort?: string | null },
+  ): Promise<void> {
+    if (!/^[a-z0-9_-]{8,128}$/i.test(threadId)) throw new Error("Неверный сеанс Codex для изменения настроек");
+    if (patch.modelId === undefined && patch.modeId === undefined && patch.effort === undefined) {
+      throw new Error("Выберите настройку Codex для изменения");
+    }
+    const modelId = patch.modelId === "default" ? null : patch.modelId;
+    const modeId = patch.modeId === "default" ? null : patch.modeId;
+    if (modelId !== undefined && modelId !== null && (!modelId.trim() || modelId.length > 160 || !this.hasModel(modelId))) {
+      throw new Error("Эта модель сейчас недоступна");
+    }
+    if (modeId !== undefined && modeId !== null && (modeId.length > 100 || !this.hasMode(modeId))) {
+      throw new Error("Этот режим сейчас недоступен");
+    }
+    if (patch.effort !== undefined && patch.effort !== null && !REASONING_LEVELS.includes(patch.effort as ReasoningEffort)) {
+      throw new Error("Недопустимый уровень рассуждений");
+    }
+
+    const params: CodexThreadSettingsUpdateParams = { threadId };
+    if (modelId !== undefined) params.model = modelId;
+    if (patch.effort !== undefined) params.effort = patch.effort;
+    if (modeId !== undefined) {
+      if (modeId === null) params.collaborationMode = null;
+      else {
+        const mode = this.collaborationModes.get(modeId);
+        if (!mode?.mode) throw new Error("Нативная настройка этого режима сейчас недоступна");
+        const configuredModel = modelId !== undefined
+          ? modelId
+          : this.threadModel.has(threadId) ? this.threadModel.get(threadId) : this.currentModelId;
+        const configuredEffort = patch.effort !== undefined
+          ? patch.effort
+          : this.threadEffort.get(threadId) ?? mode.reasoning_effort ?? null;
+        params.collaborationMode = {
+          mode: mode.mode,
+          settings: {
+            model: configuredModel ?? mode.model ?? "",
+            reasoning_effort: configuredEffort,
+            developer_instructions: null,
+          },
+        };
+      }
+    }
+    await this.request("thread/settings/update", params);
+    if (modelId !== undefined) this.threadModel.set(threadId, modelId);
+    if (modeId !== undefined) this.threadMode.set(threadId, modeId);
+    if (patch.effort !== undefined) this.threadEffort.set(threadId, patch.effort);
+  }
+
   /** Resolve the model id to send for a thread: per-thread → default → none. */
   private modelFor(threadId: string | undefined): string | undefined {
-    const pref = (threadId && this.threadModel.get(threadId)) || this.currentModelId;
+    const pref = threadId && this.threadModel.has(threadId) ? this.threadModel.get(threadId) : this.currentModelId;
     if (!pref || pref === "auto") return undefined;
     return pref;
   }
@@ -1176,13 +1248,18 @@ export class AcpClient extends EventEmitter {
       };
       const model = this.modelFor(sessionId);
       if (model) params.model = model;
-      const mode = this.collaborationModes.get(this.threadMode.get(sessionId) ?? "");
+      const effort = this.threadEffort.get(sessionId);
+      if (effort) params.effort = effort;
+      const modeId = this.threadMode.has(sessionId) ? this.threadMode.get(sessionId) : this.currentModeId;
+      const mode = this.collaborationModes.get(modeId ?? "");
       if (mode?.mode) {
+        const modeModel = this.threadModel.has(sessionId) ? model : mode.model ?? model;
+        const modeEffort = this.threadEffort.has(sessionId) ? effort ?? null : mode.reasoning_effort ?? null;
         params.collaborationMode = {
           mode: mode.mode,
           settings: {
-            model: mode.model ?? model ?? "",
-            reasoning_effort: mode.reasoning_effort ?? null,
+            model: modeModel ?? "",
+            reasoning_effort: modeEffort,
             developer_instructions: null,
           },
         };
