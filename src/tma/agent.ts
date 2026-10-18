@@ -3,7 +3,7 @@
  * the Telegram bot and never listens on the PC's public network interface.
  */
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFile as execFileCallback, execFileSync } from "node:child_process";
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -27,6 +27,9 @@ import { DurablePromptJournal } from "./prompt-journal.js";
 
 const execFile=promisify(execFileCallback);
 const MAX_MOBILE_TERMINAL_OUTPUT=64*1024;
+const MAX_MOBILE_PTY_BUFFER=512*1024;
+const MAX_MOBILE_PTY_READ=64*1024;
+const MOBILE_PTY_IDLE_MS=30*60*1000;
 import { normalizeMobileIntegrations, normalizePluginInstallResult } from "../mobile/integrations.js";
 
 const log=createLogger("tma:agent");
@@ -44,8 +47,24 @@ const sleep=(ms:number,signal:AbortSignal)=>new Promise<void>(resolve=>{
   signal.addEventListener("abort",done,{once:true});
 });
 
-export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; }
-export type MobileLocalOperation = "capabilities" | "searchThreads" | "terminalExec" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch";
+export interface MobilePtyProcess {
+  write(data:string):void;
+  resize(cols:number,rows:number):void;
+  kill():void;
+  onData(listener:(data:string)=>void):{dispose():void};
+  onExit(listener:(event:{exitCode:number;signal?:number})=>void):{dispose():void};
+}
+export interface MobilePtyOptions {
+  name:string;cols:number;rows:number;cwd:string;encoding:"utf8";env:NodeJS.ProcessEnv;
+}
+export type MobilePtyFactory=(shell:string,args:string[],options:MobilePtyOptions)=>MobilePtyProcess;
+interface MobilePtyRecord {
+  terminalId:string;ownerId:number;sessionId:string;shell:string;pty:MobilePtyProcess;
+  output:string;outputStart:number;totalChars:number;exited:boolean;exitCode:number|null;closed:boolean;
+  expiry?:NodeJS.Timeout;dataSubscription?:{dispose():void};exitSubscription?:{dispose():void};
+}
+export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; mobilePtyFactory?:MobilePtyFactory; }
+export type MobileLocalOperation = "capabilities" | "searchThreads" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 export class MiniAppAgent {
   private readonly abort=new AbortController();
@@ -80,6 +99,7 @@ export class MiniAppAgent {
   }>();
   /** Never launch duplicate deep scans for the same JSONL revision. */
   private readonly historyInflight = new Map<string, Promise<unknown>>();
+  private readonly mobilePtys=new Map<string,MobilePtyRecord>();
   private loopPromise:Promise<void>|undefined;
   constructor(private readonly deps:AgentDeps,gatewayUrl?:string,secret?:string){
     if(Boolean(gatewayUrl)!==Boolean(secret))throw new Error("TMA gateway URL and token must be configured together");
@@ -108,7 +128,7 @@ export class MiniAppAgent {
       void this.runHeartbeat();
     }
   }
-  stop():void{this.abort.abort();}
+  stop():void{this.abort.abort();for(const terminal of this.mobilePtys.values())this.disposeMobilePty(terminal);this.mobilePtys.clear();}
   private async runHeartbeat():Promise<void>{
     while(!this.abort.signal.aborted){
       try{
@@ -336,6 +356,54 @@ export class MiniAppAgent {
         const command=argumentString(args,"command",4000).trim();
         if(!command||command.includes("\0"))throw new Error("Введите корректную команду");
         return this.mobileTerminalCommand(root,command);
+      }
+      case "terminalStart":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        if(await this.isArchivedThread(sessionId,chatId))throw new Error("Нельзя запускать терминал в архивном сеансе");
+        this.requireIdleMobileRuntime(sessionId,chatId);
+        const {root}=this.mobileRoot(sessionId,chatId);
+        return this.startMobilePty(chatId,sessionId,root);
+      }
+      case "terminalRead":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        const terminal=this.mobilePtyFor(chatId,sessionId,args);
+        const offset=args.offset===undefined?0:args.offset;
+        if(typeof offset!=="number"||!Number.isSafeInteger(offset)||offset<0||offset>terminal.totalChars)throw new Error("Неверная позиция терминального вывода");
+        this.touchMobilePty(terminal);
+        const start=Math.max(offset,terminal.outputStart);
+        const output=terminal.output.slice(start-terminal.outputStart,start-terminal.outputStart+MAX_MOBILE_PTY_READ);
+        return {terminalId:terminal.terminalId,output,nextOffset:start+output.length,truncated:offset<terminal.outputStart,
+          exited:terminal.exited||terminal.closed,exitCode:terminal.exitCode};
+      }
+      case "terminalInput":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        if(await this.isArchivedThread(sessionId,chatId))throw new Error("Нельзя отправлять команды в архивный сеанс");
+        const terminal=this.mobilePtyFor(chatId,sessionId,args);
+        if(typeof args.data!=="string"||args.data.length>16*1024)throw new Error("Слишком большой ввод терминала");
+        if(terminal.exited||terminal.closed)throw new Error("Терминал завершён");
+        terminal.pty.write(args.data);
+        this.touchMobilePty(terminal);
+        return {written:true};
+      }
+      case "terminalResize":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        if(await this.isArchivedThread(sessionId,chatId))throw new Error("Нельзя изменять терминал архивного сеанса");
+        const terminal=this.mobilePtyFor(chatId,sessionId,args);
+        const {cols,rows}=args;
+        if(typeof cols!=="number"||typeof rows!=="number"||!Number.isInteger(cols)||!Number.isInteger(rows)||cols<20||cols>240||rows<5||rows>100){
+          throw new Error("Неверный размер терминала");
+        }
+        if(terminal.exited||terminal.closed)throw new Error("Терминал завершён");
+        terminal.pty.resize(cols,rows);
+        this.touchMobilePty(terminal);
+        return {resized:true};
+      }
+      case "terminalStop":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        const terminal=this.mobilePtyFor(chatId,sessionId,args);
+        if(!terminal.exited&&!terminal.closed){terminal.closed=true;terminal.pty.kill();}
+        this.touchMobilePty(terminal);
+        return {stopped:true};
       }
       case "renameThread":{
         const thread=await this.thread(sessionId,chatId);
@@ -757,6 +825,69 @@ export class MiniAppAgent {
     const runtime=this.deps.registry.runtimeForSession(userId,sessionId);
     if(!runtime)throw new Error("Сначала подключите сеанс к мобильному клиенту");
     if(runtime.isBusy)throw new Error("Дождитесь завершения текущей задачи Codex перед изменением настроек или файлов проекта");
+  }
+  private async startMobilePty(ownerId:number,sessionId:string,cwd:string){
+    const existing=[...this.mobilePtys.values()].find(item=>item.ownerId===ownerId&&item.sessionId===sessionId&&!item.exited&&!item.closed);
+    if(existing){this.touchMobilePty(existing);return {terminalId:existing.terminalId,shell:existing.shell,reused:true,exited:false};}
+    for(const item of this.mobilePtys.values())if(item.ownerId===ownerId&&item.sessionId===sessionId){
+      this.mobilePtys.delete(item.terminalId);this.disposeMobilePty(item);
+    }
+    let factory=this.deps.mobilePtyFactory;
+    if(!factory){
+      try{factory=(await import("@homebridge/node-pty-prebuilt-multiarch")).spawn as MobilePtyFactory;}
+      catch{throw new Error("Интерактивный терминал недоступен в этой установке; используйте запуск одной команды");}
+    }
+    const shell=process.platform==="win32"?(process.env.ComSpec||"cmd.exe"):(process.env.SHELL||"/bin/sh");
+    const pty=factory(shell,[],{
+      name:"xterm-256color",cols:80,rows:24,cwd,encoding:"utf8",
+      env:{...process.env,TERM:"xterm-256color"},
+    });
+    const terminal:MobilePtyRecord={terminalId:randomUUID(),ownerId,sessionId,shell:basename(shell),pty,
+      output:"",outputStart:0,totalChars:0,exited:false,exitCode:null,closed:false};
+    terminal.dataSubscription=pty.onData(data=>{
+      terminal.output+=data;
+      terminal.totalChars+=data.length;
+      if(terminal.output.length>MAX_MOBILE_PTY_BUFFER){
+        const remove=terminal.output.length-MAX_MOBILE_PTY_BUFFER;
+        terminal.output=terminal.output.slice(remove);
+        terminal.outputStart+=remove;
+      }
+      if(!terminal.closed)this.touchMobilePty(terminal);
+    });
+    terminal.exitSubscription=pty.onExit(event=>{
+      terminal.exited=true;
+      terminal.exitCode=Number.isInteger(event.exitCode)?event.exitCode:null;
+      if(!terminal.closed)this.touchMobilePty(terminal);
+    });
+    this.mobilePtys.set(terminal.terminalId,terminal);
+    this.touchMobilePty(terminal);
+    return {terminalId:terminal.terminalId,shell:terminal.shell,reused:false,exited:false};
+  }
+  private mobilePtyFor(ownerId:number,sessionId:string,args:Record<string,unknown>):MobilePtyRecord{
+    const terminalId=argumentString(args,"terminalId",36);
+    if(!/^[a-f0-9-]{36}$/i.test(terminalId))throw new Error("Неверный идентификатор терминала");
+    const terminal=this.mobilePtys.get(terminalId);
+    if(!terminal)throw new Error("Терминал не найден или соединение истекло");
+    if(terminal.ownerId!==ownerId||terminal.sessionId!==sessionId)throw new Error("Доступ к терминалу запрещён");
+    return terminal;
+  }
+  private touchMobilePty(terminal:MobilePtyRecord):void{
+    if(terminal.expiry)clearTimeout(terminal.expiry);
+    terminal.expiry=setTimeout(()=>{
+      if(this.mobilePtys.get(terminal.terminalId)!==terminal)return;
+      this.mobilePtys.delete(terminal.terminalId);
+      this.disposeMobilePty(terminal);
+    },MOBILE_PTY_IDLE_MS);
+    terminal.expiry.unref();
+  }
+  private disposeMobilePty(terminal:MobilePtyRecord):void{
+    if(terminal.expiry){clearTimeout(terminal.expiry);terminal.expiry=undefined;}
+    if(!terminal.exited&&!terminal.closed){
+      terminal.closed=true;
+      try{terminal.pty.kill();}catch{/* The process may have already exited. */}
+    }
+    terminal.dataSubscription?.dispose();
+    terminal.exitSubscription?.dispose();
   }
   private async mobileTerminalCommand(cwd:string,command:string):Promise<{
     exitCode:number|null;stdout:string;stderr:string;truncated:boolean;durationMs:number;timedOut:boolean;

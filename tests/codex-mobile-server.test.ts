@@ -390,6 +390,35 @@ test("terminal commands require the paired device, same Origin, CSRF and an owne
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
+test("interactive terminal operations require the paired device, CSRF and an owned session", async () => {
+  const f = await startFixture();
+  try {
+    const payload = JSON.stringify({ op: "terminalStart", args: { sessionId: allowedSession } });
+    const anonymous = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: payload,
+    });
+    assert.equal(anonymous.status, 401);
+    const login = await pair(f.origin, f.auth);
+    const started = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json", "x-csrf-token": login.csrfToken }, body: payload,
+    });
+    assert.equal(started.status, 200);
+    assert.equal((await started.json() as { op: string }).op, "terminalStart");
+    assert.equal(f.calls.at(-1)?.userId, 101);
+    const noCsrf = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: payload,
+    });
+    assert.equal(noCsrf.status, 403);
+    const beforeForeign = f.calls.filter((call) => call.op.startsWith("terminal")).length;
+    const foreign = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json", "x-csrf-token": login.csrfToken },
+      body: JSON.stringify({ op: "terminalStart", args: { sessionId: foreignSession } }),
+    });
+    assert.equal(foreign.status, 403);
+    assert.equal(f.calls.filter((call) => call.op.startsWith("terminal")).length, beforeForeign);
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
 test("archive, restore and rename actions require a paired owner, Origin and CSRF", async () => {
   const f = await startFixture();
   try {

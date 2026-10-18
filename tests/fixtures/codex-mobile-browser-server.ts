@@ -82,6 +82,8 @@ let fixtureBranch = "feat/codex-mobile-fixture";
 let fixtureNotesCommitted = false;
 let fixtureRenameStaged = true;
 let fixturePluginInstalled = false;
+const fixtureTerminals = new Map<string, { sessionId: string; output: string; pendingInput: string; exited: boolean; exitCode: number | null; }>();
+const fixtureTerminalBySession = new Map<string, string>();
 const fixtureFiles = new Map<string, string>([
   ["README.md", "# Fixture project\n\nRead-only history is followed by mobile file access.\n"],
   ["src/main.ts", "export function greet() {\n  return \"Hello from fixture\";\n}\n"],
@@ -200,6 +202,44 @@ const agent = {
       const session = sessions.find((entry) => entry.id === sessionId);
       if (!session) throw new Error("Сеанс не найден");
       return { exitCode: 0, stdout: `mobile-terminal-fixture\n${session.cwd}\n`, stderr: "", truncated: false, durationMs: 4, timedOut: false };
+    }
+    if (job.op === "terminalStart") {
+      const session = sessions.find((entry) => entry.id === sessionId);
+      if (!session) throw new Error("Сеанс не найден");
+      const existingId = fixtureTerminalBySession.get(sessionId);
+      const existing = existingId ? fixtureTerminals.get(existingId) : undefined;
+      if (existing && !existing.exited && existingId) return { terminalId: existingId, shell: "Fixture Shell", reused: true, exited: false };
+      const terminalId = randomUUID();
+      fixtureTerminals.set(terminalId, { sessionId, output: "fixture shell ready\r\n", pendingInput: "", exited: false, exitCode: null });
+      fixtureTerminalBySession.set(sessionId, terminalId);
+      return { terminalId, shell: "Fixture Shell", reused: false, exited: false };
+    }
+    if (job.op === "terminalRead") {
+      const terminal = fixtureTerminals.get(String(args.terminalId ?? ""));
+      if (!terminal || terminal.sessionId !== sessionId) throw new Error("Терминал не найден");
+      const offset = Math.max(0, Number(args.offset ?? 0));
+      return { terminalId: args.terminalId, output: terminal.output.slice(offset), nextOffset: terminal.output.length,
+        truncated: false, exited: terminal.exited, exitCode: terminal.exitCode };
+    }
+    if (job.op === "terminalInput") {
+      const terminal = fixtureTerminals.get(String(args.terminalId ?? ""));
+      if (!terminal || terminal.sessionId !== sessionId || terminal.exited) throw new Error("Терминал не найден");
+      terminal.pendingInput += String(args.data ?? "");
+      const end = Math.max(terminal.pendingInput.lastIndexOf("\r"), terminal.pendingInput.lastIndexOf("\n"));
+      if (end >= 0) {
+        const command = terminal.pendingInput.slice(0, end).trim();
+        terminal.pendingInput = terminal.pendingInput.slice(end + 1);
+        if (command.toLowerCase() === "exit") { terminal.exited = true; terminal.exitCode = 0; }
+        else terminal.output += `fixture received: ${command}\r\n`;
+      }
+      return { written: true };
+    }
+    if (job.op === "terminalResize") return { resized: true };
+    if (job.op === "terminalStop") {
+      const terminal = fixtureTerminals.get(String(args.terminalId ?? ""));
+      if (!terminal || terminal.sessionId !== sessionId) throw new Error("Терминал не найден");
+      terminal.exited = true; terminal.exitCode = 0;
+      return { stopped: true };
     }
     if (job.op === "createWorktree") {
       const source = sessions.find((session) => session.id === sessionId);

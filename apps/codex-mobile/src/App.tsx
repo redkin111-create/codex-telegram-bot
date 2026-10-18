@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FolderOpen, GitBranch, LoaderCircle, Menu, RefreshCw, Shield, ShieldAlert, SlidersHorizontal, Terminal } from "lucide-react";
 import {
   asLiveEvent, logout, MobileApiError, openEventStream, parseSseBlock, readActivity, readApprovals,
@@ -11,13 +11,14 @@ import { FilesPanel } from "./components/files-panel.js";
 import { GitPanel } from "./components/git-panel.js";
 import { Pairing } from "./components/pairing.js";
 import { SettingsPanel } from "./components/settings-panel.js";
-import { TerminalPanel } from "./components/terminal-panel.js";
 import { Workspace } from "./components/workspace.js";
 import type {
   HistoryEntry, MobileActivity, MobileApproval, MobileDevice, MobileLiveEvent, MobileQueue, MobileSession, MobileSnapshot,
   MobileOperation,
 } from "./types.js";
 import { Button } from "./components/ui/primitives.js";
+
+const TerminalPanel = lazy(() => import("./components/terminal-panel.js").then((module) => ({ default: module.TerminalPanel })));
 
 const emptyQueue: MobileQueue = { items: [], busy: false, paused: false };
 
@@ -250,7 +251,7 @@ export default function App() {
     setError("");
     try {
       const result = await runOperation<T>(op, args, csrf);
-      void refreshSnapshot();
+      if (!op.startsWith("terminal")) void refreshSnapshot();
       return result;
     } catch (cause) { handleApiError(cause); throw cause; }
   }, [csrf, handleApiError, refreshSnapshot]);
@@ -483,7 +484,7 @@ export default function App() {
     {settingsOpen && <SettingsPanel sessionId={selectedId} connected={connected} onClose={() => setSettingsOpen(false)} onOperation={(op: MobileOperation, args) => operation(op, args)} />}
     {filesOpen && selectedId && <FilesPanel sessionId={selectedId} connected={connected} onClose={() => setFilesOpen(false)} onOperation={(op: MobileOperation, args) => operation(op, args)} />}
     {gitOpen && selectedId && <GitPanel key={selectedId} sessionId={selectedId} connected={connected} onClose={() => setGitOpen(false)} onOperation={(op: MobileOperation, args) => operation(op, args)} onWorktreeCreated={async (id, path) => { await operation("select", { sessionId: id }); setSelectedSearchSession(undefined); setSelectedId(id); setSelectedProject(path); setGitOpen(false); setWorkspaceOpen(false); }} />}
-    {terminalOpen && selectedId && selectedSession && <TerminalPanel sessionId={selectedId} cwd={selectedSession.cwd} connected={connected} onClose={() => setTerminalOpen(false)} onOperation={(op: MobileOperation, args) => operation(op, args)} />}
+    {terminalOpen && selectedId && selectedSession && <Suspense fallback={<div role="status" className="fixed inset-0 z-50 grid place-items-center bg-background text-sm text-muted">Открываю терминал…</div>}><TerminalPanel sessionId={selectedId} cwd={selectedSession.cwd} connected={connected} onClose={() => setTerminalOpen(false)} onOperation={(op: MobileOperation, args) => operation(op, args)} /></Suspense>}
     {approvalOpen && pendingApproval && <ApprovalPanel approval={pendingApproval} onResolve={answerApproval} onClose={() => setApprovalOpen(false)} />}
   </div>;
 }

@@ -14,8 +14,8 @@ const RASTER_IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "im
 const MUTATING_OPERATIONS = new Set<TmaOperation>([
   "create", "select", "send", "cancel", "queue", "queueRemove", "queueResume",
 ]);
-const MOBILE_MUTATING_OPERATIONS = new Set<MobileLocalOperation>(["setModel", "setMode", "setReasoning", "setGoal", "clearGoal", "steer", "forkThread", "compactThread", "archiveThread", "unarchiveThread", "renameThread", "installPlugin", "uninstallPlugin", "createWorktree", "terminalExec", "writeFile", "createFile", "gitStage", "gitUnstage", "gitCommit", "gitCreateBranch", "gitSwitchBranch", "gitTrackRemoteBranch"]);
-const MOBILE_READ_OPERATIONS = new Set<MobileLocalOperation>(["searchThreads", "readImage"]);
+const MOBILE_MUTATING_OPERATIONS = new Set<MobileLocalOperation>(["setModel", "setMode", "setReasoning", "setGoal", "clearGoal", "steer", "forkThread", "compactThread", "archiveThread", "unarchiveThread", "renameThread", "installPlugin", "uninstallPlugin", "createWorktree", "terminalExec", "terminalStart", "terminalInput", "terminalResize", "terminalStop", "writeFile", "createFile", "gitStage", "gitUnstage", "gitCommit", "gitCreateBranch", "gitSwitchBranch", "gitTrackRemoteBranch"]);
+const MOBILE_READ_OPERATIONS = new Set<MobileLocalOperation>(["searchThreads", "readImage", "terminalRead"]);
 
 export interface MobileAgent {
   canReadSession(id: string, userId: number): Promise<boolean>;

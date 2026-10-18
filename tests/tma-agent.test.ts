@@ -3,11 +3,11 @@ import test from "node:test";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ReasoningEffort } from "../src/app/types.js";
-import { MiniAppAgent } from "../src/tma/agent.js";
+import { MiniAppAgent, type MobilePtyFactory, type MobilePtyOptions, type MobilePtyProcess } from "../src/tma/agent.js";
 import type { AppConfig } from "../src/config.js";
 import type { AcpClient } from "../src/acp/client.js";
 import type { RuntimeRegistry } from "../src/bot/registry.js";
@@ -88,6 +88,85 @@ test("mobile terminal runs a bounded one-shot command in the authorized project 
     assert.ok(largeResult.stdout.length<=65_600,"terminal output remains bounded after truncation");
     runtime.isBusy=true;
     await assert.rejects(agent.executeMobile({op:"terminalExec" as never,userId:101,args:{sessionId,command}}),/Дождитесь завершения текущей задачи/);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("mobile interactive terminal reattaches, streams output, scopes input and stops the project shell",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-pty-"));
+  const project=join(dir,"workspace");
+  const sessionId="95959595-9595-4595-8595-959595959595";
+  mkdirSync(project);
+  const acp=Object.assign(new EventEmitter(),{
+    async listProjects(){return [{id:"pty-project",name:"workspace",roots:[project]}];},
+    async listThreads(params?:{archived?:boolean}){return params?.archived?[]:[{id:sessionId,name:"PTY fixture",cwd:project,source:"cli",createdAt:1,updatedAt:2,recencyAt:2}];},
+    availableModels:[],
+  }) as unknown as AcpClient;
+  const runtime={sessionId,isBusy:false,queueLength:0};
+  const registry={runtimeForSession:()=>runtime,get:()=>runtime,controller:()=>({list:()=>[]})} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
+  let onData:(value:string)=>void=()=>{};
+  let onExit:(value:{exitCode:number})=>void=()=>{};
+  const writes:string[]=[];
+  const sizes:Array<[number,number]>=[];
+  const launches:Array<{shell:string;args:string[];options:MobilePtyOptions}>=[];
+  let killed=false;
+  const pty:MobilePtyProcess={
+    write(value:string){writes.push(value);},resize(cols:number,rows:number){sizes.push([cols,rows]);},
+    kill(){killed=true;onExit({exitCode:0});},
+    onData(listener:(value:string)=>void){onData=listener;return {dispose(){}};},
+    onExit(listener:(value:{exitCode:number})=>void){onExit=listener;return {dispose(){}};},
+  };
+  const mobilePtyFactory:MobilePtyFactory=(shell,args,options)=>{
+    launches.push({shell,args,options});return pty;
+  };
+  const agent=new MiniAppAgent({cfg,acp,registry,mobilePtyFactory});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
+    const started=await agent.executeMobile({op:"terminalStart" as never,userId:101,args:{sessionId}}) as {terminalId:string;reused:boolean};
+    assert.match(started.terminalId,/^[a-f0-9-]{36}$/i);
+    assert.equal(started.reused,false);
+    assert.equal(launches.length,1);
+    assert.equal(launches[0]?.options.cwd,realpathSync.native(project));
+    const attached=await agent.executeMobile({op:"terminalStart" as never,userId:101,args:{sessionId}}) as {terminalId:string;reused:boolean};
+    assert.equal(attached.terminalId,started.terminalId);
+    assert.equal(attached.reused,true);
+    assert.equal(launches.length,1,"reattaching must keep the same shell process");
+
+    onData("fixture output\r\n");
+    const output=await agent.executeMobile({op:"terminalRead" as never,userId:101,args:{sessionId,terminalId:started.terminalId,offset:0}}) as {
+      output:string;nextOffset:number;exited:boolean;
+    };
+    assert.equal(output.output,"fixture output\r\n");
+    assert.equal(output.nextOffset,16);
+    assert.equal(output.exited,false);
+    const tail=await agent.executeMobile({op:"terminalRead" as never,userId:101,args:{sessionId,terminalId:started.terminalId,offset:output.nextOffset}}) as {output:string};
+    assert.equal(tail.output,"");
+    onData("x".repeat(512*1024+10));
+    const bounded=await agent.executeMobile({op:"terminalRead" as never,userId:101,args:{sessionId,terminalId:started.terminalId,offset:0}}) as {
+      output:string;nextOffset:number;truncated:boolean;
+    };
+    assert.equal(bounded.truncated,true);
+    assert.equal(bounded.output.length,64*1024,"one poll returns a bounded chunk even after reconnect");
+    assert.equal(bounded.nextOffset,16+10+64*1024);
+
+    await agent.executeMobile({op:"terminalInput" as never,userId:101,args:{sessionId,terminalId:started.terminalId,data:"echo safe\r"}});
+    assert.deepEqual(writes,["echo safe\r"]);
+    await agent.executeMobile({op:"terminalResize" as never,userId:101,args:{sessionId,terminalId:started.terminalId,cols:90,rows:30}});
+    assert.deepEqual(sizes,[[90,30]]);
+    await assert.rejects(agent.executeMobile({op:"terminalRead" as never,userId:101,args:{sessionId:"96969696-9696-4696-8696-969696969696",terminalId:started.terminalId,offset:0}}),/Доступ к сеансу запрещён/);
+    runtime.isBusy=true;
+    await assert.rejects(agent.executeMobile({op:"terminalStart" as never,userId:101,args:{sessionId}}),/Дождитесь завершения текущей задачи/);
+    runtime.isBusy=false;
+    await agent.executeMobile({op:"terminalStop" as never,userId:101,args:{sessionId,terminalId:started.terminalId}});
+    assert.equal(killed,true);
+    const stopped=await agent.executeMobile({op:"terminalRead" as never,userId:101,args:{sessionId,terminalId:started.terminalId,offset:16}}) as {exited:boolean;exitCode:number|null};
+    assert.equal(stopped.exited,true);
+    assert.equal(stopped.exitCode,0);
+    killed=false;
+    const replacement=await agent.executeMobile({op:"terminalStart" as never,userId:101,args:{sessionId}}) as {terminalId:string};
+    assert.notEqual(replacement.terminalId,started.terminalId);
+    agent.stop();
+    assert.equal(killed,true,"agent shutdown must stop an open local shell");
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
