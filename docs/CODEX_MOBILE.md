@@ -382,6 +382,9 @@ claim to display the new summary. See the [app-server item schema](https://githu
 - Browser skill with Pixel 7 emulation at 412×915: show 80 fixture screenshots in one session, open the last tile in the gallery and verify its image preview. All 80 were visible in the test. The production index remains bounded to 256 recent references.
 - Browser skill with Pixel 7 emulation at 412×915: start fixture MCP OAuth, verify the provider host before the sign-in link is offered, then verify Codex reports the connection. Install and remove a fixture plugin through their confirmation dialogs. The provider link was not opened and the fixture changed no real Codex settings.
 - Browser skill with Pixel 7 emulation at 412×915: open an interactive fixture terminal, send `echo phone`, verify the fixture output, stop the terminal, then run `echo mobile-test` in one-command mode and verify exit code 0. The fixture did not start a host shell or execute commands on the laptop.
+- Browser skill with Pixel 7 emulation at 412×915: refresh the fixture MCP connection after its OAuth response, open the tool list, confirm `{"query":"mobile status"}` for `read_status`, and verify its result. A returned `<script>` was escaped in the result card and created no script element. The fixture made no external MCP request.
+- Browser skill with Pixel 7 emulation at 412×915: reopen the interactive fixture terminal after the CSP change, send `echo phone`, confirm the output in the terminal screenshot, and stop the session. The new capture recorded no xterm CSP violation; the fixture did not run a host shell.
+- Browser skill with Pixel 7 emulation at 412×915: while a fixture Codex task was busy, verify the Git review button and dialog submit were disabled; stop the fixture task, run review while idle, and confirm the fixture response. The busy guard was also covered by a unit test.
 - No actual Codex service was started; no Tailscale or Telegram configuration
   was changed.
 
@@ -396,6 +399,22 @@ claim to display the new summary. See the [app-server item schema](https://githu
   an unknown status when completion cannot be established.
 
 ## Android private connection (planned, not configured)
+
+Read-only inspection on 2026-10-18 found one current route: the existing
+Funnel's default HTTPS endpoint proxies to `http://127.0.0.1:3301`. No separate
+Serve route was present. The mobile server's local default is port `3302`, so
+`8443` is the candidate private HTTPS port after a fresh status check. The
+planned command is `tailscale serve --bg --https=8443 3302`, with the exact
+phone origin `https://<tailnet-host>:8443`. This command was not run and no
+Tailscale configuration was changed. See the [Tailscale Serve CLI
+reference](https://tailscale.com/docs/reference/tailscale-cli/serve) for the
+`--https` and `status` options.
+
+This route alone does not complete MCP OAuth from Android. Codex requires the
+browser to reach its OAuth callback listener; the mobile server does not yet
+provide a reviewed callback bridge. Keep the callback step unclaimed until a
+loopback-only design is implemented and tested. See the [Codex app-server
+OAuth instructions](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md).
 
 1. Keep the service disabled while developing; verify pairing, revocation and
    file/session access locally against test fixtures.

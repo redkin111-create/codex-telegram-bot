@@ -63,8 +63,16 @@ function securityHeaders(res: ServerResponse): void {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  // xterm sizes its terminal with inline style attributes. Keep style elements
+  // limited to the exact rules emitted by the pinned terminal version, and keep
+  // scripts strict. Only style attributes are open for terminal measurements.
   res.setHeader("Content-Security-Policy",
-    "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; " +
+    "default-src 'self'; script-src 'self'; style-src 'self'; " +
+    "style-src-elem 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=' " +
+      "'sha256-F0eMgzg/9KDZDnYmAjaV1/2SVRvtQav/R/mGbug/9vw=' " +
+      "'sha256-F373287esZMEf6fH5syQf9hJdPZHmyAKDxyt1H1UA40=' " +
+      "'sha256-ezbEZDDsGwbs2nP7zHAZYx+JLcKZYXQVoyLydn9yd/I='; " +
+    "style-src-attr 'unsafe-inline'; connect-src 'self'; " +
     "img-src 'self' data: blob:; font-src 'self'; object-src 'none'; base-uri 'none'; " +
     "form-action 'self'; frame-ancestors 'none'");
 }

@@ -166,6 +166,26 @@ async function cleanup(server: ReturnType<typeof createMobileServer>, dataDir: s
   await rm(dataDir, { recursive: true, force: true });
 }
 
+test("mobile CSP allows xterm dynamic style attributes without enabling inline scripts", async () => {
+  const f = await startFixture();
+  try {
+    const response = await fetch(f.origin + "/");
+    const policy = response.headers.get("content-security-policy") ?? "";
+    assert.match(policy, /style-src 'self'/);
+    assert.match(policy, /style-src-attr 'unsafe-inline'/);
+    assert.match(policy, /style-src-elem 'self'/);
+    for (const hash of [
+      "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
+      "sha256-F0eMgzg/9KDZDnYmAjaV1/2SVRvtQav/R/mGbug/9vw=",
+      "sha256-F373287esZMEf6fH5syQf9hJdPZHmyAKDxyt1H1UA40=",
+      "sha256-ezbEZDDsGwbs2nP7zHAZYx+JLcKZYXQVoyLydn9yd/I=",
+    ]) assert.ok(policy.includes(hash), `missing trusted xterm style hash ${hash}`);
+    assert.doesNotMatch(policy, /style-src-elem[^;]*unsafe-inline/);
+    assert.match(policy, /script-src 'self'(?:;|$)/);
+    assert.doesNotMatch(policy, /script-src[^;]*unsafe-inline/);
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
 test("private API and event stream reject requests without a paired device", async () => {
   const f = await startFixture();
   try {

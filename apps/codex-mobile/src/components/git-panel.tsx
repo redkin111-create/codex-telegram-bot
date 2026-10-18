@@ -3,14 +3,16 @@ import { ClipboardCheck, CloudDownload, CloudUpload, FolderPlus, GitBranch, GitC
 import { readGitConflictStages, readGitDiff, readGitStatus, readProjectFile } from "../api.js";
 import type { MobileFile, MobileGitConflictStages, MobileGitDiff, MobileGitStatus, MobileOperation } from "../types.js";
 import { conflictStagePreview, hasUnresolvedMergeMarkers, isUnmergedGitChange } from "../lib/git-conflicts.js";
+import { canStartCodexReview } from "../lib/review-policy.js";
 import { DiffViewer } from "./diff-viewer.js";
 import { Badge, Button, Card, Input, Textarea } from "./ui/primitives.js";
 
 const conflictVersionLabels = { base: "общая версия", ours: "моя версия", theirs: "их версия" } as const;
 
-export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktreeCreated, initialReviewLocation }: {
+export function GitPanel({ sessionId, connected, sessionBusy, onClose, onOperation, onWorktreeCreated, initialReviewLocation }: {
   sessionId: string;
   connected: boolean;
+  sessionBusy: boolean;
   onClose: () => void;
   onOperation: (op: MobileOperation, args: Record<string, unknown>) => Promise<unknown>;
   onWorktreeCreated: (sessionId: string, path: string) => void | Promise<void>;
@@ -133,6 +135,7 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
   }
 
   async function startReview() {
+    if (!canStartCodexReview(connected, sessionBusy, Boolean(busyAction))) return;
     let target: Record<string, string>;
     if (reviewTargetType === "uncommittedChanges") target = { type: "uncommittedChanges" };
     else if (reviewTargetType === "baseBranch") target = { type: "baseBranch", branch: reviewBranch };
@@ -289,7 +292,8 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
             </div>
             <p className="text-[11px] leading-relaxed text-muted">Показаны уже загруженные на ноутбук ссылки. Здесь можно переключиться на существующую удалённую ветку.</p>
           </form>}
-          <div className="mt-5 flex flex-wrap gap-2">{diffScope && <Button variant="ghost" className="min-h-10 px-3" onClick={() => void loadDiff()}>Все файлы</Button>}<Button variant={view === "unstaged" ? "outline" : "ghost"} className="min-h-10 px-3" onClick={() => setView("unstaged")}>Рабочая папка</Button><Button variant={view === "staged" ? "outline" : "ghost"} className="min-h-10 px-3" onClick={() => setView("staged")}>Индекс</Button><Button type="button" className="ml-auto min-h-10 px-3" disabled={!connected || Boolean(busyAction)} onClick={() => setReviewDialogOpen(true)}><ClipboardCheck size={15} />Ревью Codex</Button></div>
+          <div className="mt-5 flex flex-wrap gap-2">{diffScope && <Button variant="ghost" className="min-h-10 px-3" onClick={() => void loadDiff()}>Все файлы</Button>}<Button variant={view === "unstaged" ? "outline" : "ghost"} className="min-h-10 px-3" onClick={() => setView("unstaged")}>Рабочая папка</Button><Button variant={view === "staged" ? "outline" : "ghost"} className="min-h-10 px-3" onClick={() => setView("staged")}>Индекс</Button><Button type="button" className="ml-auto min-h-10 px-3" disabled={!canStartCodexReview(connected, sessionBusy, Boolean(busyAction))} onClick={() => setReviewDialogOpen(true)}><ClipboardCheck size={15} />Ревью Codex</Button></div>
+          {sessionBusy && <p className="mt-2 text-xs text-muted">Ревью станет доступно после завершения текущей задачи.</p>}
           <p className="mt-2 break-all text-[11px] text-muted">{diffScope ? `Diff: ${diffScope.previousPath ? `${diffScope.previousPath} → ` : ""}${diffScope.path}` : "Diff всех файлов"}{focusedReviewLine !== undefined ? ` · строка ${focusedReviewLine} из ревью` : ""}</p>
           <Card className="mt-2 min-h-48 overflow-hidden"><DiffViewer patch={patch} loading={Boolean(loadingDiffPath)} emptyMessage={status.clean ? "Нет незакоммиченных изменений." : "Git не создал текстовый diff для этих изменений."} focusLine={focusedReviewLine} /></Card>
           <form className="mt-4 flex flex-col gap-2 sm:flex-row" onSubmit={(event) => { event.preventDefault(); void mutate("gitCommit", { message: commitMessage }, "Изменения сохранены коммитом"); }}>
@@ -346,7 +350,8 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
         </label>}
         {reviewTargetType === "custom" && <label className="block space-y-1.5"><span className="text-xs text-muted">Инструкции</span><Textarea aria-label="Инструкции для ревью" value={reviewInstructions} onChange={(event) => setReviewInstructions(event.target.value)} maxLength={1000} placeholder="Например: проверь обработку ошибок и граничные случаи" />
         </label>}
-        <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={Boolean(busyAction)} onClick={() => setReviewDialogOpen(false)}>Отмена</Button><Button type="submit" className="flex-1" disabled={!connected || Boolean(busyAction) || (reviewTargetType === "baseBranch" && !reviewBranch) || (reviewTargetType === "commit" && !reviewCommit.trim()) || (reviewTargetType === "custom" && !reviewInstructions.trim())}>{busyAction === "reviewThread" ? "Проверяю…" : "Запустить ревью"}</Button></div>
+        {sessionBusy && <p className="text-xs text-muted">В сеансе идёт задача. Дождитесь её завершения, затем запустите ревью.</p>}
+        <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={Boolean(busyAction)} onClick={() => setReviewDialogOpen(false)}>Отмена</Button><Button type="submit" className="flex-1" disabled={!canStartCodexReview(connected, sessionBusy, Boolean(busyAction)) || (reviewTargetType === "baseBranch" && !reviewBranch) || (reviewTargetType === "commit" && !reviewCommit.trim()) || (reviewTargetType === "custom" && !reviewInstructions.trim())}>{busyAction === "reviewThread" ? "Проверяю…" : "Запустить ревью"}</Button></div>
       </form>
     </div>}
     {binaryConflict && <div className="fixed inset-0 z-[90] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
