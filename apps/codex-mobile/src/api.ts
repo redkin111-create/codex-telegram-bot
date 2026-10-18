@@ -92,6 +92,13 @@ export function imageUrl(sessionId: string, path: string): string {
   return url.toString();
 }
 
+export function projectImageUrl(sessionId: string, path: string): string {
+  const url = new URL("/api/project-image", window.location.origin);
+  url.searchParams.set("sessionId", sessionId);
+  url.searchParams.set("path", path);
+  return url.toString();
+}
+
 export function runOperation<T = unknown>(op: MobileOperation, args: Record<string, unknown>, csrfToken: string) {
   return jsonRequest<T>("/api/operations", {
     method: "POST",

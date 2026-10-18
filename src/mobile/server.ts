@@ -10,11 +10,12 @@ import { MobileAuthStore } from "./auth.js";
 const SESSION_COOKIE = "__Host-codex-mobile-session";
 const PAIR_COOKIE = "__Host-codex-mobile-pair";
 const CSRF_COOKIE = "__Host-codex-mobile-csrf";
+const RASTER_IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const MUTATING_OPERATIONS = new Set<TmaOperation>([
   "create", "select", "send", "cancel", "queue", "queueRemove", "queueResume",
 ]);
 const MOBILE_MUTATING_OPERATIONS = new Set<MobileLocalOperation>(["setModel", "setMode", "setReasoning", "setGoal", "clearGoal", "steer", "forkThread", "compactThread", "archiveThread", "unarchiveThread", "renameThread", "installPlugin", "uninstallPlugin", "createWorktree", "terminalExec", "writeFile", "createFile", "gitStage", "gitUnstage", "gitCommit", "gitCreateBranch", "gitSwitchBranch", "gitTrackRemoteBranch"]);
-const MOBILE_READ_OPERATIONS = new Set<MobileLocalOperation>(["searchThreads"]);
+const MOBILE_READ_OPERATIONS = new Set<MobileLocalOperation>(["searchThreads", "readImage"]);
 
 export interface MobileAgent {
   canReadSession(id: string, userId: number): Promise<boolean>;
@@ -119,6 +120,20 @@ function csrfAuthorized(req: IncomingMessage, deviceId: string, auth: MobileAuth
 
 function safeSessionId(value: string): boolean {
   return /^[a-z0-9_-]{8,128}$/i.test(value);
+}
+
+function decodeRasterImage(value: unknown): { mime: string; bytes: Buffer } | undefined {
+  const image = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const mime = typeof image.mime === "string" ? image.mime : "";
+  const data = typeof image.data === "string" ? image.data : "";
+  if (!RASTER_IMAGE_MIMES.has(mime) ||
+      data.length > 4 * 1024 * 1024 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data)) return undefined;
+  const bytes = Buffer.from(data, "base64");
+  const valid = mime === "image/png" ? bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+    : mime === "image/jpeg" ? bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+    : mime === "image/webp" ? bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP"
+    : bytes.toString("ascii", 0, 6) === "GIF87a" || bytes.toString("ascii", 0, 6) === "GIF89a";
+  return valid && bytes.length <= 3 * 1024 * 1024 ? { mime, bytes } : undefined;
 }
 
 function staticFile(root: string, pathname: string): { path: string; type: string } | undefined {
@@ -358,7 +373,7 @@ export function createMobileServer(options: MobileServerOptions): Server {
       catch (error) { json(res, 502, { error: safeError(error) }); }
       return;
     }
-    if (path === "/api/image" && method === "GET") {
+    if ((path === "/api/image" || path === "/api/project-image") && method === "GET") {
       const sessionId = url.searchParams.get("sessionId") ?? "";
       const imagePath = url.searchParams.get("path") ?? "";
       if (!safeSessionId(sessionId) || !imagePath || imagePath.length > 1600 ||
@@ -366,25 +381,19 @@ export function createMobileServer(options: MobileServerOptions): Server {
         json(res, 403, { error: "Доступ к изображению запрещён" }); return;
       }
       try {
-        const value = await execute("image", device.ownerId, { sessionId, path: imagePath });
-        const image = value && typeof value === "object" ? value as Record<string, unknown> : {};
-        const mime = typeof image.mime === "string" ? image.mime : "";
-        const data = typeof image.data === "string" ? image.data : "";
-        if (!new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]).has(mime) ||
-            data.length > 4 * 1024 * 1024 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data)) {
-          json(res, 415, { error: "Неподдерживаемое изображение" }); return;
+        if (path === "/api/project-image" && !options.agent.executeMobile) {
+          json(res, 503, { error: "Просмотр изображения проекта недоступен" }); return;
         }
-        const bytes = Buffer.from(data, "base64");
-        const validSignature = mime === "image/png" ? bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-          : mime === "image/jpeg" ? bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
-          : mime === "image/webp" ? bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP"
-          : bytes.toString("ascii", 0, 6) === "GIF87a" || bytes.toString("ascii", 0, 6) === "GIF89a";
-        if (!validSignature || bytes.length > 3 * 1024 * 1024) { json(res, 415, { error: "Неверный формат изображения" }); return; }
+        const value = path === "/api/project-image"
+          ? await options.agent.executeMobile!({ op: "readImage", userId: device.ownerId, args: { sessionId, path: imagePath } })
+          : await execute("image", device.ownerId, { sessionId, path: imagePath });
+        const image = decodeRasterImage(value);
+        if (!image) { json(res, 415, { error: "Неподдерживаемое или повреждённое изображение" }); return; }
         res.statusCode = 200;
-        res.setHeader("Content-Type", mime);
-        res.setHeader("Content-Length", String(bytes.length));
+        res.setHeader("Content-Type", image.mime);
+        res.setHeader("Content-Length", String(image.bytes.length));
         res.setHeader("Cache-Control", "no-store");
-        res.end(bytes);
+        res.end(image.bytes);
       } catch (error) { json(res, 404, { error: safeError(error) }); }
       return;
     }

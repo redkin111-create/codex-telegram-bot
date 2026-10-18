@@ -39,7 +39,7 @@ full Desktop replacement while any row below has open work.
 | Projects, sessions, history, live status and screenshots | Browse projects and sessions, read history, tool output and authorized screenshots; reconnect the event stream; rename, archive, restore and fork sessions; native Codex search reaches older active or archived sessions with cursor paging and owner filtering | Unfiltered list paging parity, richer live task details, pinning, side-chat and remaining Desktop session actions |
 | Prompting and queue | Send text/images, stop, queue, resume and remove queued prompts; steer a confirmed active turn | Desktop-equivalent attachment types, edit/retry behavior and remaining turn controls |
 | Approvals | Owner-scoped phone cards for the active session; allow/deny choices are checked server-side; no phone response falls back to Telegram after 45 seconds | More approval cases and parity checks for supported Codex builds |
-| Files and edits | Browse the authorized session folder, create text files in existing folders, read UTF-8 text, edit/save up to 512 KB with stale-file detection; hides common secret folders/files, skips symlinks and blocks writes while the connected Codex session is busy | Image/binary preview, full diff/review UI and Desktop-equivalent file-change navigation |
+| Files and edits | Browse the authorized session folder, create text files in existing folders, read UTF-8 text, edit/save up to 512 KB with stale-file detection; safely preview PNG/JPEG/WebP/GIF up to 3 MiB after path, owner and file-signature checks; hides common secret folders/files, skips symlinks and blocks writes while the connected Codex session is busy | Other binary formats, full diff/review UI and Desktop-equivalent file-change navigation |
 | Terminal and Git | Git branch/status, staged/unstaged diff and per-file diff review (including renames); stage/unstage one reported project path, commit staged changes, list local branches, create a branch, switch to an existing local branch, create an isolated worktree plus Codex session from the current commit, track an already-fetched remote branch locally, and run one confirmed command in an authorized idle session's project folder with a 60-second timeout and bounded text output | Interactive terminal/PTY, background-process lifecycle and reattachment/cancellation, remote fetch/push, conflict resolution, inline review comments and richer Desktop-equivalent review actions |
 | Models, modes, goals and context | Choose a model, collaboration mode and reasoning level; view, create, pause, resume and clear Codex goals; request manual context compaction while idle | Verify error/rollback behavior across supported Codex versions; show a final compacted status only when Codex confirms it |
 | Skills, MCP, subagents, plugins and apps | Owner-scoped inventories; lists Codex plugins and connected apps; installs/removes only remote plugins the live Codex catalog marks available, with a phone confirmation; offers only HTTPS app-authorization links and shows their host | Enable/disable existing plugins, manage arbitrary/local marketplaces, finish every provider OAuth flow in-browser, invoke/manage skills and MCP integrations |
@@ -56,7 +56,7 @@ they have both server-side authorization tests and browser coverage.
 
 - Root TypeScript check: passed.
 - Mobile app TypeScript check and production build: passed.
-- Current full root test suite: 193/193 passed, including plugin/app redaction, live ACP install/uninstall checks, paired-session/CSRF checks, isolated worktree attach/rollback, owner-filtered native session search, bounded one-shot terminal execution and local tracking of an already-fetched remote branch.
+- Current full root test suite: 195/195 passed, including plugin/app redaction, live ACP install/uninstall checks, paired-session/CSRF checks, isolated worktree attach/rollback, owner-filtered native session search, bounded one-shot terminal execution, local tracking of an already-fetched remote branch and bounded/signature-checked project image reads.
 - Focused branch-list/switch and API authorization checks: 2/2 passed.
 - Per-file Git diff filtering validates paths inside the authorized project and passes both names for a selected rename.
 - Mobile app `npm audit`: 0 vulnerabilities.
@@ -96,6 +96,10 @@ they have both server-side authorization tests and browser coverage.
 - Browser skill at 571×459: open Git, choose the fixture's already-fetched
   `origin/mobile/feature` ref, create the local tracking branch and verify the
   success state and current-branch label. The fixture did not access a remote.
+- Browser skill at 571×459: browse into the fixture's `assets/` folder, open
+  `preview.png`, verify the image element and safe-raster notice appear without
+  an error, then return to the file list. The HTTP test also verifies owner
+  authorization and rejects active SVG content from a faulty agent response.
 - CLI pairing approval is now a separate OS-local IPC channel. The mobile HTTP
   server does not expose an approval endpoint, so a reverse proxy cannot reach
   that operation. Automated tests exercise successful approval, a wrong local

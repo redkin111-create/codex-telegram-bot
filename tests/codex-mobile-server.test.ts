@@ -34,6 +34,7 @@ async function startFixture() {
   const feed = new FixtureFeed();
   const calls: Array<{ op: string; userId: number; args: Record<string, unknown> }> = [];
   let failNext = false;
+  let readImageValue: unknown = { name: "pixel.png", mime: "image/png", data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString("base64") };
   const settings = { model: "fixture-model", mode: "code", reasoning: "medium" };
   const approvalId = "44444444-4444-4444-8444-444444444444";
   const approvalDecisions: Array<{ ownerId: number; sessionId: string; id: string; optionId: string }> = [];
@@ -50,6 +51,7 @@ async function startFixture() {
     async executeMobile(job: { op: string; userId: number; args: Record<string, unknown> }) {
       calls.push(job);
       if (failNext) { failNext = false; throw new Error("Codex runtime unavailable"); }
+      if (job.op === "readImage") return readImageValue;
       if (job.op === "capabilities") return {
         online: true, ...settings, models: [{ id: settings.model, name: "Fixture Model" }],
         modes: [{ id: settings.mode, name: "Code" }], reasoningLevels: ["low", "medium", "high"],
@@ -87,7 +89,7 @@ async function startFixture() {
   const address = server.address();
   assert.ok(address && typeof address !== "string");
   const origin = `http://127.0.0.1:${address.port}`;
-  return { server, auth, feed, calls, approvalDecisions, approvalId, dataDir, origin, failNext: () => { failNext = true; } };
+  return { server, auth, feed, calls, approvalDecisions, approvalId, dataDir, origin, failNext: () => { failNext = true; }, setReadImageValue: (value: unknown) => { readImageValue = value; } };
 }
 
 async function pair(origin: string, auth: MobileAuthStore) {
@@ -568,6 +570,34 @@ test("screenshots are served only for an authorized session with an image conten
       headers: { origin: f.origin, cookie: login.sessionCookie },
     });
     assert.equal(foreign.status, 403);
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("project image previews require an authorized session and return raster bytes", async () => {
+  const f = await startFixture();
+  try {
+    const anonymous = await fetch(f.origin + `/api/project-image?sessionId=${allowedSession}&path=assets%2Fpixel.png`);
+    assert.equal(anonymous.status, 401);
+    const login = await pair(f.origin, f.auth);
+    const beforeForeign = f.calls.filter((call) => call.op === "readImage").length;
+    const foreign = await fetch(f.origin + `/api/project-image?sessionId=${foreignSession}&path=assets%2Fpixel.png`, {
+      headers: { origin: f.origin, cookie: login.sessionCookie },
+    });
+    assert.equal(foreign.status, 403);
+    assert.equal(f.calls.filter((call) => call.op === "readImage").length, beforeForeign);
+    const image = await fetch(f.origin + `/api/project-image?sessionId=${allowedSession}&path=assets%2Fpixel.png`, {
+      headers: { origin: f.origin, cookie: login.sessionCookie },
+    });
+    assert.equal(image.status, 200);
+    assert.equal(image.headers.get("content-type"), "image/png");
+    assert.deepEqual([...new Uint8Array(await image.arrayBuffer())], [137, 80, 78, 71, 13, 10, 26, 10]);
+    assert.equal(f.calls.at(-1)?.op, "readImage");
+    f.setReadImageValue({ mime: "image/svg+xml", data: Buffer.from("<svg onload=alert(1) />").toString("base64") });
+    const activeContent = await fetch(f.origin + `/api/project-image?sessionId=${allowedSession}&path=assets%2Fpixel.png`, {
+      headers: { origin: f.origin, cookie: login.sessionCookie },
+    });
+    assert.equal(activeContent.status, 415);
+    assert.notEqual(activeContent.headers.get("content-type"), "image/svg+xml");
   } finally { await cleanup(f.server, f.dataDir); }
 });
 

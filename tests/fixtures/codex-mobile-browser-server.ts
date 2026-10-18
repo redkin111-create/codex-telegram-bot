@@ -85,6 +85,7 @@ let fixturePluginInstalled = false;
 const fixtureFiles = new Map<string, string>([
   ["README.md", "# Fixture project\n\nRead-only history is followed by mobile file access.\n"],
   ["src/main.ts", "export function greet() {\n  return \"Hello from fixture\";\n}\n"],
+  ["assets/preview.png", "fixture raster preview"],
 ]);
 
 const agent = {
@@ -313,7 +314,7 @@ const agent = {
         const slash = remainder.indexOf("/");
         const name = slash < 0 ? remainder : remainder.slice(0, slash);
         if (slash >= 0) children.set(name, { name, kind: "directory" });
-        else children.set(name, { name, kind: "file", size: Buffer.byteLength(text), mtimeMs: Date.now() });
+        else children.set(name, { name, kind: "file", size: filePath === "assets/preview.png" ? 75 : Buffer.byteLength(text), mtimeMs: Date.now() });
       }
       const entries = [...children.values()].sort((a, b) => a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "directory" ? -1 : 1);
       return { project: "codex-mobile", path, entries };
@@ -323,6 +324,11 @@ const agent = {
       const text = fixtureFiles.get(path);
       if (text === undefined) throw new Error("Файл не найден");
       return { project: "codex-mobile", path, text, size: Buffer.byteLength(text), sha256: createHash("sha256").update(text).digest("hex") };
+    }
+    if (job.op === "readImage") {
+      if (args.path !== "assets/preview.png") throw new Error("Неподдерживаемый формат изображения");
+      return { project: "codex-mobile", path: "assets/preview.png", name: "preview.png", mime: "image/png", size: 75,
+        data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/x6kAAAAASUVORK5CYII=" };
     }
     if (job.op === "writeFile") {
       const path = String(args.path ?? "");

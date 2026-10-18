@@ -45,7 +45,7 @@ const sleep=(ms:number,signal:AbortSignal)=>new Promise<void>(resolve=>{
 });
 
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; }
-export type MobileLocalOperation = "capabilities" | "searchThreads" | "terminalExec" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch";
+export type MobileLocalOperation = "capabilities" | "searchThreads" | "terminalExec" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 export class MiniAppAgent {
   private readonly abort=new AbortController();
@@ -641,6 +641,10 @@ export class MiniAppAgent {
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
         return this.mobileReadFile(sessionId,chatId,argumentString(args,"path",1200));
       }
+      case "readImage":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        return this.mobileReadImage(sessionId,chatId,argumentString(args,"path",1200));
+      }
       case "writeFile":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
         const content=typeof args.content==="string"?args.content:undefined;
@@ -834,6 +838,23 @@ export class MiniAppAgent {
     try{text=new TextDecoder("utf-8",{fatal:true}).decode(bytes);}catch{throw new Error("Файл не является корректным UTF-8 текстом");}
     return {project:name,path:relative(root,absolute).split(sep).join("/"),text,size:stat.size,
       sha256:createHash("sha256").update(bytes).digest("hex")};
+  }
+  private mobileReadImage(sessionId:string,userId:number,rawPath:string){
+    const {root,name}=this.mobileRoot(sessionId,userId);
+    if(!rawPath||rawPath.split(/[\\/]+/).some(part=>this.isHiddenMobileFile(part)))throw new Error("Этот файл недоступен в мобильном просмотре");
+    const absolute=this.mobilePath(root,rawPath);
+    const ext=extname(absolute).toLowerCase();
+    const mime=({".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".webp":"image/webp",".gif":"image/gif"} as Record<string,string>)[ext];
+    if(!mime)throw new Error("Неподдерживаемый формат изображения");
+    const stat=statSync(absolute);
+    if(!stat.isFile()||stat.size>MAX_IMG)throw new Error("Изображение больше 3 МБ или не является файлом");
+    const bytes=readFileSync(absolute);
+    const valid=mime==="image/png"?bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))
+      :mime==="image/jpeg"?bytes[0]===0xff&&bytes[1]===0xd8&&bytes[2]===0xff
+      :mime==="image/webp"?bytes.toString("ascii",0,4)==="RIFF"&&bytes.toString("ascii",8,12)==="WEBP"
+      :bytes.toString("ascii",0,6)==="GIF87a"||bytes.toString("ascii",0,6)==="GIF89a";
+    if(!valid)throw new Error("Содержимое файла не соответствует формату изображения");
+    return {project:name,path:relative(root,absolute).split(sep).join("/"),name:basename(absolute),mime,size:stat.size,data:bytes.toString("base64")};
   }
   private gitRoot(projectRoot:string):string{
     try{

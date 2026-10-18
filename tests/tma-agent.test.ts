@@ -468,6 +468,37 @@ test("mobile project files stay inside the authorized session, hide secrets and 
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile project image reads return bounded raster data and reject SVG or paths outside the session",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-image-"));
+  const project=join(dir,"repo"),assets=join(project,"assets");
+  mkdirSync(assets,{recursive:true});
+  const sessionId="29292929-2929-4929-8929-292929292929";
+  const png=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j2ioAAAAASUVORK5CYII=","base64");
+  writeFileSync(join(assets,"pixel.png"),png);
+  writeFileSync(join(assets,"spoof.png"),"<svg onload=alert(1)></svg>");
+  writeFileSync(join(assets,"large.png"),Buffer.alloc(3*1024*1024+1,0));
+  writeFileSync(join(assets,"active.svg"),"<svg onload=alert(1)></svg>");
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"repo",roots:[project]}],
+    listThreads:async()=>[{id:sessionId,name:"Image fixture",cwd:project,source:"cli",recencyAt:2}],
+    availableModels:[],
+  }) as unknown as AcpClient;
+  const runtime={sessionId,isBusy:false};
+  const registry={controller:()=>({list:()=>[]}),get:()=>runtime,runtimeForSession:()=>runtime} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
+    const image=await agent.executeMobile({op:"readImage" as never,userId:101,args:{sessionId,path:"assets/pixel.png"}}) as {mime:string;data:string};
+    assert.equal(image.mime,"image/png");
+    assert.deepEqual(Buffer.from(image.data,"base64"),png);
+    await assert.rejects(agent.executeMobile({op:"readImage" as never,userId:101,args:{sessionId,path:"assets/spoof.png"}}),/не соответствует формату/);
+    await assert.rejects(agent.executeMobile({op:"readImage" as never,userId:101,args:{sessionId,path:"assets/large.png"}}),/больше 3 МБ/);
+    await assert.rejects(agent.executeMobile({op:"readImage" as never,userId:101,args:{sessionId,path:"assets/active.svg"}}),/Неподдерживаемый формат/);
+    await assert.rejects(agent.executeMobile({op:"readImage" as never,userId:101,args:{sessionId,path:"..\\outside.png"}}),/относительный|Недопустимый путь|недоступен/);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile Git view reads bounded branch status and safe staged and unstaged diffs",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-git-"));
   const project=join(dir,"repo");
