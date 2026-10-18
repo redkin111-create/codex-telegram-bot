@@ -13,7 +13,7 @@ import { Pairing } from "./components/pairing.js";
 import { SettingsPanel } from "./components/settings-panel.js";
 import { Workspace } from "./components/workspace.js";
 import type {
-  HistoryEntry, MobileActivity, MobileApproval, MobileDevice, MobileLiveEvent, MobileQueue, MobileSnapshot,
+  HistoryEntry, MobileActivity, MobileApproval, MobileDevice, MobileLiveEvent, MobileQueue, MobileSession, MobileSnapshot,
   MobileOperation,
 } from "./types.js";
 import { Button } from "./components/ui/primitives.js";
@@ -25,8 +25,14 @@ export default function App() {
   const [csrf, setCsrf] = useState("");
   const [snapshot, setSnapshot] = useState<MobileSnapshot>();
   const [selectedId, setSelectedId] = useState("");
+  const [selectedSearchSession, setSelectedSearchSession] = useState<MobileSession>();
   const [selectedProject, setSelectedProject] = useState("");
   const [search, setSearch] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
+  const [searchResults, setSearchResults] = useState<MobileSession[]>();
+  const [searchCursor, setSearchCursor] = useState("");
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchMoreLoading, setSearchMoreLoading] = useState(false);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [activity, setActivity] = useState<MobileActivity>();
   const [queue, setQueue] = useState<MobileQueue>(emptyQueue);
@@ -50,12 +56,18 @@ export default function App() {
   const eventEpoch = useRef("");
   const eventSession = useRef("");
   const pendingSend = useRef<{ fingerprint: string; requestId: string } | undefined>(undefined);
+  const searchGeneration = useRef(0);
 
   const expireSession = useCallback(() => {
     setDevice(undefined);
     setCsrf("");
     setSnapshot(undefined);
     setSelectedId("");
+    setSelectedSearchSession(undefined);
+    setSearchResults(undefined);
+    setSearchCursor("");
+    setSearchMoreLoading(false);
+    setSearchLoading(false);
     setHistory([]);
     setActivity(undefined);
     setQueue(emptyQueue);
@@ -108,8 +120,9 @@ export default function App() {
   }, [device, refreshSnapshot]);
 
   const selectedSession = useMemo(
-    () => snapshot?.sessions.find((session) => session.id === selectedId) ?? snapshot?.archivedSessions?.find((session) => session.id === selectedId),
-    [snapshot?.sessions, snapshot?.archivedSessions, selectedId],
+    () => snapshot?.sessions.find((session) => session.id === selectedId) ?? snapshot?.archivedSessions?.find((session) => session.id === selectedId) ??
+      (selectedSearchSession?.id === selectedId ? selectedSearchSession : undefined),
+    [snapshot?.sessions, snapshot?.archivedSessions, selectedId, selectedSearchSession],
   );
   const connectedIds = useMemo(
     () => new Set(snapshot?.controlled.map((session) => session.id) ?? []),
@@ -239,6 +252,53 @@ export default function App() {
     } catch (cause) { handleApiError(cause); throw cause; }
   }, [csrf, handleApiError, refreshSnapshot]);
 
+  useEffect(() => {
+    const query = search.trim();
+    const generation = ++searchGeneration.current;
+    setSearchResults(undefined);
+    setSearchCursor("");
+    setSearchMoreLoading(false);
+    if (!device || query.length < 2) { setSearchLoading(false); return; }
+    const timer = window.setTimeout(() => {
+      setSearchLoading(true);
+      void operation<{ sessions: MobileSession[]; nextCursor?: string }>("searchThreads", {
+        query, archived: showArchived, ...(selectedProject ? { cwd: selectedProject } : {}),
+      }).then((result) => {
+        if (searchGeneration.current !== generation) return;
+        setSearchResults(result.sessions);
+        setSearchCursor(result.nextCursor ?? "");
+      }).catch(() => {
+        if (searchGeneration.current === generation) setSearchResults([]);
+      }).finally(() => {
+        if (searchGeneration.current === generation) setSearchLoading(false);
+      });
+    }, 250);
+    return () => {
+      window.clearTimeout(timer);
+      if (searchGeneration.current === generation) searchGeneration.current++;
+    };
+  }, [device, search, selectedProject, showArchived, operation]);
+
+  async function loadMoreSearch() {
+    const query = search.trim();
+    const cursor = searchCursor;
+    if (!device || query.length < 2 || !cursor || searchMoreLoading) return;
+    const generation = searchGeneration.current;
+    setSearchMoreLoading(true);
+    try {
+      const result = await operation<{ sessions: MobileSession[]; nextCursor?: string }>("searchThreads", {
+        query, cursor, archived: showArchived, ...(selectedProject ? { cwd: selectedProject } : {}),
+      });
+      if (searchGeneration.current !== generation) return;
+      setSearchResults((current) => {
+        const known = new Set((current ?? []).map((session) => session.id));
+        return [...current ?? [], ...result.sessions.filter((session) => !known.has(session.id))];
+      });
+      setSearchCursor(result.nextCursor ?? "");
+    } catch { /* The app-level alert reports the Codex search error. */ }
+    finally { if (searchGeneration.current === generation) setSearchMoreLoading(false); }
+  }
+
   async function connectSession() {
     if (!selectedId) return;
     setConnecting(true);
@@ -258,10 +318,16 @@ export default function App() {
     if (!selectedProject) return;
     try {
       const created = await operation<{ sessionId: string }>("create", { cwd: selectedProject });
+      setSelectedSearchSession(undefined);
       setSelectedId(created.sessionId);
       setWorkspaceOpen(false);
       await refreshSnapshot();
     } catch { /* The error is shown in the conversation panel. */ }
+  }
+
+  function selectWorkspaceSession(id: string) {
+    setSelectedSearchSession(searchResults?.find((session) => session.id === id));
+    setSelectedId(id);
   }
 
   async function forkSession() {
@@ -395,9 +461,11 @@ export default function App() {
       </div>
     </header>
     <div className="flex min-h-0 flex-1">
-      <Workspace snapshot={snapshot} selectedProject={selectedProject} search={search} selectedId={selectedId}
+      <Workspace snapshot={snapshot} selectedProject={selectedProject} search={search} searchResults={searchResults}
+        searchCursor={searchCursor} searchLoading={searchLoading} searchMoreLoading={searchMoreLoading}
+        showArchived={showArchived} onArchivedChange={setShowArchived} onLoadMore={() => void loadMoreSearch()} selectedId={selectedId}
         open={workspaceOpen} connectedIds={connectedIds} onProjectChange={setSelectedProject} onSearchChange={setSearch}
-        onSelect={setSelectedId} onCreate={() => void createSession()} onClose={() => setWorkspaceOpen(false)}
+        onSelect={selectWorkspaceSession} onCreate={() => void createSession()} onClose={() => setWorkspaceOpen(false)}
         onArchive={archiveSession} onUnarchive={unarchiveSession} onRename={renameSession} />
       <Conversation session={selectedSession} history={history} activity={activity} events={events} queue={queue}
         connected={connected} connecting={connecting} loading={loading} streamConnected={streamConnected}
@@ -410,7 +478,7 @@ export default function App() {
     {devicesOpen && <DevicePanel current={device} csrf={csrf} onClose={() => setDevicesOpen(false)} onLogout={() => { setDevicesOpen(false); expireSession(); }} onSignOut={() => void signOut()} />}
     {settingsOpen && <SettingsPanel sessionId={selectedId} connected={connected} onClose={() => setSettingsOpen(false)} onOperation={(op: MobileOperation, args) => operation(op, args)} />}
     {filesOpen && selectedId && <FilesPanel sessionId={selectedId} connected={connected} onClose={() => setFilesOpen(false)} onOperation={(op: MobileOperation, args) => operation(op, args)} />}
-    {gitOpen && selectedId && <GitPanel key={selectedId} sessionId={selectedId} connected={connected} onClose={() => setGitOpen(false)} onOperation={(op: MobileOperation, args) => operation(op, args)} onWorktreeCreated={async (id, path) => { await operation("select", { sessionId: id }); setSelectedId(id); setSelectedProject(path); setGitOpen(false); setWorkspaceOpen(false); }} />}
+    {gitOpen && selectedId && <GitPanel key={selectedId} sessionId={selectedId} connected={connected} onClose={() => setGitOpen(false)} onOperation={(op: MobileOperation, args) => operation(op, args)} onWorktreeCreated={async (id, path) => { await operation("select", { sessionId: id }); setSelectedSearchSession(undefined); setSelectedId(id); setSelectedProject(path); setGitOpen(false); setWorkspaceOpen(false); }} />}
     {approvalOpen && pendingApproval && <ApprovalPanel approval={pendingApproval} onResolve={answerApproval} onClose={() => setApprovalOpen(false)} />}
   </div>;
 }

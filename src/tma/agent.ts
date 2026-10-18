@@ -41,7 +41,7 @@ const sleep=(ms:number,signal:AbortSignal)=>new Promise<void>(resolve=>{
 });
 
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; }
-export type MobileLocalOperation = "capabilities" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch";
+export type MobileLocalOperation = "capabilities" | "searchThreads" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 export class MiniAppAgent {
   private readonly abort=new AbortController();
@@ -272,9 +272,58 @@ export class MiniAppAgent {
     const chatId=job.userId,args=job.args;
     if(!cfg.allowedUsers.has(String(chatId)))throw new Error("Пользователь не разрешён на ПК");
     const sessionId=typeof args.sessionId==="string"?args.sessionId:"";
-    if(job.op!=="capabilities"&&!sessionId)throw new Error("Сначала выберите сеанс Codex");
+    if(job.op!=="capabilities"&&job.op!=="searchThreads"&&!sessionId)throw new Error("Сначала выберите сеанс Codex");
     const runtime=sessionId?registry.runtimeForSession(chatId,sessionId):undefined;
     switch(job.op){
+      case "searchThreads":{
+        const query=argumentString(args,"query",120).trim();
+        if(query.length<2)return {sessions:[],nextCursor:undefined};
+        const cursor=args.cursor===undefined?undefined:argumentString(args,"cursor",2048);
+        let cwd:string|undefined;
+        if(args.cwd!==undefined){
+          if(typeof args.cwd!=="string"||args.cwd.length>700)throw new Error("Неверная папка проекта для поиска");
+          if(args.cwd.trim())cwd=(await this.project(args.cwd.trim(),chatId)).cwd;
+        }
+        const archived=args.archived===true;
+        const page=await acp.listThreadsPage({
+          limit:100,sortKey:"recency_at",sortDirection:"desc",
+          sourceKinds:["cli","vscode","appServer"],archived,searchTerm:query,
+          ...(cursor?{cursor}:{}),...(cwd?{cwd}:{}),
+        });
+        const visible=page.threads.filter(thread=>!thread.ephemeral&&
+          (!this.telegramSessions.getOwner(thread.id)||this.telegramSessions.getOwner(thread.id)?.chatId===chatId)&&
+          ["cli","vscode","appServer"].includes(threadSourceKind(thread)??""));
+        const catalogue=archived
+          ? this.archivedThreads.get(chatId)??new Map<string,CodexThreadSummary>()
+          : this.knownThreads.get(chatId)??new Map<string,CodexThreadSummary>();
+        for(const thread of [...visible].reverse()){
+          catalogue.delete(thread.id);
+          catalogue.set(thread.id,thread);
+          if(archived)this.knownThreads.get(chatId)?.delete(thread.id);
+          else this.archivedThreads.get(chatId)?.delete(thread.id);
+        }
+        while(catalogue.size>500){
+          const oldest=catalogue.keys().next().value;
+          if(oldest===undefined)break;
+          if(!archived&&oldest===this.selected.get(chatId)){
+            const selected=catalogue.get(oldest);
+            catalogue.delete(oldest);
+            if(selected)catalogue.set(oldest,selected);
+          }else catalogue.delete(oldest);
+        }
+        if(archived)this.archivedThreads.set(chatId,catalogue);
+        else this.knownThreads.set(chatId,catalogue);
+        const sessions=visible.map(thread=>{
+          const current=registry.runtimeForSession(chatId,thread.id);
+          return {
+            id:thread.id,title:(thread.name||thread.preview||"Новый сеанс").slice(0,180),cwd:thread.cwd||"",
+            updatedAt:thread.recencyAt||thread.updatedAt||thread.createdAt||0,
+            source:threadSourceKind(thread)||"unknown",archived,busy:Boolean(current?.isBusy),
+            queue:current?.queueLength||0,liveStatus:"unknown",liveLabel:"Статус неизвестен",
+          };
+        });
+        return {sessions,nextCursor:page.nextCursor};
+      }
       case "renameThread":{
         const thread=await this.thread(sessionId,chatId);
         const name=argumentString(args,"name",120).trim();

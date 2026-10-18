@@ -36,7 +36,7 @@ full Desktop replacement while any row below has open work.
 
 | Desktop area | Current mobile coverage | Remaining for parity |
 | --- | --- | --- |
-| Projects, sessions, history, live status and screenshots | Browse projects and sessions, read history, tool output and authorized screenshots; reconnect the event stream; rename, archive, restore and fork sessions | Search/paging parity, richer live task details, pinning, side-chat and remaining Desktop session actions |
+| Projects, sessions, history, live status and screenshots | Browse projects and sessions, read history, tool output and authorized screenshots; reconnect the event stream; rename, archive, restore and fork sessions; native Codex search reaches older active or archived sessions with cursor paging and owner filtering | Unfiltered list paging parity, richer live task details, pinning, side-chat and remaining Desktop session actions |
 | Prompting and queue | Send text/images, stop, queue, resume and remove queued prompts; steer a confirmed active turn | Desktop-equivalent attachment types, edit/retry behavior and remaining turn controls |
 | Approvals | Owner-scoped phone cards for the active session; allow/deny choices are checked server-side; no phone response falls back to Telegram after 45 seconds | More approval cases and parity checks for supported Codex builds |
 | Files and edits | Browse the authorized session folder, create text files in existing folders, read UTF-8 text, edit/save up to 512 KB with stale-file detection; hides common secret folders/files, skips symlinks and blocks writes while the connected Codex session is busy | Image/binary preview, full diff/review UI and Desktop-equivalent file-change navigation |
@@ -56,7 +56,7 @@ they have both server-side authorization tests and browser coverage.
 
 - Root TypeScript check: passed.
 - Mobile app TypeScript check and production build: passed.
-- Current full root test suite: 188/188 passed, including plugin/app redaction, live ACP install/uninstall checks and paired-session/CSRF checks. The updated worktree attach/rollback test also passes as a focused check.
+- Current full root test suite: 190/190 passed, including plugin/app redaction, live ACP install/uninstall checks, paired-session/CSRF checks, isolated worktree attach/rollback and owner-filtered native session search.
 - Focused branch-list/switch and API authorization checks: 2/2 passed.
 - Per-file Git diff filtering validates paths inside the authorized project and passes both names for a selected rename.
 - Mobile app `npm audit`: 0 vulnerabilities.
@@ -86,6 +86,10 @@ they have both server-side authorization tests and browser coverage.
   confirm, verify the new session opens with its isolated folder and branch,
   submit a fake prompt there, and observe the test runtime enter its working
   state. All data came from the fake browser fixture.
+- Browser skill at 574×637: search for `legacy`, retrieve older sessions that
+  are absent from the first catalogue page, load the next native result page,
+  select an old session and verify it opens with the honest unknown status.
+  All data came from the fake browser fixture.
 - CLI pairing approval is now a separate OS-local IPC channel. The mobile HTTP
   server does not expose an approval endpoint, so a reverse proxy cannot reach
   that operation. Automated tests exercise successful approval, a wrong local

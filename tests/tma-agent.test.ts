@@ -11,6 +11,7 @@ import { MiniAppAgent } from "../src/tma/agent.js";
 import type { AppConfig } from "../src/config.js";
 import type { AcpClient } from "../src/acp/client.js";
 import type { RuntimeRegistry } from "../src/bot/registry.js";
+import { TelegramSessionRegistry } from "../src/sessions/telegram-registry.js";
 
 test("mobile-only agent can use existing runtime logic without an outbound TMA transport",()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-agent-"));
@@ -18,6 +19,43 @@ test("mobile-only agent can use existing runtime logic without an outbound TMA t
   const agent=new MiniAppAgent({cfg,acp:new EventEmitter() as AcpClient,registry:{} as RuntimeRegistry});
   try{assert.throws(()=>agent.start(),/gateway/i);}
   finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("mobile native search finds older sessions without exposing another owner's session",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-search-"));
+  const ownedId="91919191-9191-4191-8191-919191919191";
+  const foreignId="92929292-9292-4292-8292-929292929292";
+  const olderId="93939393-9393-4393-8393-939393939393";
+  let requested:Record<string,unknown>|undefined;
+  const acp=Object.assign(new EventEmitter(),{
+    async listProjects(){return [];},
+    async listAllThreads(){return [];},
+    async listThreadsPage(params:Record<string,unknown>={}){
+      requested=params;
+      return {threads:[
+        {id:olderId,name:"Old migration notes",cwd:dir,source:"cli",createdAt:1,updatedAt:2,recencyAt:2},
+        {id:ownedId,name:"Migration design",cwd:dir,source:"appServer",createdAt:1,updatedAt:3,recencyAt:3},
+        {id:foreignId,name:"Private migration",cwd:dir,source:"cli",createdAt:1,updatedAt:4,recencyAt:4},
+      ],nextCursor:"native-page-2"};
+    },
+  }) as unknown as AcpClient;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101"])} as AppConfig;
+  new TelegramSessionRegistry(dir).record(foreignId,202,dir,"private");
+  new TelegramSessionRegistry(dir).record(ownedId,101,dir,"owned");
+  const agent=new MiniAppAgent({cfg,acp,registry:{runtimeForSession:()=>undefined} as unknown as RuntimeRegistry});
+  try{
+    const result=await agent.executeMobile({op:"searchThreads",userId:101,args:{query:"migration",cursor:"native-page-1"}}) as {
+      sessions:Array<{id:string;title:string;cwd:string;archived:boolean}>;nextCursor?:string;
+    };
+    assert.equal(requested?.searchTerm,"migration");
+    assert.equal(requested?.cursor,"native-page-1");
+    assert.deepEqual(result.sessions.map((session)=>session.id),[olderId,ownedId]);
+    assert.equal(result.nextCursor,"native-page-2");
+    assert.equal(result.sessions[1]?.title,"Migration design");
+    assert.equal(result.sessions[1]?.cwd,dir);
+    assert.equal(result.sessions[1]?.archived,false);
+    await assert.rejects(agent.executeMobile({op:"searchThreads",userId:101,args:{query:"migration",cwd:join(dir,"outside")}}),/Папка проекта не разрешена/);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
 test("Windows Mini App agent lists existing Codex projects and sessions",async()=>{

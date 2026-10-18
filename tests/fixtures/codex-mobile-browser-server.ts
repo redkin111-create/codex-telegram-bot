@@ -59,6 +59,8 @@ const sessions = [
   { id: firstSession, title: "Разобрать приложение", cwd: projectOne, updatedAt: Date.now(), source: "appServer" },
   { id: secondSession, title: "Проверить API", cwd: projectOne, updatedAt: Date.now() - 10_000, source: "cli" },
   { id: "33333333-3333-4333-8333-333333333333", title: "Другой проект", cwd: projectTwo, updatedAt: Date.now() - 20_000, source: "vscode" },
+  { id: "55555555-5555-4555-8555-555555555555", title: "Legacy Codex architecture", cwd: projectOne, updatedAt: Date.now() - 40_000, source: "cli" },
+  { id: "66666666-6666-4666-8666-666666666666", title: "Legacy Codex integration", cwd: projectOne, updatedAt: Date.now() - 50_000, source: "appServer" },
 ];
 const archivedSessions = [
   { id: archivedFixtureSession, title: "Старый архивный сеанс", cwd: projectOne, updatedAt: Date.now() - 30_000, source: "appServer" },
@@ -97,7 +99,7 @@ const agent = {
           [projectOne, "codex-mobile"], [projectTwo, "other-project"],
           ...sessions.filter((session) => session.cwd !== projectOne && session.cwd !== projectTwo).map((session) => [session.cwd, session.title.split(" · ")[0] ?? session.title] as [string, string]),
         ]).entries()].map(([path, name]) => ({ path, name })),
-        sessions: sessions.map((session) => {
+        sessions: sessions.slice(0, 3).map((session) => {
           const runtime = controlled.get(session.id);
           return { ...session, archived: false, busy: runtime?.busy ?? false, queue: runtime?.queue.length ?? 0 };
         }),
@@ -180,6 +182,19 @@ const agent = {
   async executeMobile(job: { op: string; userId: number; args: Record<string, unknown> }): Promise<unknown> {
     const args = job.args;
     const sessionId = String(args.sessionId ?? "");
+    if (job.op === "searchThreads") {
+      const query = String(args.query ?? "").trim().toLowerCase();
+      const source = args.archived === true ? archivedSessions : sessions;
+      const matching = source.filter((session) =>
+        (!args.cwd || session.cwd === args.cwd) && `${session.title} ${session.cwd}`.toLowerCase().includes(query),
+      );
+      const offset = Math.max(0, Number.parseInt(String(args.cursor ?? "0"), 10) || 0);
+      const page = matching.slice(offset, offset + 1);
+      return {
+        sessions: page.map((session) => ({ ...session, archived: args.archived === true, busy: false, queue: 0, liveStatus: "unknown", liveLabel: "Статус неизвестен" })),
+        nextCursor: offset + page.length < matching.length ? String(offset + page.length) : undefined,
+      };
+    }
     if (job.op === "createWorktree") {
       const source = sessions.find((session) => session.id === sessionId);
       const branch = String(args.branchName ?? "");

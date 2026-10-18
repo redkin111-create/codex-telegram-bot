@@ -4,17 +4,25 @@ import type { MobileSession, MobileSnapshot } from "../types.js";
 import { Button, Input } from "./ui/primitives.js";
 
 export function Workspace({
-  snapshot, selectedProject, search, selectedId, open, connectedIds,
-  onProjectChange, onSearchChange, onSelect, onCreate, onClose, onArchive, onUnarchive, onRename,
+  snapshot, selectedProject, search, searchResults, searchCursor, searchLoading, searchMoreLoading,
+  showArchived, selectedId, open, connectedIds,
+  onProjectChange, onSearchChange, onArchivedChange, onLoadMore, onSelect, onCreate, onClose, onArchive, onUnarchive, onRename,
 }: {
   snapshot: MobileSnapshot;
   selectedProject: string;
   search: string;
+  searchResults?: MobileSession[];
+  searchCursor: string;
+  searchLoading: boolean;
+  searchMoreLoading: boolean;
+  showArchived: boolean;
   selectedId: string;
   open: boolean;
   connectedIds: Set<string>;
   onProjectChange: (path: string) => void;
   onSearchChange: (value: string) => void;
+  onArchivedChange: (archived: boolean) => void;
+  onLoadMore: () => void;
   onSelect: (sessionId: string) => void;
   onCreate: () => void;
   onClose: () => void;
@@ -22,14 +30,14 @@ export function Workspace({
   onUnarchive: (sessionId: string) => Promise<void>;
   onRename: (sessionId: string, name: string) => Promise<void>;
 }) {
-  const [showArchived, setShowArchived] = useState(false);
   const [editingId, setEditingId] = useState("");
   const [renameValue, setRenameValue] = useState("");
   const [savingName, setSavingName] = useState(false);
-  const sessions = useMemo(() => (showArchived ? snapshot.archivedSessions ?? [] : snapshot.sessions).filter((session) =>
+  const nativeSearch = search.trim().length >= 2;
+  const sessions = useMemo(() => (nativeSearch ? searchResults ?? [] : (showArchived ? snapshot.archivedSessions ?? [] : snapshot.sessions)).filter((session) =>
     (!selectedProject || session.cwd === selectedProject) &&
-    (!search || `${session.title} ${session.cwd}`.toLowerCase().includes(search.toLowerCase())),
-  ), [snapshot.sessions, snapshot.archivedSessions, selectedProject, search, showArchived]);
+    (nativeSearch || !search || `${session.title} ${session.cwd}`.toLowerCase().includes(search.toLowerCase())),
+  ), [snapshot.sessions, snapshot.archivedSessions, searchResults, selectedProject, search, showArchived, nativeSearch]);
   const currentProject = snapshot.projects.find((project) => project.path === selectedProject);
 
   async function saveRename(session: MobileSession) {
@@ -67,7 +75,7 @@ export function Workspace({
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
         <div className="mb-2 flex items-center justify-between gap-2 px-2 text-[10px] font-bold uppercase tracking-[.18em] text-[#849084]">
           <span>{showArchived ? "Архив" : "Сеансы"} · {sessions.length}</span>
-          <button type="button" aria-pressed={showArchived} disabled={!snapshot.archiveAvailable} onClick={() => { setShowArchived((value) => !value); setEditingId(""); }} className="min-h-9 rounded-lg px-2 text-[11px] font-semibold normal-case tracking-normal text-accent disabled:cursor-not-allowed disabled:text-muted">
+          <button type="button" aria-pressed={showArchived} disabled={!snapshot.archiveAvailable} onClick={() => { onArchivedChange(!showArchived); setEditingId(""); }} className="min-h-9 rounded-lg px-2 text-[11px] font-semibold normal-case tracking-normal text-accent disabled:cursor-not-allowed disabled:text-muted">
             {snapshot.archiveAvailable ? showArchived ? "Активные" : "Архив" : "Архив недоступен"}
           </button>
         </div>
@@ -96,7 +104,8 @@ export function Workspace({
               </div>}
             </div>;
           })}
-          {sessions.length === 0 && <p className="rounded-xl border border-dashed border-border px-3 py-5 text-center text-xs leading-5 text-muted">{showArchived ? "В архиве нет сеансов." : "Сеансы не найдены. Проверьте фильтр или обновите список."}</p>}
+          {sessions.length === 0 && <p className="rounded-xl border border-dashed border-border px-3 py-5 text-center text-xs leading-5 text-muted">{nativeSearch && (searchLoading || searchResults === undefined) ? "Ищу сеансы в Codex…" : showArchived ? "В архиве нет сеансов." : "Сеансы не найдены. Проверьте фильтр или обновите список."}</p>}
+          {nativeSearch && searchCursor && <Button type="button" variant="outline" className="mt-2 w-full" onClick={onLoadMore} disabled={searchLoading || searchMoreLoading}>{searchMoreLoading ? "Загружаю…" : "Ещё результаты"}</Button>}
         </div>
       </div>
       <div className="border-t border-border px-4 py-3 text-[11px] text-[#788278]">Codex Desktop · история и управление</div>

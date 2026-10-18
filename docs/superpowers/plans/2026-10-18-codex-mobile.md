@@ -47,7 +47,7 @@
 
 - Add the separate React/Tailwind app and safe reusable shadcn-style controls.
 - Implement pairing UX, device management, projects/sessions/history, live status, tool output, screenshots, prompt/queue/stop and phone approval cards with Telegram fallback.
-- Implement session rename, archive, restore and fork using Codex's existing thread APIs.
+- Implement session rename, archive, restore and fork using Codex's existing thread APIs; native search across older active or archived threads now uses the existing `thread/list` cursor.
 - Browser-check each visible behavior on a small phone viewport against an isolated fixture; check XSS and overflow.
 - Add a session-scoped file browser/editor with UTF-8 and size limits, secret-file exclusions, optimistic save checks and busy-session write rejection.
 

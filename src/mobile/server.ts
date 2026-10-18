@@ -14,6 +14,7 @@ const MUTATING_OPERATIONS = new Set<TmaOperation>([
   "create", "select", "send", "cancel", "queue", "queueRemove", "queueResume",
 ]);
 const MOBILE_MUTATING_OPERATIONS = new Set<MobileLocalOperation>(["setModel", "setMode", "setReasoning", "setGoal", "clearGoal", "steer", "forkThread", "compactThread", "archiveThread", "unarchiveThread", "renameThread", "installPlugin", "uninstallPlugin", "createWorktree", "writeFile", "createFile", "gitStage", "gitUnstage", "gitCommit", "gitCreateBranch", "gitSwitchBranch"]);
+const MOBILE_READ_OPERATIONS = new Set<MobileLocalOperation>(["searchThreads"]);
 
 export interface MobileAgent {
   canReadSession(id: string, userId: number): Promise<boolean>;
@@ -389,13 +390,19 @@ export function createMobileServer(options: MobileServerOptions): Server {
     }
     if (path === "/api/operations" && method === "POST") {
       const body = await readJson(req, 7 * 1024 * 1024);
-      if (typeof body.op !== "string" || (!MUTATING_OPERATIONS.has(body.op as TmaOperation) && !MOBILE_MUTATING_OPERATIONS.has(body.op as MobileLocalOperation)) ||
+      if (typeof body.op !== "string" || (!MUTATING_OPERATIONS.has(body.op as TmaOperation) && !MOBILE_MUTATING_OPERATIONS.has(body.op as MobileLocalOperation) && !MOBILE_READ_OPERATIONS.has(body.op as MobileLocalOperation)) ||
           !body.args || typeof body.args !== "object" || Array.isArray(body.args)) {
         json(res, 400, { error: "Неизвестная операция" }); return;
       }
       const args = body.args as Record<string, unknown>;
       if (typeof args.sessionId === "string" && !await options.agent.canReadSession(args.sessionId, device.ownerId)) {
         json(res, 403, { error: "Доступ к сеансу запрещён" }); return;
+      }
+      if (MOBILE_READ_OPERATIONS.has(body.op as MobileLocalOperation)) {
+        if (!options.agent.executeMobile) { json(res, 503, { error: "Настройки Codex недоступны" }); return; }
+        try { json(res, 200, await options.agent.executeMobile({ op: body.op as MobileLocalOperation, userId: device.ownerId, args })); }
+        catch (error) { json(res, 502, { error: safeError(error) }); }
+        return;
       }
       if (MOBILE_MUTATING_OPERATIONS.has(body.op as MobileLocalOperation)) {
         if (typeof args.sessionId !== "string" || !safeSessionId(args.sessionId) || !await options.agent.canReadSession(args.sessionId, device.ownerId)) {

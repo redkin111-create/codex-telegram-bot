@@ -350,6 +350,25 @@ test("worktree creation requires the paired device, same Origin, CSRF and an own
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
+test("native session search requires a paired device, same Origin and CSRF without requiring a selected session", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const url = f.origin + "/api/operations";
+    const body = JSON.stringify({ op: "searchThreads", args: { query: "older" } });
+    const anonymous = await fetch(url, { method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body });
+    assert.equal(anonymous.status, 401);
+    const noCsrf = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body });
+    assert.equal(noCsrf.status, 403);
+    const wrongOrigin = await fetch(url, { method: "POST", headers: { origin: "https://attacker.example", cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body });
+    assert.equal(wrongOrigin.status, 403);
+    const accepted = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body });
+    assert.equal(accepted.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "searchThreads");
+    assert.deepEqual(f.calls.at(-1)?.args, { query: "older" });
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
 test("archive, restore and rename actions require a paired owner, Origin and CSRF", async () => {
   const f = await startFixture();
   try {
