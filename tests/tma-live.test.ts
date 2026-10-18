@@ -37,6 +37,33 @@ test("live feed publishes safe tool names and confirmed turn/approval statuses",
   }finally{stop();feed.dispose();}
 });
 
+test("live tool labels hide shell commands, search text and absolute workspace paths",()=>{
+  const acp=new EventEmitter() as AcpClient;
+  const feed=new TmaLiveFeed(acp);
+  const received:Array<{kind:string;label?:string}>=[];
+  const stop=feed.subscribe(sid,0,event=>received.push(event));
+  try{
+    acp.emit("session-update",sid,{sessionUpdate:"tool_call",kind:"execute",status:"in_progress",
+      title:"git push origin --token hidden-value",rawInput:{command:"git push origin --token hidden-value"}});
+    acp.emit("session-update",sid,{sessionUpdate:"tool_call",kind:"edit",status:"in_progress",
+      title:"Edit C:\\Users\\Private\\Project\\src\\main.ts",rawInput:{path:"C:\\Users\\Private\\Project\\src\\main.ts"},
+      content_blocks:[{type:"diff",path:"C:\\Users\\Private\\Project\\src\\main.ts",unified:"-old private source\n+new private source"}]});
+    acp.emit("session-update",sid,{sessionUpdate:"tool_call",kind:"fetch",status:"completed",
+      title:"Web search: private customer name",rawInput:{query:"private customer name"}});
+    acp.emit("session-update",sid,{sessionUpdate:"command_execution_started",rawInput:{command:"type C:\\private\\secrets.txt"}});
+    assert.deepEqual(received.map(({kind,label})=>({kind,label})),[
+      {kind:"tool",label:"Команда выполняется"},
+      {kind:"tool",label:"Изменяется файл main.ts"},
+      {kind:"tool",label:"Веб-поиск Codex завершён"},
+      {kind:"tool",label:"Команда Codex выполняется"},
+    ]);
+    assert(!JSON.stringify(received).includes("hidden-value"));
+    assert(!JSON.stringify(received).includes("Private"));
+    assert(!JSON.stringify(received).includes("customer name"));
+    assert(!JSON.stringify(received).includes("private source"));
+  }finally{stop();feed.dispose();}
+});
+
 test("live feed reports MCP OAuth completion without forwarding provider errors",()=>{
   const acp=new EventEmitter() as AcpClient;
   const feed=new TmaLiveFeed(acp);

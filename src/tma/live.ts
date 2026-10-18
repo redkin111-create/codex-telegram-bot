@@ -33,6 +33,31 @@ export interface LiveEvent {
 const LIMIT=160;
 const MAX_THREADS=200;
 const str=(v:unknown,max=250)=>typeof v==="string"?v.slice(0,max):"";
+function liveFileName(value:unknown):string|undefined{
+  if(typeof value!=="string"||!value||value.length>2000)return undefined;
+  const name=value.replaceAll("\\","/").split("/").filter(Boolean).at(-1);
+  if(!name||name==="."||name===".."||/[\u0000-\u001f\u007f/\\:]/.test(name))return undefined;
+  return name.slice(0,100);
+}
+function safeToolLabel(update:SessionUpdate):string{
+  const status=update.status;
+  const complete=status==="completed";
+  const failed=status==="failed"||status==="declined";
+  const file=liveFileName(update.rawInput?.path);
+  switch(update.kind){
+    case "execute":return failed?"Команда Codex не выполнена":complete?"Команда Codex завершена":"Команда выполняется";
+    case "edit":return file?(failed?`Не удалось изменить файл ${file}`:complete?`Изменён файл ${file}`:`Изменяется файл ${file}`)
+      :(failed?"Не удалось изменить файл проекта":complete?"Изменён файл проекта":"Изменяется файл проекта");
+    case "delete":return file?(failed?`Не удалось удалить файл ${file}`:complete?`Удалён файл ${file}`:`Удаляется файл ${file}`)
+      :(failed?"Не удалось удалить файл проекта":complete?"Удалён файл проекта":"Удаляется файл проекта");
+    case "move":return file?(failed?`Не удалось переместить файл ${file}`:complete?`Перемещён файл ${file}`:`Перемещается файл ${file}`)
+      :(failed?"Не удалось переместить файл проекта":complete?"Перемещён файл проекта":"Перемещается файл проекта");
+    case "search":return failed?"Поиск файлов не выполнен":complete?"Поиск файлов завершён":"Codex ищет файлы";
+    case "fetch":return failed?"Веб-поиск Codex не выполнен":complete?"Веб-поиск Codex завершён":"Codex выполняет веб-поиск";
+    case "other":return failed?"Инструмент Codex завершился с ошибкой":complete?"Инструмент Codex завершён":"Инструмент Codex выполняется";
+    default:return failed?"Операция Codex не выполнена":complete?"Операция Codex завершена":"Инструмент Codex выполняется";
+  }
+}
 
 export class TmaLiveFeed {
   /** A fresh generation on every bot restart; cursors are only valid within it. */
@@ -93,10 +118,11 @@ export class TmaLiveFeed {
       const text=str(u.content?.text,4000);
       if(text)this.publish(id,{kind:"text",text});
     }else if(u.sessionUpdate==="tool_call"||u.sessionUpdate==="command_execution_started"){
-      // Generic label only. Never send tool-call input/arguments to browser.
-      this.publish(id,{kind:"tool",label:str(u.title||u.kind||"Запущен инструмент")});
+      // Never expose command lines, search queries, tool arguments or full host paths.
+      this.publish(id,{kind:"tool",label:u.sessionUpdate==="command_execution_started"?"Команда Codex выполняется":safeToolLabel(u)});
     }else if(u.sessionUpdate==="tool_call_update"){
-      this.publish(id,{kind:"tool",label:str(u.title||u.kind||"Инструмент завершён")});
+      // Titles may contain commands, search text, or absolute project paths.
+      this.publish(id,{kind:"tool",label:safeToolLabel(u)});
     }
   }
   private notification(method:string,params:unknown){

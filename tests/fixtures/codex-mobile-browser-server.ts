@@ -994,6 +994,9 @@ process.stdin.on("data", (chunk: string) => {
             { step: "Сверить изменения", status: "pending" },
           ] });
         process.stdout.write("Fixture current-turn plan published.\n");
+      } else if (command.command === "liveFileChange") {
+        feed.publish(firstSession, { kind: "tool", label: "Изменяется файл main.ts" });
+        process.stdout.write("Fixture safe file-change event published.\n");
       } else if (command.command === "deleteThreadError") {
         fixtureDeleteFailure = true;
         process.stdout.write("Fixture Codex deletion error enabled.\n");
