@@ -14,7 +14,7 @@ const RASTER_IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "im
 const MUTATING_OPERATIONS = new Set<TmaOperation>([
   "create", "select", "send", "cancel", "queue", "queueRemove", "queueResume",
 ]);
-const MOBILE_MUTATING_OPERATIONS = new Set<MobileLocalOperation>(["editAndRetry", "transcribeAudio", "setModel", "setMode", "setReasoning", "setGoal", "clearGoal", "setSkillEnabled", "mcpOAuthLogin", "steer", "forkThread", "compactThread", "reviewThread", "archiveThread", "unarchiveThread", "renameThread", "installPlugin", "uninstallPlugin", "createWorktree", "terminalExec", "terminalStart", "terminalInput", "terminalResize", "terminalStop", "stopBackgroundTerminal", "writeFile", "createFile", "gitStage", "gitUnstage", "gitCommit", "gitCreateBranch", "gitSwitchBranch", "gitTrackRemoteBranch", "gitFetch", "gitPush"]);
+const MOBILE_MUTATING_OPERATIONS = new Set<MobileLocalOperation>(["editAndRetry", "transcribeAudio", "setModel", "setMode", "setReasoning", "setGoal", "clearGoal", "setSkillEnabled", "mcpOAuthLogin", "steer", "forkThread", "compactThread", "reviewThread", "archiveThread", "unarchiveThread", "renameThread", "deleteThread", "installPlugin", "uninstallPlugin", "createWorktree", "terminalExec", "terminalStart", "terminalInput", "terminalResize", "terminalStop", "stopBackgroundTerminal", "writeFile", "createFile", "gitStage", "gitUnstage", "gitCommit", "gitCreateBranch", "gitSwitchBranch", "gitTrackRemoteBranch", "gitFetch", "gitPush"]);
 const MOBILE_READ_OPERATIONS = new Set<MobileLocalOperation>(["searchThreads", "listMoreThreads", "latestEditableTurn", "readImage", "terminalRead", "listBackgroundTerminals"]);
 
 export interface MobileAgent {

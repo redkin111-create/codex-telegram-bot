@@ -702,6 +702,11 @@ export class AcpClient extends EventEmitter {
     await this.request("thread/unarchive", { threadId });
   }
 
+  /** Permanently delete an archived local Codex thread through the app-server. */
+  async deleteThread(threadId: string): Promise<void> {
+    await this.request("thread/delete", { threadId });
+  }
+
   /** Fork an idle persisted thread through the same Codex app-server process. */
   async forkThread(threadId: string): Promise<CodexThreadForkResponse> {
     const response = await this.request("thread/fork", { threadId }) as CodexThreadForkResponse;

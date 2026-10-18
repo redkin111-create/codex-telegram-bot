@@ -628,7 +628,7 @@ test("interactive terminal operations require the paired device, CSRF and an own
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
-test("archive, restore and rename actions require a paired owner, Origin and CSRF", async () => {
+test("archive, restore, rename and delete actions require a paired owner, Origin and CSRF", async () => {
   const f = await startFixture();
   try {
     const login = await pair(f.origin, f.auth);
@@ -646,7 +646,7 @@ test("archive, restore and rename actions require a paired owner, Origin and CSR
       method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: payload("unarchiveThread", foreignSession),
     });
     assert.equal(foreign.status, 403);
-    for (const op of ["renameThread", "archiveThread", "unarchiveThread"]) {
+    for (const op of ["renameThread", "archiveThread", "unarchiveThread", "deleteThread"]) {
       const result = await fetch(url, {
         method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: payload(op),
       });

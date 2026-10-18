@@ -39,3 +39,17 @@ test("native review starts on the selected Codex thread with a semantic target",
   }]);
   assert.deepEqual(response, { reviewThreadId: "thread-review", turn: { id: "turn-review", status: "inProgress" } });
 });
+
+test("archived thread deletion uses Codex app-server and reports its failure", async () => {
+  const client = new AcpClient({ codexCliPath: "codex", workspace: "C:\\work", trustAllTools: false });
+  const internal = client as unknown as { request: (method: string, params: unknown) => Promise<unknown> };
+  const calls: Array<{ method: string; params: unknown }> = [];
+  internal.request = async (method, params) => { calls.push({ method, params }); return {}; };
+  const api = client as unknown as { deleteThread?: (threadId: string) => Promise<void> };
+  assert.equal(typeof api.deleteThread, "function", "AcpClient must expose Codex's native local thread/delete method");
+  await api.deleteThread!.call(client, "thread-archived");
+  assert.deepEqual(calls, [{ method: "thread/delete", params: { threadId: "thread-archived" } }]);
+
+  internal.request = async () => { throw new Error("Codex refused deletion because a fork still references this thread"); };
+  await assert.rejects(api.deleteThread!.call(client, "thread-referenced"), /fork still references/i);
+});

@@ -677,6 +677,80 @@ test("mobile session archive, restore and rename reuse the owner's Codex catalog
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile deletion is limited to an owned idle archived thread and clears its local references",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-delete-thread-"));
+  const archivedId="81818181-8181-4181-8181-818181818181";
+  const foreignId="82828282-8282-4282-8282-828282828282";
+  const activeId="83838383-8383-4383-8383-838383838383";
+  const archived={id:archivedId,name:"Archived fixture",cwd:dir,source:"appServer",createdAt:1,updatedAt:1,recencyAt:1};
+  const foreign={id:foreignId,name:"Foreign archived fixture",cwd:dir,source:"appServer",createdAt:1,updatedAt:1,recencyAt:1};
+  const active={id:activeId,name:"Active fixture",cwd:dir,source:"appServer",createdAt:1,updatedAt:1,recencyAt:1};
+  const archivedIds=new Set([archivedId,foreignId]);
+  const calls:string[]=[];
+  const activeTurns=new Set<string>();
+  let online=true;
+  let deleteFailure=false;
+  let activeOwner:number|undefined;
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"project",roots:[dir]}],
+    listThreads:async(params?:{archived?:boolean})=>params?.archived?[archived,foreign].filter((thread)=>archivedIds.has(thread.id)):[active],
+    listAllThreads:async(params?:{archived?:boolean})=>params?.archived?[archived,foreign].filter((thread)=>archivedIds.has(thread.id)):[active],
+    hasActiveTurn:(id:string)=>activeTurns.has(id),
+    deleteThread:async(id:string)=>{calls.push(id);if(deleteFailure)throw new Error("Codex deletion refused");archivedIds.delete(id);},
+  });
+  Object.defineProperty(acp,"isConnected",{get:()=>online});
+  const typedAcp=acp as unknown as AcpClient;
+  const registry={runtimeForSession:(_owner:number,id:string)=>id===archivedId&&(busyState.busy||busyState.queueLength>0||busyState.linked)?{sessionId:id,isBusy:busyState.busy,queueLength:busyState.queueLength}:undefined,
+    ownerChatForSession:()=>activeOwner} as unknown as RuntimeRegistry;
+  const busyState={busy:false,queueLength:0,linked:false};
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101","202"])} as AppConfig;
+  const owners=new TelegramSessionRegistry(dir);
+  owners.recordMobile(archivedId,101,dir,"Fixture");
+  owners.recordMobile(foreignId,202,dir,"Fixture");
+  const agent=new MiniAppAgent({cfg,acp:typedAcp,registry});
+  const perform=(userId:number,sessionId:string)=>agent.executeMobile({op:"deleteThread",userId,args:{sessionId}} as never);
+  try{
+    assert.equal(await agent.canReadSession(archivedId,101),true);
+    assert.equal(await agent.canReadSession(foreignId,101),false);
+    await assert.rejects(perform(101,foreignId),/доступ|запрещ/i);
+    await assert.rejects(perform(101,activeId),/архив/i);
+    assert.deepEqual(calls,[]);
+
+    busyState.busy=true;
+    await assert.rejects(perform(101,archivedId),/занят|выполня/i);
+    busyState.busy=false;
+    busyState.queueLength=1;
+    await assert.rejects(perform(101,archivedId),/очеред|выполня/i);
+    busyState.queueLength=0;
+    activeTurns.add(archivedId);
+    await assert.rejects(perform(101,archivedId),/занят|выполня/i);
+    activeTurns.clear();
+    busyState.linked=true;
+    await assert.rejects(perform(101,archivedId),/отключите/i);
+    busyState.linked=false;
+    activeOwner=202;
+    await assert.rejects(perform(101,archivedId),/управляет Telegram или другой клиент/i);
+    activeOwner=undefined;
+    const mobilePtys=(agent as unknown as {mobilePtys:Map<string,unknown>}).mobilePtys;
+    mobilePtys.set("fixture-live-shell",{ownerId:101,sessionId:archivedId,exited:false,closed:false});
+    await assert.rejects(perform(101,archivedId),/терминал/i);
+    mobilePtys.clear();
+    online=false;
+    await assert.rejects(perform(101,archivedId),/офлайн/i);
+    online=true;
+    deleteFailure=true;
+    await assert.rejects(perform(101,archivedId),/Codex deletion refused/);
+    assert.equal(await agent.canReadSession(archivedId,101),true,"a rejected Codex delete must preserve the cached session");
+    assert.equal(new TelegramSessionRegistry(dir).getOwner(archivedId)?.chatId,101,"a rejected Codex delete must preserve the persisted owner record");
+
+    deleteFailure=false;
+    await perform(101,archivedId);
+    assert.deepEqual(calls,[archivedId,archivedId]);
+    assert.equal(new TelegramSessionRegistry(dir).getOwner(archivedId),undefined,"the deleted thread's persisted owner record must be cleared");
+    assert.equal(await agent.canReadSession(archivedId,101),false,"a deleted thread must stop being readable through cached history");
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile steer reuses the active owner runtime and never sends without a confirmed active turn",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-steer-"));
   const sessionId="60606060-6060-4060-8060-606060606060";

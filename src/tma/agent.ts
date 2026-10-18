@@ -130,7 +130,7 @@ interface MobilePtyRecord {
   expiry?:NodeJS.Timeout;dataSubscription?:{dispose():void};exitSubscription?:{dispose():void};
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; stt?:Pick<SttService,"enabled"|"transcribe">; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "editAndRetry" | "transcribeAudio" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "mcpOAuthLogin" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+export type MobileLocalOperation = "capabilities" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "editAndRetry" | "transcribeAudio" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "mcpOAuthLogin" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 export class MiniAppAgent {
   private readonly abort=new AbortController();
@@ -682,6 +682,32 @@ export class MiniAppAgent {
         this.catalogues.delete(chatId);
         this.archivedCatalogues.delete(chatId);
         return {sessionId,archived:false};
+      }
+      case "deleteThread":{
+        const thread=await this.thread(sessionId,chatId);
+        if(!await this.isArchivedThread(sessionId,chatId))throw new Error("Удалять можно только сеанс из архива");
+        if(runtime?.isBusy||runtime?.queueLength||((typeof acp.hasActiveTurn==="function")&&acp.hasActiveTurn(sessionId)))
+          throw new Error("Нельзя удалить сеанс, пока Codex выполняет задачу или в нём есть очередь");
+        if(runtime)throw new Error("Сначала отключите архивный сеанс от текущего управления Codex");
+        if(typeof registry.ownerChatForSession==="function"&&registry.ownerChatForSession(sessionId)!==undefined)
+          throw new Error("Нельзя удалить сеанс, пока им управляет Telegram или другой клиент");
+        if([...this.mobilePtys.values()].some(item=>item.ownerId===chatId&&item.sessionId===sessionId&&!item.exited&&!item.closed))
+          throw new Error("Сначала остановите терминал этого сеанса");
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        if(typeof acp.deleteThread!=="function")throw new Error("Эта версия Codex не поддерживает удаление сеансов через app-server");
+        await acp.deleteThread(sessionId);
+        this.knownThreads.get(chatId)?.delete(sessionId);
+        this.archivedThreads.get(chatId)?.delete(sessionId);
+        this.ownThreads.delete(sessionId);
+        this.historyCache.delete(sessionId+":chat");
+        this.historyCache.delete(sessionId+":tools");
+        this.historyInflight.delete(sessionId+":chat");
+        this.historyInflight.delete(sessionId+":tools");
+        this.telegramSessions.removeIfOwnedBy(sessionId,chatId);
+        if(this.selected.get(chatId)===sessionId)this.selected.delete(chatId);
+        this.catalogues.delete(chatId);
+        this.archivedCatalogues.delete(chatId);
+        return {sessionId,deleted:true,name:thread.name};
       }
       case "setGoal":{
         const thread=await this.thread(sessionId,chatId);

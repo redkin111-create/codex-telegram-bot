@@ -103,6 +103,7 @@ let fixtureLatestTurnId = "11111111-1111-4111-8111-111111111111";
 let fixtureEditUnavailable = false;
 let fixtureEditFailure = false;
 let fixtureTranscriptionFailure = false;
+let fixtureDeleteFailure = false;
 const fixtureFiles = new Map<string, string>([
   ["README.md", "# Fixture project\n\nRead-only history is followed by mobile file access.\n"],
   ["src/main.ts", "export function greet() {\n  return \"Hello from fixture\";\n}\n"],
@@ -393,6 +394,16 @@ const agent = {
       sessions.unshift({ ...archivedSessions.splice(index, 1)[0]! });
       return { sessionId, archived: false };
     }
+    if (job.op === "deleteThread") {
+      if (fixtureDeleteFailure) throw new Error("Тестовая ошибка Codex: удаление заблокировано связанной историей");
+      const index = archivedSessions.findIndex((entry) => entry.id === sessionId);
+      if (index < 0) throw new Error("Архивный сеанс не найден");
+      archivedSessions.splice(index, 1);
+      history.delete(sessionId);
+      controlled.delete(sessionId);
+      fixtureBackgroundProcesses.delete(sessionId);
+      return { sessionId, deleted: true };
+    }
     if (job.op === "setGoal") {
       const previous = fixtureGoals.get(sessionId);
       const goal = {
@@ -660,6 +671,12 @@ process.stdin.on("data", (chunk: string) => {
       } else if (command.command === "transcriptionReset") {
         fixtureTranscriptionFailure = false;
         process.stdout.write("Fixture transcription failure disabled.\n");
+      } else if (command.command === "deleteThreadError") {
+        fixtureDeleteFailure = true;
+        process.stdout.write("Fixture Codex deletion error enabled.\n");
+      } else if (command.command === "deleteThreadReset") {
+        fixtureDeleteFailure = false;
+        process.stdout.write("Fixture Codex deletion error disabled.\n");
       }
     } catch { process.stdout.write("Fixture control command was ignored.\n"); }
   }

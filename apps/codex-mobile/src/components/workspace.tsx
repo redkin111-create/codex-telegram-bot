@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Archive, ArchiveRestore, Check, FolderKanban, Pencil, Plus, Search, X } from "lucide-react";
+import { Archive, ArchiveRestore, Check, FolderKanban, LoaderCircle, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import type { MobileSession, MobileSnapshot } from "../types.js";
 import { Button, Input } from "./ui/primitives.js";
 
@@ -7,7 +7,7 @@ export function Workspace({
   snapshot, selectedProject, search, searchResults, searchCursor, searchLoading, searchMoreLoading, extraSessions,
   sessionsMoreLoading, sessionsHasMore, onLoadMoreSessions,
   showArchived, selectedId, open, connectedIds,
-  onProjectChange, onSearchChange, onArchivedChange, onLoadMore, onSelect, onCreate, onClose, onArchive, onUnarchive, onRename,
+  onProjectChange, onSearchChange, onArchivedChange, onLoadMore, onSelect, onCreate, onClose, onArchive, onUnarchive, onRename, onDelete,
 }: {
   snapshot: MobileSnapshot;
   selectedProject: string;
@@ -34,10 +34,14 @@ export function Workspace({
   onArchive: (sessionId: string) => Promise<void>;
   onUnarchive: (sessionId: string) => Promise<void>;
   onRename: (sessionId: string, name: string) => Promise<void>;
+  onDelete: (sessionId: string) => Promise<void>;
 }) {
   const [editingId, setEditingId] = useState("");
   const [renameValue, setRenameValue] = useState("");
   const [savingName, setSavingName] = useState(false);
+  const [deleteCandidate, setDeleteCandidate] = useState<MobileSession>();
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
   const nativeSearch = search.trim().length >= 2;
   const sessions = useMemo(() => {
     const source = nativeSearch ? searchResults ?? [] : [...(showArchived ? snapshot.archivedSessions ?? [] : snapshot.sessions), ...extraSessions];
@@ -59,6 +63,19 @@ export function Workspace({
       setEditingId("");
     } catch { /* The app-level alert keeps the name available for retry. */ }
     finally { setSavingName(false); }
+  }
+
+  async function confirmDelete() {
+    if (!deleteCandidate || deleting) return;
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await onDelete(deleteCandidate.id);
+      setDeleteCandidate(undefined);
+    } catch (cause) {
+      setDeleteError(cause instanceof Error ? cause.message : "Codex не удалил этот сеанс");
+    }
+    finally { setDeleting(false); }
   }
 
   return <>
@@ -108,10 +125,15 @@ export function Workspace({
                 <Input aria-label={`Новое название ${session.title}`} value={renameValue} onChange={(event) => setRenameValue(event.target.value)} maxLength={120} autoFocus />
                 <Button type="submit" variant="outline" className="min-h-10 px-2" aria-label="Сохранить название" disabled={!renameValue.trim() || savingName}><Check size={16} /></Button>
                 <Button type="button" variant="ghost" className="min-h-10 px-2" aria-label="Отменить переименование" onClick={() => setEditingId("")}><X size={16} /></Button>
-              </form> : <div className="mt-2 flex gap-2">
+              </form> : showArchived ? <div className="mt-2 space-y-1">
+                <Button type="button" variant="ghost" className="min-h-9 w-full px-2 text-[11px]" onClick={() => { setEditingId(session.id); setRenameValue(session.title); }}><Pencil size={13} /> Переименовать</Button>
+                <div className="flex gap-2">
+                  <Button type="button" variant="outline" className="min-h-9 flex-1 px-2 text-[11px]" onClick={() => void onUnarchive(session.id)}><ArchiveRestore size={13} /> Восстановить</Button>
+                  <Button type="button" variant="danger" className="min-h-9 flex-1 px-2 text-[11px]" aria-label={`Удалить навсегда: ${session.title || "Новый сеанс"}`} onClick={() => { setDeleteError(""); setDeleteCandidate(session); }}><Trash2 size={13} /> Удалить</Button>
+                </div>
+              </div> : <div className="mt-2 flex gap-2">
                 <Button type="button" variant="ghost" className="min-h-9 flex-1 px-2 text-[11px]" onClick={() => { setEditingId(session.id); setRenameValue(session.title); }}><Pencil size={13} /> Переименовать</Button>
-                {showArchived ? <Button type="button" variant="outline" className="min-h-9 flex-1 px-2 text-[11px]" onClick={() => void onUnarchive(session.id)}><ArchiveRestore size={13} /> Восстановить</Button>
-                  : <Button type="button" variant="outline" className="min-h-9 flex-1 px-2 text-[11px]" disabled={session.busy || !snapshot.archiveAvailable} onClick={() => void onArchive(session.id)}><Archive size={13} /> В архив</Button>}
+                <Button type="button" variant="outline" className="min-h-9 flex-1 px-2 text-[11px]" disabled={session.busy || !snapshot.archiveAvailable} onClick={() => void onArchive(session.id)}><Archive size={13} /> В архив</Button>
               </div>}
             </div>;
           })}
@@ -122,5 +144,16 @@ export function Workspace({
       </div>
       <div className="border-t border-border px-4 py-3 text-[11px] text-[#788278]">Codex Desktop · история и управление</div>
     </aside>
+    {deleteCandidate && <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
+      <section role="alertdialog" aria-modal="true" aria-labelledby="delete-session-title" className="safe-area-bottom w-full max-w-md space-y-4 rounded-2xl border border-[#733b39] bg-elevated p-5 shadow-soft">
+        <div><h3 id="delete-session-title" className="flex items-center gap-2 text-base font-semibold"><Trash2 size={17} className="text-[#ffc3bd]" />Удалить сеанс навсегда?</h3>
+          <p className="mt-2 break-words text-sm font-medium text-text">{deleteCandidate.title || "Новый сеанс"}</p>
+          <p className="mt-2 text-sm leading-relaxed text-muted">Codex удалит этот архивный сеанс вместе с историей. Это действие нельзя отменить. Файлы проекта не меняются; если Codex не может удалить сеанс, он останется в архиве.</p>
+        </div>
+        {deleteError && <p role="alert" className="rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd]">{deleteError}</p>}
+        <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={deleting} onClick={() => { setDeleteCandidate(undefined); setDeleteError(""); }}>Отмена</Button>
+          <Button type="button" variant="danger" className="flex-1" disabled={deleting} onClick={() => void confirmDelete()}>{deleting ? <LoaderCircle size={15} className="animate-spin" /> : <Trash2 size={15} />}Удалить навсегда</Button></div>
+      </section>
+    </div>}
   </>;
 }

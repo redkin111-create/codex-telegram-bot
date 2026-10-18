@@ -271,7 +271,7 @@ export default function App() {
     setError("");
     try {
       const result = await runOperation<T>(op, args, csrf);
-      if (op === "create" || op === "forkThread" || op === "archiveThread" || op === "unarchiveThread" || op === "renameThread" || op === "createWorktree") {
+      if (op === "create" || op === "forkThread" || op === "archiveThread" || op === "unarchiveThread" || op === "renameThread" || op === "deleteThread" || op === "createWorktree") {
         setSessionPages({});
       }
       if (!op.startsWith("terminal") && op !== "listMoreThreads" && op !== "searchThreads") void refreshSnapshot();
@@ -428,6 +428,20 @@ export default function App() {
     await refreshSnapshot();
   }
 
+  async function deleteSession(sessionId: string) {
+    await operation("deleteThread", { sessionId });
+    setSearchResults((current) => current?.filter((session) => session.id !== sessionId));
+    if (selectedId === sessionId) {
+      setSelectedId("");
+      setSelectedSearchSession(undefined);
+      setHistory([]);
+      setActivity(undefined);
+      setQueue(emptyQueue);
+      setEvents([]);
+    }
+    await refreshSnapshot(true);
+  }
+
   async function send(text: string, images: PromptImage[], mode: FollowUpMode) {
     if (!selectedId) return;
     const fingerprint = JSON.stringify([selectedId, mode, text, images.map((image) => [image.name, image.mimeType, image.data.length])]);
@@ -551,7 +565,7 @@ export default function App() {
         showArchived={showArchived} onArchivedChange={setShowArchived} onLoadMore={() => void loadMoreSearch()} selectedId={selectedId}
         open={workspaceOpen} connectedIds={connectedIds} onProjectChange={setSelectedProject} onSearchChange={setSearch}
         onSelect={selectWorkspaceSession} onCreate={() => void createSession()} onClose={() => setWorkspaceOpen(false)}
-        onArchive={archiveSession} onUnarchive={unarchiveSession} onRename={renameSession} />
+        onArchive={archiveSession} onUnarchive={unarchiveSession} onRename={renameSession} onDelete={deleteSession} />
       <Conversation session={selectedSession} history={history} activity={activity} events={events} queue={queue}
         connected={connected} connecting={connecting} loading={loading} streamConnected={streamConnected}
         error={error} includeTools={includeTools} onToggleTools={() => setIncludeTools((value) => !value)}

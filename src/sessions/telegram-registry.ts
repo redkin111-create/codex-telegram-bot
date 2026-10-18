@@ -75,6 +75,16 @@ export class TelegramSessionRegistry {
     this.store.set({ ...this.records(), [sessionId]: entry });
   }
 
+  /** Drop cached ownership only after the owning user's Codex thread was deleted. */
+  removeIfOwnedBy(sessionId: string, ownerId: number): boolean {
+    const current = this.getOwner(sessionId);
+    if (!current || current.chatId !== ownerId) return false;
+    const records = { ...this.records() };
+    delete records[sessionId];
+    this.store.set(records);
+    return true;
+  }
+
   /** Remove only entries whose Codex thread no longer exists. */
   prune(isExistingSession: (sessionId: string) => boolean): number {
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
