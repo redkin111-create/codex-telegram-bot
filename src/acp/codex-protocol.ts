@@ -161,7 +161,8 @@ export interface CodexThreadListResponse {
 export type CodexUserInput =
   | { type: "text"; text: string }
   | { type: "image"; url: string }
-  | { type: "localImage"; path: string };
+  | { type: "localImage"; path: string }
+  | { type: "skill"; name: string; path: string };
 
 export interface CodexTurnStartParams {
   threadId: string;
@@ -347,6 +348,7 @@ export interface CodexSkillInfo {
   description?: string;
   path?: string;
   enabled?: boolean;
+  scope?: "user" | "repo" | "system" | "admin";
 }
 
 export interface CodexMcpServerStatus {

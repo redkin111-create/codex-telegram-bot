@@ -31,10 +31,12 @@ export type JsonRpcMessage = JsonRpcResponse & JsonRpcNotification & { method?: 
 
 /** A content block in a prompt or message. */
 export interface ContentBlock {
-  type: "text" | "image" | "resource";
+  type: "text" | "image" | "resource" | "skill";
   text?: string;
   data?: string;
   mimeType?: string;
+  /** Internal selected skill name. ACP resolves its path from Codex, never from browser input. */
+  name?: string;
   [k: string]: unknown;
 }
 

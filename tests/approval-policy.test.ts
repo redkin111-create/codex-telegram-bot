@@ -1,6 +1,75 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AcpClient } from "../src/acp/client.js";
+import { buildContentBlocks, mergeInputs } from "../src/bot/prompt-content.js";
+
+test("selected skill names survive queued prompt merging without storing local paths", () => {
+  const merged = mergeInputs([
+    { text: "$review Check this file", images: [], skillNames: ["review"] },
+    { text: "$review Check the tests", images: [], skillNames: ["review", "test-helper"] },
+  ]);
+  assert.deepEqual(merged.skillNames, ["review", "test-helper"]);
+  assert.deepEqual(buildContentBlocks(merged).slice(-2), [
+    { type: "skill", name: "review" },
+    { type: "skill", name: "test-helper" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(merged), /SKILL\.md|C:\\\\private/);
+});
+
+test("selected skills are resolved from Codex and sent as explicit app-server input items", async () => {
+  const client = new AcpClient({ codexCliPath: "codex", workspace: "C:\\work", trustAllTools: false });
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const internal = client as unknown as {
+    threadCwd: Map<string, string>;
+    request: (method: string, params: unknown) => Promise<unknown>;
+    finishTurn: (threadId: string, how: "resolve" | "reject", value: unknown) => void;
+  };
+  internal.threadCwd.set("thread-1", "C:\\work\\project");
+  internal.request = async (method, params) => {
+    calls.push({ method, params: params as Record<string, unknown> });
+    if (method === "skills/list") return { data: [{ skills: [
+      { name: "review", path: "C:\\private\\skills\\review\\SKILL.md", enabled: true, scope: "user" },
+    ] }] };
+    if (method === "turn/start") return { turn: { id: "turn-1" } };
+    throw new Error(`Unexpected Codex method: ${method}`);
+  };
+
+  const turn = client.prompt("thread-1", [
+    { type: "text", text: "$review Summarize the changes." },
+    { type: "skill", name: "review" },
+  ]);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.map((call) => call.method), ["skills/list", "turn/start"]);
+  assert.deepEqual((calls[1]!.params.input as unknown[]), [
+    { type: "text", text: "$review Summarize the changes." },
+    { type: "skill", name: "review", path: "C:\\private\\skills\\review\\SKILL.md" },
+  ]);
+  internal.finishTurn("thread-1", "resolve", { stopReason: "end_turn" });
+  await turn;
+});
+
+test("selected disabled or ambiguous skills fail before turn/start", async () => {
+  const client = new AcpClient({ codexCliPath: "codex", workspace: "C:\\work", trustAllTools: false });
+  const methods: string[] = [];
+  const internal = client as unknown as {
+    threadCwd: Map<string, string>;
+    request: (method: string, params: unknown) => Promise<unknown>;
+  };
+  internal.threadCwd.set("thread-1", "C:\\work\\project");
+  internal.request = async (method) => {
+    methods.push(method);
+    return { data: [{ skills: [
+      { name: "disabled", path: "C:\\skills\\disabled\\SKILL.md", enabled: false },
+      { name: "duplicate", path: "C:\\skills\\one\\SKILL.md", enabled: true },
+      { name: "duplicate", path: "C:\\skills\\two\\SKILL.md", enabled: true },
+    ] }] };
+  };
+
+  await assert.rejects(client.prompt("thread-1", [
+    { type: "text", text: "$disabled Do this" }, { type: "skill", name: "disabled" },
+  ]), /отключён|недоступен|неоднозначен/i);
+  assert.deepEqual(methods, ["skills/list"]);
+});
 
 test("workspace mode runs in-project actions without per-action approval and keeps its sandbox", async () => {
   const client = new AcpClient({

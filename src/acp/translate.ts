@@ -192,7 +192,10 @@ function str(v: unknown): string {
 export function toCodexInput(content: ContentBlock[]): CodexUserInput[] {
   const out: CodexUserInput[] = [];
   for (const b of content) {
-    if (b.type === "image" && typeof b.data === "string" && b.data) {
+    if (b.type === "skill") {
+      // ACP resolves selected skill names against the thread's native skill inventory.
+      continue;
+    } else if (b.type === "image" && typeof b.data === "string" && b.data) {
       const mime = typeof b.mimeType === "string" && b.mimeType ? b.mimeType : "image/png";
       out.push({ type: "image", url: `data:${mime};base64,${b.data}` });
     } else if (b.type === "resource" && typeof b.text === "string" && b.text) {

@@ -82,6 +82,11 @@ let fixtureBranch = "feat/codex-mobile-fixture";
 let fixtureNotesCommitted = false;
 let fixtureRenameStaged = true;
 let fixturePluginInstalled = false;
+const fixtureSkills = [
+  { name: "fixture-review", description: "Навык для проверки. <script>alert(1)</script> остаётся текстом.", enabled: true, scope: "user" as const, canToggle: true, invokable: true },
+  { name: "disabled-helper", description: "Отключённый навык.", enabled: false, scope: "repo" as const, canToggle: true, invokable: false },
+  { name: "managed-skill", description: "Управляется политикой.", enabled: true, scope: "admin" as const, canToggle: false, invokable: true },
+];
 const fixtureTerminals = new Map<string, { sessionId: string; output: string; pendingInput: string; exited: boolean; exitCode: number | null; }>();
 const fixtureTerminalBySession = new Map<string, string>();
 const fixtureFiles = new Map<string, string>([
@@ -308,6 +313,12 @@ const agent = {
       return { goal };
     }
     if (job.op === "clearGoal") { fixtureGoals.delete(sessionId); return { cleared: true }; }
+    if (job.op === "setSkillEnabled") {
+      const skill = fixtureSkills.find((entry) => entry.name === args.name);
+      if (!skill?.canToggle || typeof args.enabled !== "boolean") throw new Error("Навык недоступен для изменения");
+      skill.enabled = args.enabled;
+      return { name: skill.name, enabled: skill.enabled };
+    }
     if (job.op === "compactThread") {
       if (controlled.get(sessionId)?.busy) throw new Error("Нельзя сократить контекст, пока Codex выполняет задачу");
       feed.publish(sessionId, { kind: "activity", label: "Запрос на сокращение контекста принят тестовой средой" });
@@ -328,7 +339,7 @@ const agent = {
       models: [{ id: "fixture", name: "Fixture Model" }, { id: "fixture-fast", name: "Fixture Fast" }],
       modes: [{ id: "code", name: "Code" }, { id: "plan", name: "Plan" }],
       reasoningLevels: ["minimal", "low", "medium", "high", "max"],
-      skills: [{ name: "Fixture skill", description: "Навык для проверки. <script>alert(1)</script> остаётся текстом." }],
+      skills: fixtureSkills.map((skill) => ({ ...skill })),
       mcpServers: [{ name: "Fixture MCP", toolCount: 2 }],
       plugins: [{ id: "reviewer@official", name: "Review helper", marketplace: "Fixture official",
         description: "Показывает результаты ревью изменений.", capabilities: ["review", "summaries"], sourceType: "remote",

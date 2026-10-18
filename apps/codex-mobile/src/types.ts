@@ -98,7 +98,7 @@ export interface MobileCapabilities {
   models: Array<{ id: string; name: string; description?: string }>;
   modes: Array<{ id: string; name: string; description?: string }>;
   reasoningLevels: string[];
-  skills: Array<{ name: string; description?: string }>;
+  skills: Array<{ name: string; description?: string; enabled: boolean; scope?: "user" | "repo" | "system" | "admin"; canToggle: boolean; invokable: boolean }>;
   mcpServers: Array<{ name: string; toolCount: number }>;
   plugins: Array<{ id: string; name: string; marketplace: string; description?: string; capabilities: string[]; sourceType?: "remote" | "local" | "git" | "npm"; installed: boolean; enabled: boolean; installable: boolean; installPolicy: "AVAILABLE" | "INSTALLED_BY_DEFAULT" | "NOT_AVAILABLE" | "unknown"; availability: string; mustShowInstallationInterstitial: boolean }>;
   pluginCatalogAvailable: boolean;
@@ -161,4 +161,4 @@ export interface MobileGitDiff {
   checkedAt: number;
 }
 
-export type MobileOperation = "create" | "select" | "send" | "cancel" | "queue" | "queueRemove" | "queueResume" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "searchThreads" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "writeFile" | "createFile" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch";
+export type MobileOperation = "create" | "select" | "send" | "cancel" | "queue" | "queueRemove" | "queueResume" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "searchThreads" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "writeFile" | "createFile" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch";

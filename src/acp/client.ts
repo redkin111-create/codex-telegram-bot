@@ -43,6 +43,7 @@ import type {
   CodexThreadForkResponse,
   CodexThreadGoal,
   CodexThreadGoalStatus,
+  CodexUserInput,
   CodexTokenUsage,
   CodexTurn,
   CodexTurnResponse,
@@ -264,6 +265,56 @@ export class AcpClient extends EventEmitter {
       this.request("app/installed", {}).catch(() => undefined),
     ]);
     return { pluginCatalog, installedPlugins, apps, installedApps };
+  }
+
+  /** Read the current skill inventory for one authorized project directory. */
+  async listMobileSkills(cwd: string): Promise<CodexSkillInfo[]> {
+    const response = await this.request("skills/list", { cwds: [cwd], forceReload: true }) as {
+      data?: Array<{ skills?: CodexSkillInfo[] }>;
+    };
+    return (response?.data ?? []).flatMap((entry) => entry.skills ?? [])
+      .filter((skill) => typeof skill.name === "string" && skill.name.length > 0);
+  }
+
+  /** Toggle one uniquely identified user/repo skill through Codex's config API. */
+  async setMobileSkillEnabled(name: string, enabled: boolean, cwd: string): Promise<boolean> {
+    if (!name.trim() || name.length > 160 || typeof enabled !== "boolean") {
+      throw new Error("Неверные параметры навыка Codex");
+    }
+    const matches = (await this.listMobileSkills(cwd)).filter((skill) => skill.name === name);
+    if (matches.length === 0) throw new Error("Навык не найден в текущем проекте Codex");
+    if (matches.length > 1) throw new Error("Навык нельзя однозначно выбрать по названию");
+    const skill = matches[0]!;
+    if (skill.scope !== "user" && skill.scope !== "repo") {
+      throw new Error("Этот навык управляется Codex или администратором, его нельзя менять с телефона");
+    }
+    const response = await this.request("skills/config/write", { name, enabled }) as { effectiveEnabled?: unknown };
+    if (typeof response?.effectiveEnabled !== "boolean") {
+      throw new AcpError("Codex не подтвердил итоговое состояние навыка");
+    }
+    return response.effectiveEnabled;
+  }
+
+  /** Resolve selected skill names to Codex-owned paths for explicit turn input. */
+  private async inputForThread(sessionId: string, content: ContentBlock[]): Promise<CodexUserInput[]> {
+    const input = toCodexInput(content);
+    const names = [...new Set(content
+      .filter((block) => block.type === "skill" && typeof block.name === "string")
+      .map((block) => block.name!.trim())
+      .filter(Boolean))];
+    if (names.length === 0) return input;
+
+    const cwd = this.threadCwd.get(sessionId);
+    if (!cwd) throw new AcpError("Для выбранного навыка не определена папка проекта Codex");
+    const inventory = await this.listMobileSkills(cwd);
+    for (const name of names) {
+      const matches = inventory.filter((skill) => skill.name === name);
+      if (matches.length !== 1 || matches[0]!.enabled === false || !matches[0]!.path) {
+        throw new AcpError("Выбранный навык Codex отключён, недоступен или неоднозначен");
+      }
+      input.push({ type: "skill", name, path: matches[0]!.path! });
+    }
+    return input;
   }
 
   /** Install only a remote plugin that is present and installable in Codex's live catalog. */
@@ -642,7 +693,11 @@ export class AcpClient extends EventEmitter {
         };
       }
 
-      this.request("turn/start", params)
+      void this.inputForThread(sessionId, content)
+        .then((input) => {
+          params.input = input;
+          return this.request("turn/start", params);
+        })
         .then((res) => {
           const turn = (res as CodexTurnResponse)?.turn;
           const p = this.turns.get(sessionId);
@@ -692,7 +747,7 @@ export class AcpClient extends EventEmitter {
     const response = await this.request("turn/steer", {
       threadId: sessionId,
       expectedTurnId,
-      input: toCodexInput(content),
+      input: await this.inputForThread(sessionId, content),
     }) as { turnId?: unknown };
     if (typeof response?.turnId !== "string" || response.turnId !== expectedTurnId) {
       throw new AcpError("Codex не подтвердил, к какой активной задаче применено направление");

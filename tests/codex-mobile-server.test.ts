@@ -55,7 +55,7 @@ async function startFixture() {
       if (job.op === "capabilities") return {
         online: true, ...settings, models: [{ id: settings.model, name: "Fixture Model" }],
         modes: [{ id: settings.mode, name: "Code" }], reasoningLevels: ["low", "medium", "high"],
-        skills: [{ name: "fixture-skill", description: "Safe plain text" }],
+        skills: [{ name: "fixture-skill", description: "Safe plain text", enabled: true, scope: "user", canToggle: true, invokable: true }],
         mcpServers: [{ name: "fixture-mcp", toolCount: 2 }], limits: [], subagents: [], checkedAt: 1,
         plugins: [], pluginCatalogAvailable: false, apps: [], appsAvailable: false,
       };
@@ -220,6 +220,34 @@ test("Codex preference changes require an authorized session and device CSRF tok
     assert.equal(updated.status, 200);
     assert.equal((await updated.json() as { ok: boolean }).ok, true);
     assert.equal(f.calls.filter((call) => call.op === "setReasoning").length, 1);
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("skill changes require the paired device, same Origin, CSRF and an owned session", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const url = f.origin + "/api/operations";
+    const body = (sessionId = allowedSession) => JSON.stringify({
+      op: "setSkillEnabled", args: { sessionId, name: "fixture-skill", enabled: false },
+    });
+    const anonymous = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: body(),
+    });
+    assert.equal(anonymous.status, 401);
+    const noCsrf = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: body(),
+    });
+    assert.equal(noCsrf.status, 403);
+    const foreign = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body(foreignSession),
+    });
+    assert.equal(foreign.status, 403);
+    const updated = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body(),
+    });
+    assert.equal(updated.status, 200);
+    assert.equal(f.calls.filter((call) => call.op === "setSkillEnabled").length, 1);
   } finally { await cleanup(f.server, f.dataDir); }
 });
 

@@ -42,7 +42,7 @@ full Desktop replacement while any row below has open work.
 | Files and edits | Browse the authorized session folder, create text files in existing folders, read UTF-8 text, edit/save up to 512 KB with stale-file detection; safely preview PNG/JPEG/WebP/GIF up to 3 MiB after path, owner and file-signature checks; hides common secret folders/files, skips symlinks and blocks writes while the connected Codex session is busy | Other binary formats, full diff/review UI and Desktop-equivalent file-change navigation |
 | Terminal and Git | Interactive PTY shell in the authorized project folder with an explicit start warning, same-shell reattachment after closing/reopening the panel, bounded scrollback, input, resize, stop and 30-minute idle cleanup; retain the one-shot command mode with a 60-second timeout and bounded text output; Git branch/status, staged/unstaged diff and per-file diff review (including renames); stage/unstage one reported project path, commit staged changes, list local branches, create a branch, switch to an existing local branch, create an isolated worktree plus Codex session from the current commit, and track an already-fetched remote branch locally | Background-process lifecycle outside the interactive shell, remote fetch/push, conflict resolution, inline review comments and richer Desktop-equivalent review actions |
 | Models, modes, goals and context | Choose a model, collaboration mode and reasoning level; view, create, pause, resume and clear Codex goals; request manual context compaction while idle | Verify error/rollback behavior across supported Codex versions; show a final compacted status only when Codex confirms it |
-| Skills, MCP, subagents, plugins and apps | Owner-scoped inventories; lists Codex plugins and connected apps; installs/removes only remote plugins the live Codex catalog marks available, with a phone confirmation; offers only HTTPS app-authorization links and shows their host | Enable/disable existing plugins, manage arbitrary/local marketplaces, finish every provider OAuth flow in-browser, invoke/manage skills and MCP integrations |
+| Skills, MCP, subagents, plugins and apps | Owner-scoped inventories; shows enabled and disabled skills; toggles uniquely named user/repo skills through Codex's `skills/config/write` and uses Codex's effective-state response; system/admin skills are read-only; selects an enabled skill in the composer and sends the native `$skill-name` marker plus Codex's explicit `skill` input item; skill paths are resolved from Codex and never sent to the browser; lists Codex plugins and connected apps; installs/removes only remote plugins the live Codex catalog marks available, with a phone confirmation; offers only HTTPS app-authorization links and shows their host | Enable/disable existing plugins, manage arbitrary/local marketplaces, finish every provider OAuth flow in-browser, invoke/manage MCP integrations |
 | Usage and account | Current account identity and quota windows, when ACP exposes them | Saved-account management, account switching, refresh/error states and parity checks |
 | Tasks and voice | Goals are supported as noted above; plugin and app catalog coverage is described above | Desktop task lifecycle, voice input/output and parity checks |
 | Host and workspace setup | Connects only to the one existing local runtime and its authorized projects; can create an isolated worktree for a coding task | Host selection, environment setup and workspace-specific permissions |
@@ -56,7 +56,7 @@ they have both server-side authorization tests and browser coverage.
 
 - Root TypeScript check: passed.
 - Mobile app TypeScript check and production build: passed.
-- Current full root test suite: 197/197 passed, including plugin/app redaction, live ACP install/uninstall checks, paired-session/CSRF checks, isolated worktree attach/rollback, owner-filtered native session search, bounded one-shot and interactive terminal checks, local tracking of an already-fetched remote branch and bounded/signature-checked project image reads.
+- Current full root test suite: 206/206 passed, including plugin/app redaction, live ACP install/uninstall checks, paired-session/CSRF checks, isolated worktree attach/rollback, owner-filtered native session search, bounded one-shot and interactive terminal checks, local tracking of an already-fetched remote branch, bounded/signature-checked project image reads, Codex skill enable/disable authorization and explicit skill input resolution.
 - Focused branch-list/switch and API authorization checks: 2/2 passed.
 - Per-file Git diff filtering validates paths inside the authorized project and passes both names for a selected rename.
 - Mobile app `npm audit`: 0 vulnerabilities.
@@ -106,6 +106,24 @@ they have both server-side authorization tests and browser coverage.
   `preview.png`, verify the image element and safe-raster notice appear without
   an error, then return to the file list. The HTTP test also verifies owner
   authorization and rejects active SVG content from a faulty agent response.
+- Browser skill at 574×637: enable and disable a user-scope fixture skill,
+  confirm the warning before each write, verify its status and next action
+  update, and confirm an admin-scope skill has no toggle. The fake Codex fixture
+  handled the changes; no real skill files or Codex settings were changed.
+- Browser skill at 574×637: open the skill picker, verify disabled skills are
+  omitted, select the enabled fixture skill, confirm its `$fixture-review`
+  marker appears in the composer, submit a task, refresh and verify the same
+  marker in the recorded user message; then direct the active fake task with the
+  same selected skill and verify the direction appears in history. The fake
+  runtime accepted these requests; no real Codex turn was started. The skill
+  description's `<script>` text is escaped in the rendered HTML.
+- Mobile skill updates are tested against Codex's native `skills/config/write`
+  request. The app-server protocol exposes that method and returns
+  `effectiveEnabled`; see the [request declaration](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/common.rs)
+  and [skill config types](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/plugin.rs).
+- Explicit skill selection uses Codex's native `skill` input item; its `name`
+  and `SKILL.md` path stay in the local server-to-Codex request. See the
+  [Codex protocol input types](https://github.com/openai/codex/blob/main/codex-rs/docs/protocol_v1.md#userinput-items).
 - CLI pairing approval is now a separate OS-local IPC channel. The mobile HTTP
   server does not expose an approval endpoint, so a reverse proxy cannot reach
   that operation. Automated tests exercise successful approval, a wrong local

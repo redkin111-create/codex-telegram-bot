@@ -327,6 +327,49 @@ test("mobile plugin and app catalogs redact host data and plugin changes stay ow
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile skill controls expose disabled skills without local paths and write only one authorized skill",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-skills-"));
+  const sessionId="21212121-2121-4212-8212-212121212121";
+  const thread={id:sessionId,name:"Skill session",cwd:dir,source:"cli",createdAt:1,updatedAt:2,recencyAt:2};
+  const skillRows=[
+    {name:"review",description:"Review project changes",path:join(dir,".codex","skills","review","SKILL.md"),scope:"user" as const,enabled:true},
+    {name:"disabled-helper",description:"Disabled helper",path:join(dir,".codex","skills","disabled","SKILL.md"),scope:"repo" as const,enabled:false},
+    {name:"managed",description:"Managed skill",path:"C:\\private\\managed\\SKILL.md",scope:"admin" as const,enabled:true},
+  ];
+  const skillCalls:Array<{op:string;name?:string;enabled?:boolean;cwd?:string}>=[];
+  const runtime={sessionId,isBusy:false};
+  const acp=Object.assign(new EventEmitter(),{
+    isConnected:true,
+    listProjects:async()=>[{id:"project",name:"skill-project",roots:[dir]}],
+    listAllThreads:async()=>[thread],
+    listThreads:async()=>[thread],
+    refreshInventories:async()=>undefined,
+    accountState:async()=>({}),
+    mobileIntegrationInventory:async()=>({pluginCatalog:{marketplaces:[]},installedPlugins:{marketplaces:[]},apps:{data:[]},installedApps:{apps:[]}}),
+    listMobileSkills:async(cwd:string)=>{skillCalls.push({op:"list",cwd});return skillRows;},
+    async setMobileSkillEnabled(name:string,enabled:boolean,cwd:string){skillCalls.push({op:"write",name,enabled,cwd});return enabled;},
+    currentSubagents:()=>[],availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],currentModelId:"default",
+  }) as unknown as AcpClient;
+  const registry={runtimeForSession:()=>runtime,ownerChatForSession:()=>101} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    const capabilities=await agent.executeMobile({op:"capabilities",userId:101,args:{sessionId}}) as {
+      skills:Array<{name:string;enabled:boolean;scope?:string;canToggle:boolean}>;
+    };
+    assert.deepEqual(capabilities.skills.map(({name,enabled,scope,canToggle})=>({name,enabled,scope,canToggle})),[
+      {name:"review",enabled:true,scope:"user",canToggle:true},
+      {name:"disabled-helper",enabled:false,scope:"repo",canToggle:true},
+      {name:"managed",enabled:true,scope:"admin",canToggle:false},
+    ]);
+    assert.doesNotMatch(JSON.stringify(capabilities),/C:\\\\private|SKILL\\.md/);
+    assert.deepEqual(skillCalls[0],{op:"list",cwd:dir});
+    assert.deepEqual(await agent.executeMobile({op:"setSkillEnabled",userId:101,args:{sessionId,name:"review",enabled:false}}),{name:"review",enabled:false});
+    assert.deepEqual(skillCalls[1],{op:"write",name:"review",enabled:false,cwd:dir});
+    await assert.rejects(agent.executeMobile({op:"setSkillEnabled",userId:202,args:{sessionId,name:"review",enabled:false}}),/не разрешён/i);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile session archive, restore and rename reuse the owner's Codex catalogue",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-sessions-"));
   const activeId="30303030-3030-4030-8030-303030303030";

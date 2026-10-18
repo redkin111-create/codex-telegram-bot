@@ -34,6 +34,9 @@ export function buildContentBlocks(input: PromptInput, opts: ContentOptions = {}
   }
 
   blocks.push({ type: "text", text });
+  for (const name of input.skillNames ?? []) {
+    if (name) blocks.push({ type: "skill", name });
+  }
   return blocks;
 }
 
@@ -42,12 +45,14 @@ export function mergeInputs(inputs: PromptInput[]): PromptInput {
   const quotes = inputs
     .map((i) => i.quotedText?.trim())
     .filter((q): q is string => !!q);
+  const skillNames = [...new Set(inputs.flatMap((i) => i.skillNames ?? []))];
   return {
     text: inputs
       .map((i) => i.text)
       .filter((t) => t.trim().length > 0)
       .join("\n\n"),
     images: inputs.flatMap((i) => i.images),
+    ...(skillNames.length ? { skillNames } : {}),
     replyTo: inputs.find((i) => i.replyTo !== undefined)?.replyTo,
     quotedText: quotes.length > 0 ? [...new Set(quotes)].join("\n\n---\n\n") : undefined,
   };

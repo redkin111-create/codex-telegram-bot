@@ -51,6 +51,8 @@ export interface PromptImage {
 export interface PromptInput {
   text: string;
   images: PromptImage[];
+  /** Safe skill names explicitly selected by the user; local paths are resolved by ACP. */
+  skillNames?: string[];
   /** Safe labels for file attachments; paths remain inside the prompt only. */
   attachmentNames?: string[];
   /** Attachment-specific prompt context kept separate from the editable caption. */

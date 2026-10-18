@@ -10,6 +10,7 @@ const effortLabel: Record<string, string> = {
 
 type PluginAction = { kind: "install" | "uninstall"; pluginId: string; };
 type PluginInstallNotice = { name: string; installUrl?: string }[];
+type SkillAction = { name: string; enabled: boolean };
 
 function safeLinkHost(value?: string): string | undefined {
   if (!value) return undefined;
@@ -33,6 +34,7 @@ export function SettingsPanel({ sessionId, connected, onClose, onOperation }: {
   const [goalBudget, setGoalBudget] = useState("");
   const [pluginAction, setPluginAction] = useState<PluginAction>();
   const [pluginNotice, setPluginNotice] = useState<PluginInstallNotice>();
+  const [skillAction, setSkillAction] = useState<SkillAction>();
 
   async function reload() {
     setLoading(true);
@@ -120,9 +122,27 @@ export function SettingsPanel({ sessionId, connected, onClose, onOperation }: {
     } finally { setSaving(false); }
   }
 
+  async function confirmSkillAction() {
+    const action = skillAction;
+    if (!action) return;
+    setSaving(true);
+    setError("");
+    try {
+      const result = await onOperation("setSkillEnabled", { sessionId, name: action.name, enabled: action.enabled }) as { enabled?: unknown };
+      await reload();
+      if (typeof result?.enabled === "boolean" && result.enabled !== action.enabled) {
+        setError(result.enabled ? "Codex оставил этот навык включённым из-за своей политики." : "Codex не разрешил включить этот навык.");
+      }
+      setSkillAction(undefined);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Не удалось изменить навык Codex");
+    } finally { setSaving(false); }
+  }
+
   const inputClass = "min-h-11 w-full appearance-none rounded-xl border border-border bg-[#111613] px-3 pr-9 text-sm text-text outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:opacity-50";
   const usable = Boolean(capabilities?.online && connected && !saving);
   const selectedPlugin = capabilities?.plugins.find((entry) => entry.id === pluginAction?.pluginId);
+  const selectedSkill = capabilities?.skills.find((entry) => entry.name === skillAction?.name);
 
   return <div className="fixed inset-0 z-50 flex justify-end bg-black/65" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section role="dialog" aria-modal="true" aria-labelledby="mobile-settings-title" className="safe-area-top safe-area-bottom flex h-full max-h-[100svh] w-full max-w-xl flex-col border-l border-border bg-background shadow-soft">
@@ -191,7 +211,15 @@ export function SettingsPanel({ sessionId, connected, onClose, onOperation }: {
             </li>)}</ul> : <p className="text-xs text-muted">Приложения не найдены.</p>}
             <p className="text-[11px] leading-relaxed text-muted">Состояние читается у локального Codex. Перед переходом проверьте адрес сервиса и подключайте только знакомые вам службы.</p>
           </Card>
-          <Card className="space-y-3 p-4"><h3 className="flex items-center gap-2 text-sm font-semibold"><Bot size={16} className="text-accent" /> Навыки и агенты</h3>{capabilities.skills.length ? <ul className="space-y-3">{capabilities.skills.map((skill) => <li key={skill.name}><p className="text-sm font-medium">{skill.name}</p>{skill.description && <p className="mt-1 text-xs leading-relaxed text-muted">{skill.description}</p>}</li>)}</ul> : <p className="text-xs text-muted">Навыки не найдены.</p>}{capabilities.subagents.length > 0 && <div className="border-t border-border pt-3"><p className="mb-2 text-xs font-semibold text-muted">Подагенты текущего владельца</p><ul className="space-y-2">{capabilities.subagents.map((agent) => <li key={agent.id} className="flex items-center justify-between gap-3 text-sm"><span className="truncate">{agent.name}</span><Badge>{agent.status}</Badge></li>)}</ul></div>}</Card>
+          <Card className="space-y-3 p-4">
+            <h3 className="flex items-center gap-2 text-sm font-semibold"><Bot size={16} className="text-accent" /> Навыки и агенты</h3>
+            {capabilities.skills.length ? <ul className="space-y-3">{capabilities.skills.map((skill, index) => <li key={`${skill.name}:${skill.scope ?? "unknown"}:${index}`} className="rounded-xl border border-border bg-[#111613] p-3">
+              <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="break-words text-sm font-medium">{skill.name}</p>{skill.description && <p className="mt-1 text-xs leading-relaxed text-muted">{skill.description}</p>}</div><Badge>{skill.enabled ? "Включён" : "Отключён"}</Badge></div>
+              <div className="mt-3 flex items-center justify-between gap-2"><p className="text-[11px] text-muted">Область: {skill.scope ?? "неизвестна"}</p>{skill.canToggle && <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label={`${skill.enabled ? "Отключить" : "Включить"} навык ${skill.name}`} disabled={!usable} onClick={() => setSkillAction({ name: skill.name, enabled: !skill.enabled })}>{skill.enabled ? "Отключить" : "Включить"}</Button>}</div>
+            </li>)}</ul> : <p className="text-xs text-muted">Навыки не найдены.</p>}
+            <p className="text-[11px] leading-relaxed text-muted">Изменение сохраняется в настройках Codex на этом компьютере и может повлиять на другие сеансы. Администраторские и встроенные навыки здесь не меняются.</p>
+            {capabilities.subagents.length > 0 && <div className="border-t border-border pt-3"><p className="mb-2 text-xs font-semibold text-muted">Подагенты текущего владельца</p><ul className="space-y-2">{capabilities.subagents.map((agent) => <li key={agent.id} className="flex items-center justify-between gap-3 text-sm"><span className="truncate">{agent.name}</span><Badge>{agent.status}</Badge></li>)}</ul></div>}
+          </Card>
           <p className="flex items-start gap-2 text-[11px] leading-relaxed text-muted"><CircleHelp size={14} className="mt-0.5 shrink-0" />Список строится из текущего локального runtime. Здесь отображаются только сведения для выбранного владельца, без локальных путей и секретов MCP.</p>
           <p className="text-center text-[10px] text-muted">Обновлено: {new Date(capabilities.checkedAt).toLocaleTimeString()}</p>
         </>}
@@ -203,6 +231,14 @@ export function SettingsPanel({ sessionId, connected, onClose, onOperation }: {
             {selectedPlugin.capabilities.length > 0 && <p className="mt-2 text-xs text-muted">Заявленные возможности: {selectedPlugin.capabilities.join(", ")}</p>}
           </div>
           <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={saving} onClick={() => setPluginAction(undefined)}>Отмена</Button><Button type="button" className="flex-1" disabled={saving || !usable} onClick={() => void confirmPluginAction()}>{saving ? "Выполняю…" : pluginAction.kind === "install" ? "Установить" : "Удалить"}</Button></div>
+        </section>
+      </div>}
+      {skillAction && selectedSkill && <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
+        <section role="alertdialog" aria-modal="true" aria-labelledby="skill-confirm-title" className="safe-area-bottom w-full max-w-md space-y-4 rounded-2xl border border-border bg-elevated p-5 shadow-soft">
+          <div><h3 id="skill-confirm-title" className="text-base font-semibold">{skillAction.enabled ? "Включить навык?" : "Отключить навык?"}</h3><p className="mt-2 break-words text-sm leading-relaxed text-muted"><span className="font-medium text-text">{selectedSkill.name}</span></p>
+            <p className="mt-2 text-xs leading-relaxed text-muted">Настройка сохранится в Codex на этом компьютере и может повлиять на другие сеансы. Файл навыка не изменится.</p>
+          </div>
+          <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={saving} onClick={() => setSkillAction(undefined)}>Отмена</Button><Button type="button" className="flex-1" disabled={saving || !usable} onClick={() => void confirmSkillAction()}>{saving ? "Сохраняю…" : skillAction.enabled ? "Включить" : "Отключить"}</Button></div>
         </section>
       </div>}
     </section>

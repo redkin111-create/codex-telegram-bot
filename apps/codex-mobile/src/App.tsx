@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { FolderOpen, GitBranch, LoaderCircle, Menu, RefreshCw, Shield, ShieldAlert, SlidersHorizontal, Terminal } from "lucide-react";
 import {
   asLiveEvent, logout, MobileApiError, openEventStream, parseSseBlock, readActivity, readApprovals,
-  readHistory, readSession, readSnapshot, resolveApproval, runOperation,
+  readCapabilities, readHistory, readSession, readSnapshot, resolveApproval, runOperation,
 } from "./api.js";
 import { ApprovalPanel } from "./components/approval-panel.js";
 import { Conversation, type FollowUpMode, type PromptImage } from "./components/conversation.js";
@@ -91,6 +91,12 @@ export default function App() {
     }
     setError(cause instanceof Error ? cause.message : "Не удалось связаться с Codex");
   }, [expireSession]);
+
+  const loadMobileSkills = useCallback(async () => {
+    if (!selectedId) return [];
+    try { return (await readCapabilities(selectedId)).skills; }
+    catch (cause) { handleApiError(cause); throw cause; }
+  }, [selectedId, handleApiError]);
 
   const refreshSnapshot = useCallback(async (showSpinner = false) => {
     if (showSpinner) setRefreshing(true);
@@ -477,6 +483,7 @@ export default function App() {
         error={error} includeTools={includeTools} onToggleTools={() => setIncludeTools((value) => !value)}
         onConnect={() => void connectSession()} onCancel={() => void cancel()} onFork={() => void forkSession()} forking={forking}
         onCompact={compactSession} compacting={compacting} onSend={send}
+        onLoadSkills={loadMobileSkills}
         onQueueRemove={(id) => void removeQueued(id)} onQueueResume={() => void resumeQueue()}
         onQueueOpen={readQueue} />
     </div>

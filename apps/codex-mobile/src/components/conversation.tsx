@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { GitFork, ImagePlus, LoaderCircle, Minimize2, Play, Send, Square, Trash2, Wrench } from "lucide-react";
+import { GitFork, ImagePlus, LoaderCircle, Minimize2, Play, Send, Sparkles, Square, Trash2, Wrench } from "lucide-react";
 import "../../../../apps/mini-app/public/photo-input.js";
-import type { HistoryEntry, MobileActivity, MobileLiveEvent, MobileQueue, MobileSession } from "../types.js";
+import type { HistoryEntry, MobileActivity, MobileCapabilities, MobileLiveEvent, MobileQueue, MobileSession } from "../types.js";
 import { imageUrl } from "../api.js";
 import { SafeMarkdown } from "../markdown.js";
+import { isMobileSkillNameSafe, prependMobileSkill } from "../skill-prompt.js";
 import { Badge, Button, Textarea } from "./ui/primitives.js";
 
 export interface PromptImage { name: string; mimeType: string; data: string; preview: string; }
@@ -12,7 +13,7 @@ export type FollowUpMode = "queue" | "steer";
 
 export function Conversation({
   session, history, activity, events, queue, connected, connecting, loading, streamConnected,
-  error, includeTools, onToggleTools, onConnect, onCancel, onFork, forking, onCompact, compacting, onSend, onQueueRemove, onQueueResume, onQueueOpen,
+  error, includeTools, onToggleTools, onConnect, onCancel, onFork, forking, onCompact, compacting, onSend, onQueueRemove, onQueueResume, onQueueOpen, onLoadSkills,
 }: {
   session?: MobileSession;
   history: HistoryEntry[];
@@ -36,6 +37,7 @@ export function Conversation({
   onQueueRemove: (itemId: string) => void;
   onQueueResume: () => void;
   onQueueOpen: () => void;
+  onLoadSkills: () => Promise<MobileCapabilities["skills"]>;
 }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<PromptImage[]>([]);
@@ -46,6 +48,34 @@ export function Conversation({
   const [compactNotice, setCompactNotice] = useState("");
   const [followUpMode, setFollowUpMode] = useState<FollowUpMode>("queue");
   const [openImage, setOpenImage] = useState<{ path: string; name: string }>();
+  const [skillPickerOpen, setSkillPickerOpen] = useState(false);
+  const [skillPickerLoading, setSkillPickerLoading] = useState(false);
+  const [skillPickerError, setSkillPickerError] = useState("");
+  const [availableSkills, setAvailableSkills] = useState<MobileCapabilities["skills"]>([]);
+
+  useEffect(() => {
+    setSkillPickerOpen(false);
+    setAvailableSkills([]);
+    setSkillPickerError("");
+  }, [session?.id]);
+
+  async function toggleSkillPicker() {
+    if (skillPickerOpen) { setSkillPickerOpen(false); return; }
+    setSkillPickerOpen(true);
+    setSkillPickerLoading(true);
+    setSkillPickerError("");
+    try { setAvailableSkills(await onLoadSkills()); }
+    catch (cause) { setSkillPickerError(cause instanceof Error ? cause.message : "Не удалось загрузить навыки Codex"); }
+    finally { setSkillPickerLoading(false); }
+  }
+
+  function chooseSkill(name: string) {
+    try {
+      setText((current) => prependMobileSkill(current, name));
+      setSkillPickerOpen(false);
+      setSkillPickerError("");
+    } catch (cause) { setSkillPickerError(cause instanceof Error ? cause.message : "Не удалось выбрать навык"); }
+  }
 
   async function attach(files: FileList | null) {
     if (!files?.length) return;
@@ -142,12 +172,21 @@ export function Conversation({
       </div>
     </div>}
     <form className="safe-area-bottom border-t border-border bg-[#141815] px-3 py-3 sm:px-5 md:px-8" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+      {skillPickerOpen && <section className="mx-auto mb-2 max-h-48 max-w-4xl overflow-y-auto rounded-xl border border-border bg-panel p-3" aria-label="Выбрать навык Codex">
+        <div className="mb-2 flex items-center justify-between gap-2"><h2 className="text-xs font-semibold">Включённые навыки</h2><button type="button" className="min-h-8 px-2 text-xs text-muted" onClick={() => setSkillPickerOpen(false)}>Закрыть</button></div>
+        {skillPickerLoading ? <p className="py-2 text-xs text-muted">Загружаю навыки…</p>
+          : skillPickerError ? <p role="alert" className="py-2 text-xs text-[#ffc3bd]">{skillPickerError}</p>
+            : availableSkills.filter((skill) => skill.enabled && skill.invokable && isMobileSkillNameSafe(skill.name)).length ? <ul className="space-y-1">{availableSkills.filter((skill) => skill.enabled && skill.invokable && isMobileSkillNameSafe(skill.name)).map((skill) => <li key={skill.name}>
+              <button type="button" className="w-full rounded-lg px-2 py-2 text-left hover:bg-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" aria-label={`Использовать навык ${skill.name}`} onClick={() => chooseSkill(skill.name)}><span className="block break-words text-xs font-medium">${skill.name}</span>{skill.description && <span className="mt-0.5 block text-[11px] leading-relaxed text-muted">{skill.description}</span>}</button>
+            </li>)}</ul> : <p className="py-2 text-xs text-muted">Нет включённых навыков, доступных для вызова.</p>}
+      </section>}
       {images.length > 0 && <div className="mx-auto mb-2 flex max-w-4xl gap-2 overflow-x-auto">{images.map((image, index) => <div key={`${image.name}-${index}`} className="relative h-16 w-20 shrink-0 overflow-hidden rounded-lg border border-border"><img src={image.preview} alt={image.name} className="h-full w-full object-cover" /><button type="button" aria-label={`Убрать ${image.name}`} className="absolute right-1 top-1 rounded-full bg-black/75 px-1.5 text-xs" onClick={() => setImages((current) => current.filter((_, i) => i !== index))}>×</button></div>)}</div>}
       <div className="mx-auto flex max-w-4xl items-end gap-2">
         <label className="flex min-h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-xl border border-border bg-[#1b211c] text-muted hover:text-accent" aria-label="Прикрепить фото">
           <ImagePlus size={19} />
           <input type="file" className="sr-only" accept="image/jpeg,image/png,image/webp" multiple disabled={preparing || images.length >= 3} onChange={(event) => { void attach(event.target.files); event.target.value = ""; }} />
         </label>
+        <Button type="button" variant="outline" className="min-h-11 w-11 shrink-0 px-0" aria-label="Выбрать навык Codex" disabled={!connected} onClick={() => void toggleSkillPicker()}><Sparkles size={18} /></Button>
         <div className="min-w-0 flex-1"><Textarea value={text} onChange={(event) => setText(event.target.value)} onKeyDown={submitOnEnter} placeholder={!connected ? "Подключите сеанс, чтобы отправить задачу" : turnBusy && followUpMode === "steer" ? "Направление для текущей задачи…" : turnBusy ? "Следующая задача в очереди…" : "Задача для Codex…"} disabled={!connected} rows={2} className="min-h-[48px] max-h-40 resize-none py-3" aria-label="Сообщение Codex" /></div>
         <Button type="submit" className="min-h-12 w-12 shrink-0 px-0" disabled={!connected || (!text.trim() && images.length === 0) || preparing} aria-label={followUpMode === "steer" && turnBusy ? "Направить текущую задачу" : "Отправить задачу"}>{preparing ? <LoaderCircle className="animate-spin" size={18} /> : <Send size={18} />}</Button>
       </div>

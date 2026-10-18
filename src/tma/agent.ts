@@ -34,6 +34,10 @@ import { normalizeMobileIntegrations, normalizePluginInstallResult } from "../mo
 
 const log=createLogger("tma:agent");
 const MAX_IMG=3*1024*1024;
+function selectedMobileSkillName(text:string):string|undefined{
+  const match=/^\$([\p{L}\p{N}][\p{L}\p{N}_.:-]{0,159})(?=$|[\t \r\n])/u.exec(text.trim());
+  return match?.[1];
+}
 function statSyncSafe(path:string):{size:number;mtimeMs:number}{
   try{
     const s=statSync(path);
@@ -64,7 +68,7 @@ interface MobilePtyRecord {
   expiry?:NodeJS.Timeout;dataSubscription?:{dispose():void};exitSubscription?:{dispose():void};
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "searchThreads" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch";
+export type MobileLocalOperation = "capabilities" | "searchThreads" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 export class MiniAppAgent {
   private readonly abort=new AbortController();
@@ -532,6 +536,8 @@ export class MiniAppAgent {
             if(!thread.cwd)throw new Error("Неизвестная рабочая папка сеанса");
             const input=textPrompt(text||"Проанализируй прикреплённые изображения.");
             input.images=images;
+            const skillName=selectedMobileSkillName(text);
+            if(skillName)input.skillNames=[skillName];
             dispatched=true;
             await acp.steer(sessionId,buildContentBlocks(input));
             const result={steered:true};
@@ -558,6 +564,11 @@ export class MiniAppAgent {
         const rawIntegrations=acp.isConnected&&typeof acp.mobileIntegrationInventory==="function"
           ? await acp.mobileIntegrationInventory(integrationThread?.cwd,sessionId||undefined).catch(()=>undefined)
           : undefined;
+        const skills=integrationThread?.cwd&&acp.isConnected&&typeof acp.listMobileSkills==="function"
+          ? await acp.listMobileSkills(integrationThread.cwd).catch(()=>acp.availableSkills)
+          : acp.availableSkills;
+        const skillNameCounts=new Map<string,number>();
+        for(const skill of skills)skillNameCounts.set(skill.name,(skillNameCounts.get(skill.name)??0)+1);
         const integrations=normalizeMobileIntegrations(rawIntegrations?.pluginCatalog,rawIntegrations?.installedPlugins,
           rawIntegrations?.apps,rawIntegrations?.installedApps);
         let goal:Awaited<ReturnType<AcpClient["getThreadGoal"]>>;
@@ -587,7 +598,9 @@ export class MiniAppAgent {
           models:acp.availableModels.slice(0,100).map(m=>({id:m.modelId.slice(0,160),name:m.name.slice(0,160),description:m.description?.slice(0,400)})),
           modes:acp.availableModes.slice(0,60).map(m=>({id:m.id.slice(0,100),name:m.name.slice(0,120),description:m.description?.slice(0,300)})),
           reasoningLevels:REASONING_LEVELS,
-          skills:acp.availableSkills.filter(s=>s.enabled!==false).slice(0,100).map(s=>({name:s.name.slice(0,160),description:s.description?.slice(0,500)})),
+          skills:skills.slice(0,100).map(s=>({name:s.name.slice(0,160),description:s.description?.slice(0,500),
+            enabled:s.enabled!==false,scope:s.scope,canToggle:(s.scope==="user"||s.scope==="repo")&&skillNameCounts.get(s.name)===1,
+            invokable:s.enabled!==false&&skillNameCounts.get(s.name)===1})),
           mcpServers:acp.availableMcpServers.slice(0,60).map(s=>({name:s.name.slice(0,120),toolCount:Object.keys(s.tools??{}).length})),
           plugins:integrations.plugins,pluginCatalogAvailable:integrations.pluginCatalogAvailable,
           apps:integrations.apps,appsAvailable:integrations.appsAvailable,
@@ -616,6 +629,20 @@ export class MiniAppAgent {
         if(!pluginId)throw new Error("Плагин не выбран из списка Codex");
         await acp.uninstallMobilePlugin(pluginId);
         return {uninstalled:true};
+      }
+      case "setSkillEnabled":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        if(await this.isArchivedThread(sessionId,chatId))throw new Error("Нельзя менять навыки из архивного сеанса");
+        const thread=await this.thread(sessionId,chatId);
+        if(!thread.cwd)throw new Error("Для сеанса не определена папка проекта");
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        if(typeof args.enabled!=="boolean")throw new Error("Укажите новое состояние навыка");
+        const name=argumentString(args,"name",160).trim();
+        if(!name)throw new Error("Выберите навык из списка Codex");
+        if(typeof acp.setMobileSkillEnabled!=="function")throw new Error("Эта версия Codex не поддерживает изменение навыков");
+        this.requireIdleMobileRuntime(sessionId,chatId);
+        const enabled=await acp.setMobileSkillEnabled(name,args.enabled,thread.cwd);
+        return {name,enabled};
       }
       case "createWorktree":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
@@ -1262,6 +1289,8 @@ export class MiniAppAgent {
             this.selected.set(chatId,id);
             const input=textPrompt(message||"Проанализируй прикреплённые изображения.");
             input.images=images;
+            const skillName=selectedMobileSkillName(message);
+            if(skillName)input.skillNames=[skillName];
             // Once this call starts, a crash or ambiguous error may mean Codex
             // already accepted the task; do not automatically resend.
             dispatched=true;
