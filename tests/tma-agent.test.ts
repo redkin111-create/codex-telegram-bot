@@ -1926,6 +1926,76 @@ test("mobile Git fetches a configured remote and pushes only the current branch 
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile Git pulls only a clean tracked branch with a fast-forward for its owner",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-git-pull-"));
+  const project=join(dir,"repo"),source=join(dir,"source"),remote=join(dir,"origin.git");
+  for(const path of [project,source,remote])mkdirSync(path,{recursive:true});
+  const git=(cwd:string,...args:string[])=>execFileSync("git",["--no-pager","-C",cwd,...args],{stdio:"ignore",windowsHide:true});
+  git(remote,"init","--bare","-q");
+  git(project,"init","-b","main","-q");
+  git(project,"config","user.name","Mobile Fixture");
+  git(project,"config","user.email","mobile-fixture@example.invalid");
+  writeFileSync(join(project,"README.md"),"base\n");
+  git(project,"add","README.md");
+  git(project,"commit","-m","base");
+  git(project,"remote","add","origin",remote);
+  git(project,"push","--set-upstream","origin","main");
+  git(remote,"symbolic-ref","HEAD","refs/heads/main");
+  execFileSync("git",["clone",remote,source],{stdio:"ignore",windowsHide:true});
+  git(source,"config","user.name","Mobile Fixture");
+  git(source,"config","user.email","mobile-fixture@example.invalid");
+  writeFileSync(join(source,"remote.txt"),"remote update\n");
+  git(source,"add","remote.txt");
+  git(source,"commit","-m","remote update");
+  git(source,"push","origin","main");
+
+  const sessionId="34343434-3434-4434-8434-343434343434";
+  const foreignId="35353535-3535-4535-8535-353535353535";
+  const threads=[
+    {id:sessionId,name:"Git pull fixture",cwd:project,source:"cli",recencyAt:2},
+    {id:foreignId,name:"Foreign fixture",cwd:project,source:"cli",recencyAt:1},
+  ];
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"repo",roots:[project]}],listThreads:async()=>threads,availableModels:[],
+  }) as unknown as AcpClient;
+  const runtime={sessionId,isBusy:false};
+  const registry={controller:()=>({list:()=>[]}),get:()=>runtime,runtimeForSession:(_userId:number,id:string)=>id===sessionId?runtime:undefined} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
+  const sessions=new TelegramSessionRegistry(dir);
+  sessions.record(foreignId,202,project,"private");
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
+    const before=await agent.executeMobile({op:"gitStatus",userId:101,args:{sessionId}}) as {upstream?:string;clean:boolean};
+    assert.equal(before.upstream,"origin/main");
+    assert.equal(before.clean,true);
+    runtime.isBusy=true;
+    await assert.rejects(agent.executeMobile({op:"gitPull" as never,userId:101,args:{sessionId}}),/занят|Дождитесь/i);
+    runtime.isBusy=false;
+    const pulled=await agent.executeMobile({op:"gitPull" as never,userId:101,args:{sessionId}}) as {branch:string;upstream:string;updated:boolean};
+    assert.deepEqual(pulled,{branch:"main",upstream:"origin/main",updated:true});
+    assert.equal(readFileSync(join(project,"remote.txt"),"utf8").replace(/\r\n/g,"\n"),"remote update\n");
+    await assert.rejects(agent.executeMobile({op:"gitPull" as never,userId:101,args:{sessionId:foreignId}}),/Доступ к сеансу запрещён/);
+    writeFileSync(join(project,"local-change.txt"),"uncommitted\n");
+    await assert.rejects(agent.executeMobile({op:"gitPull" as never,userId:101,args:{sessionId}}),/чист.*рабоч|незакоммичен/i);
+    assert.equal(existsSync(join(project,"local-change.txt")),true);
+    rmSync(join(project,"local-change.txt"));
+    writeFileSync(join(project,"local-only.txt"),"local commit\n");
+    git(project,"add","local-only.txt");
+    git(project,"commit","-m","local only");
+    writeFileSync(join(source,"remote-after-divergence.txt"),"remote commit\n");
+    git(source,"add","remote-after-divergence.txt");
+    git(source,"commit","-m","remote after divergence");
+    git(source,"push","origin","main");
+    const localHead=execFileSync("git",["-C",project,"rev-parse","HEAD"],{encoding:"utf8",windowsHide:true}).trim();
+    await assert.rejects(agent.executeMobile({op:"gitPull" as never,userId:101,args:{sessionId}}),/fast.forward|Fast.forward|fast-forward|fast forward/i);
+    assert.equal(execFileSync("git",["-C",project,"rev-parse","HEAD"],{encoding:"utf8",windowsHide:true}).trim(),localHead);
+    assert.equal(existsSync(join(project,"remote-after-divergence.txt")),false);
+    git(project,"switch","-c","without-upstream");
+    await assert.rejects(agent.executeMobile({op:"gitPull" as never,userId:101,args:{sessionId}}),/отслеживаемой ветки/i);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile worktree creation builds an isolated Git checkout and starts a thread in the shared ACP runtime",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-worktree-"));
   const project=join(dir,"repo");

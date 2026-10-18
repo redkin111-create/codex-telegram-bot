@@ -26,6 +26,7 @@ const screenshotPath = "C:\\fixture\\codex-mobile\\screenshots\\sample.png";
 const fixturePinnedSection = { id: "01984de2-8f74-7c91-a3b2-5c5e937cf318", name: "Закреплённые", builtIn: true };
 const fixtureSectionsAvailable = process.env.CODEX_MOBILE_FIXTURE_SECTIONS_UNAVAILABLE !== "1";
 const fixtureCompactionUnconfirmed = process.env.CODEX_MOBILE_FIXTURE_COMPACTION_UNCONFIRMED === "1";
+const fixtureGitPullEnabled = process.env.CODEX_MOBILE_FIXTURE_GIT_PULL === "1";
 const fixtureSections = [{ id: "88888888-8888-4888-8888-888888888888", name: "В работе" }];
 type FixtureSession = { id: string; title: string; cwd: string; updatedAt: number; source: string; section?: { id: string; name: string; builtIn?: boolean }; ephemeral?: boolean; parentThreadId?: string };
 
@@ -99,7 +100,8 @@ const fixtureGoals = new Map<string, { threadId: string; objective: string; stat
 const fixtureStaged = new Set<string>();
 let fixtureConflictResolved = false;
 let fixtureBinaryConflictResolved = false;
-let fixtureBranch = "feat/codex-mobile-fixture";
+let fixtureBranch = fixtureGitPullEnabled ? "mobile/feature" : "feat/codex-mobile-fixture";
+let fixtureGitPullCount = 0;
 let fixtureNotesCommitted = false;
 let fixtureRenameStaged = true;
 let fixturePluginInstalled = false;
@@ -832,9 +834,10 @@ const agent = {
       return { path, stage, size: 4, sha256: "b".repeat(64) };
     }
     if (job.op === "gitStatus") return {
-      project: "codex-mobile", branch: fixtureBranch, branches: [...new Set([fixtureBranch, "main", "release/candidate"])], remoteBranches: ["origin/mobile/feature"],
-      remotes: [{ name: "origin", fetchTargets: ["github.com"], pushTargets: ["github.com"] }], clean: false,
-      changes: [
+      project: "codex-mobile", branch: fixtureBranch, ...(fixtureGitPullEnabled ? { upstream: "origin/mobile/feature" } : {}),
+      branches: [...new Set([fixtureBranch, "main", "release/candidate"])], remoteBranches: ["origin/mobile/feature"],
+      remotes: [{ name: "origin", fetchTargets: ["github.com"], pushTargets: ["github.com"] }], clean: fixtureGitPullEnabled,
+      changes: fixtureGitPullEnabled ? [] : [
         ...(!fixtureStaged.has("src/main.ts") ? [{ code: "M", indexStatus: " ", worktreeStatus: "M", path: "src/main.ts" }] : []),
         ...(fixtureConflictResolved ? [{ code: "M", indexStatus: "M", worktreeStatus: " ", path: "src/conflict.ts" }] : [{ code: "UU", indexStatus: "U", worktreeStatus: "U", path: "src/conflict.ts" }]),
         ...(fixtureBinaryConflictResolved ? [{ code: "M", indexStatus: "M", worktreeStatus: " ", path: "assets/icon.bin" }] : [{ code: "UU", indexStatus: "U", worktreeStatus: "U", path: "assets/icon.bin" }]),
@@ -902,6 +905,11 @@ const agent = {
     if (job.op === "gitFetch") {
       if (args.remoteName !== "origin") throw new Error("Удалённый репозиторий не найден");
       return { remoteName: "origin", fetched: true };
+    }
+    if (job.op === "gitPull") {
+      if (!fixtureGitPullEnabled) throw new Error("Тестовый upstream не настроен");
+      fixtureGitPullCount++;
+      return { branch: fixtureBranch, upstream: "origin/mobile/feature", updated: fixtureGitPullCount === 1 };
     }
     if (job.op === "gitPush") {
       if (args.remoteName !== "origin") throw new Error("Удалённый репозиторий не найден");

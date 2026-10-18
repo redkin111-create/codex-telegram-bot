@@ -31,6 +31,7 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
   const [remoteBranchTarget, setRemoteBranchTarget] = useState("");
   const [remoteName, setRemoteName] = useState("");
   const [remoteAction, setRemoteAction] = useState<"fetch" | "push">();
+  const [pullDialogOpen, setPullDialogOpen] = useState(false);
   const [worktreeBranchName, setWorktreeBranchName] = useState("");
   const [worktreeDialogOpen, setWorktreeDialogOpen] = useState(false);
   const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
@@ -120,6 +121,15 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
     const message = remoteAction === "fetch" ? "Ссылки удалённого репозитория обновлены" : `Ветка ${status?.branch} отправлена`;
     const result = await mutate(op, { remoteName: selectedRemote.name }, message);
     if (result !== undefined) setRemoteAction(undefined);
+  }
+
+  async function confirmPull() {
+    if (!status?.upstream || !connected || busyAction || !status.clean) return;
+    const result = await mutate("gitPull", {}, "Проверка fast-forward завершена") as { updated?: unknown } | undefined;
+    if (result !== undefined) {
+      setPullDialogOpen(false);
+      if (result.updated === false) setSuccess("Эта ветка уже актуальна");
+    }
   }
 
   async function startReview() {
@@ -262,6 +272,7 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
               <Button type="button" className="flex-1" disabled={!connected || Boolean(busyAction) || !status.branch || !selectedRemote?.pushTargets.length} onClick={() => setRemoteAction("push")}><CloudUpload size={15} /> Отправить ветку</Button>
             </div>
             <p className="text-[11px] leading-relaxed text-muted">Получение обновляет ссылки, но не переключает ветку и не меняет файлы. Отправка требует отдельного подтверждения и затрагивает только текущую ветку.</p>
+            {status.upstream && <div className="border-t border-border pt-3"><p className="text-xs text-muted">Отслеживаемая ветка: <span className="font-mono text-text">{status.upstream}</span></p><Button type="button" className="mt-2 w-full" variant="outline" disabled={!connected || Boolean(busyAction) || !status.clean} onClick={() => setPullDialogOpen(true)}><CloudDownload size={15} /> Получить изменения</Button>{!status.clean && <p className="mt-2 text-[11px] text-muted">Сначала сохраните или уберите незакоммиченные изменения.</p>}</div>}
           </Card>}
           {status.branches.length > 0 && <form className="mt-3 flex flex-col gap-2 sm:flex-row" onSubmit={(event) => { event.preventDefault(); void mutate("gitSwitchBranch", { name: branchTarget }, "Ветка переключена"); }}>
             <select aria-label="Существующая ветка" className="min-h-10 min-w-0 flex-1 rounded-xl border border-border bg-background px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" value={branchTarget} onChange={(event) => setBranchTarget(event.target.value)}>
@@ -307,6 +318,12 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
             : <p className="mt-2 text-xs leading-relaxed text-muted">Git отправит ветку <strong className="text-text">{status?.branch || "не определена"}</strong> в указанный репозиторий. Незакоммиченные файлы не отправляются; принудительная запись не включена.</p>}
         </div>
         <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={Boolean(busyAction)} onClick={() => setRemoteAction(undefined)}>Отмена</Button><Button type="button" className="flex-1" disabled={!connected || Boolean(busyAction) || !remoteTargets?.length} onClick={() => void confirmRemoteAction()}>{busyAction === (remoteAction === "fetch" ? "gitFetch" : "gitPush") ? "Выполняю…" : remoteAction === "fetch" ? "Получить" : "Отправить"}</Button></div>
+      </section>
+    </div>}
+    {pullDialogOpen && status?.upstream && <div className="fixed inset-0 z-[70] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
+      <section role="alertdialog" aria-modal="true" aria-labelledby="pull-confirm-title" className="safe-area-bottom w-full max-w-md space-y-4 rounded-2xl border border-border bg-elevated p-5 shadow-soft">
+        <div><h3 id="pull-confirm-title" className="text-base font-semibold">Получить изменения в текущую ветку?</h3><p className="mt-2 text-xs leading-relaxed text-muted">Git загрузит <strong className="font-mono text-text">{status.upstream}</strong> и применит изменения к <strong className="font-mono text-text">{status.branch}</strong> только если это можно сделать простым fast-forward.</p><p className="mt-2 text-xs leading-relaxed text-muted">Рабочая папка должна быть чистой. Если ветки разошлись, Git остановится без merge-коммита.</p></div>
+        <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={Boolean(busyAction)} onClick={() => setPullDialogOpen(false)}>Отмена</Button><Button type="button" className="flex-1" disabled={!connected || Boolean(busyAction) || !status.clean} onClick={() => void confirmPull()}>{busyAction === "gitPull" ? "Получаю…" : "Получить изменения"}</Button></div>
       </section>
     </div>}
     {worktreeDialogOpen && <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">

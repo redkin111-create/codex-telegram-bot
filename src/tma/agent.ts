@@ -169,7 +169,7 @@ interface MobileMcpResourceRef {
   ownerId:number;sessionId:string;serverName:string;uri?:string;uriTemplate?:string;expiresAt:number;
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; stt?:Pick<SttService,"enabled"|"transcribe">; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "listThreadReadStates" | "updateThreadReadState" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "searchHistory" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "listRealtimeVoices" | "startRealtime" | "stopRealtime" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "createSideChat" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "downloadFile" | "writeFile" | "createFile" | "createDirectory" | "renameProjectEntry" | "deleteProjectEntry" | "gitStatus" | "gitDiff" | "gitConflictStages" | "gitResolveConflictStage" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+export type MobileLocalOperation = "capabilities" | "listThreadReadStates" | "updateThreadReadState" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "searchHistory" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "listRealtimeVoices" | "startRealtime" | "stopRealtime" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "createSideChat" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "downloadFile" | "writeFile" | "createFile" | "createDirectory" | "renameProjectEntry" | "deleteProjectEntry" | "gitStatus" | "gitDiff" | "gitConflictStages" | "gitResolveConflictStage" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPull" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 const MOBILE_GLOBAL_OPERATIONS=new Set<MobileLocalOperation>(["listThreadReadStates","listThreadSections","createThreadSection","renameThreadSection","deleteThreadSection"]);
 export class MiniAppAgent {
@@ -1479,6 +1479,7 @@ export class MiniAppAgent {
       case "gitSwitchBranch":
       case "gitTrackRemoteBranch":
       case "gitFetch":
+      case "gitPull":
       case "gitPush":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
         this.requireIdleMobileRuntime(sessionId,chatId);
@@ -1516,6 +1517,26 @@ export class MiniAppAgent {
           this.requireMobileGitRemote(gitRoot,remoteName,"fetch");
           await this.mobileGitRemoteCommand(gitRoot,["fetch","--prune","--no-recurse-submodules",remoteName],"fetch");
           return {remoteName,fetched:true};
+        }
+        if(job.op==="gitPull"){
+          const before=this.mobileGitStatus(sessionId,chatId);
+          const upstream=before.upstream;
+          if(!upstream)throw new Error("У текущей ветки нет загруженной отслеживаемой ветки для получения обновлений");
+          if(!before.clean)throw new Error("Перед получением обновлений закоммитьте или уберите все незакоммиченные изменения");
+          if(!before.remoteBranches.includes(upstream))throw new Error("Отслеживаемая ветка больше не найдена. Обновите Git и проверьте настройки ветки");
+          const separator=upstream.indexOf("/");
+          if(separator<1||separator===upstream.length-1)throw new Error("Не удалось определить удалённую ветку для получения обновлений");
+          const remoteName=upstream.slice(0,separator);
+          this.requireMobileGitRemote(gitRoot,remoteName,"fetch");
+          const previousCommit=this.gitOutput(gitRoot,["rev-parse","--verify","HEAD"],4096).trim();
+          await this.mobileGitRemoteCommand(gitRoot,["fetch","--no-tags","--no-recurse-submodules",remoteName],"fetch");
+          const current=this.mobileGitStatus(sessionId,chatId);
+          if(current.branch!==before.branch||current.upstream!==upstream)throw new Error("Текущая ветка Git изменилась. Обновите состояние и повторите действие");
+          if(!current.clean)throw new Error("Рабочая папка изменилась во время загрузки. Не применены никакие обновления");
+          if(!current.remoteBranches.includes(upstream))throw new Error("Загруженная отслеживаемая ветка недоступна");
+          this.gitMutation(gitRoot,["merge","--ff-only","--no-edit","--",`refs/remotes/${upstream}`],120_000);
+          const next=this.mobileGitStatus(sessionId,chatId);
+          return {branch:next.branch,upstream,updated:this.gitOutput(gitRoot,["rev-parse","--verify","HEAD"],4096).trim()!==previousCommit};
         }
         if(job.op==="gitPush"){
           const remoteName=argumentString(args,"remoteName",80).trim();
@@ -2009,7 +2030,9 @@ export class MiniAppAgent {
     const remoteNames=new Set(remotes.map(remote=>remote.name));
     const remoteBranches=this.gitOutput(gitRoot,["branch","--remotes","--format=%(refname:short)"],128*1024).split(/\r?\n/)
       .map(value=>value.trim()).filter(value=>value&&!value.endsWith("/HEAD")&&!remoteNames.has(value)).slice(0,250);
-    return {project:name,branch,branches,remoteBranches,remotes,clean:changes.length===0,changes,checkedAt:Date.now()};
+    const upstreamCandidate=header.includes("...")?header.slice(header.indexOf("...")+3).split(" ")[0]:undefined;
+    const upstream=upstreamCandidate&&remoteBranches.includes(upstreamCandidate)?upstreamCandidate:undefined;
+    return {project:name,branch,branches,remoteBranches,remotes,...(upstream?{upstream}:{}),clean:changes.length===0,changes,checkedAt:Date.now()};
   }
   private mobileGitDiff(sessionId:string,userId:number,args:Record<string,unknown>={}){
     const {root,name}=this.mobileRoot(sessionId,userId);
