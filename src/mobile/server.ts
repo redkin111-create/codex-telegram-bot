@@ -13,6 +13,7 @@ const SESSION_COOKIE = "__Host-codex-mobile-session";
 const PAIR_COOKIE = "__Host-codex-mobile-pair";
 const CSRF_COOKIE = "__Host-codex-mobile-csrf";
 const RASTER_IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+const MAX_MOBILE_DOWNLOAD_BYTES = 10 * 1024 * 1024;
 const MUTATING_OPERATIONS = new Set<TmaOperation>([
   "create", "select", "send", "cancel", "queue", "queueRemove", "queueResume",
 ]);
@@ -116,6 +117,13 @@ function clearCookie(res: ServerResponse, name: string, httpOnly = true): void {
 function safeError(error: unknown): string {
   const message = error instanceof Error ? error.message : "Ошибка Codex";
   return message.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 300) || "Ошибка Codex";
+}
+
+function attachmentDisposition(rawName: string): string {
+  const name = rawName.replace(/[\u0000-\u001f\u007f/\\]/g, "_").slice(0, 255) || "download";
+  const fallback = name.replace(/[^\x20-\x7e]|["\\;]/g, "_");
+  const encoded = encodeURIComponent(name).replace(/['()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
 }
 
 function allowedOrigin(req: IncomingMessage, server: Server, configured: Set<string>): boolean {
@@ -409,6 +417,40 @@ export function createMobileServer(options: MobileServerOptions): Server {
         });
         json(res, 200, result);
       } catch (error) { json(res, 502, { error: safeError(error) }); }
+      return;
+    }
+    if (path === "/api/file-download" && method === "GET") {
+      const sessionId = url.searchParams.get("sessionId") ?? "";
+      const filePath = url.searchParams.get("path") ?? "";
+      if (!safeSessionId(sessionId) || !filePath || filePath.length > 1200) {
+        json(res, 400, { error: "Недопустимый путь файла" }); return;
+      }
+      if (!await options.agent.canReadSession(sessionId, device.ownerId)) {
+        json(res, 403, { error: "Доступ к файлу проекта запрещён" }); return;
+      }
+      if (!options.agent.executeMobile) { json(res, 503, { error: "Скачивание файлов проекта недоступно" }); return; }
+      try {
+        const value = await options.agent.executeMobile({
+          op: "downloadFile", userId: device.ownerId, args: { sessionId, path: filePath },
+        });
+        const file = value && typeof value === "object" ? value as { name?: unknown; size?: unknown; bytes?: unknown } : {};
+        if (typeof file.name !== "string" || !file.name || file.name.length > 255 ||
+            !Buffer.isBuffer(file.bytes) || file.bytes.length > MAX_MOBILE_DOWNLOAD_BYTES ||
+            file.size !== file.bytes.length) {
+          json(res, 502, { error: "Не удалось скачать файл из проекта" }); return;
+        }
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/octet-stream");
+        res.setHeader("Content-Length", String(file.bytes.length));
+        res.setHeader("Content-Disposition", attachmentDisposition(file.name));
+        res.end(file.bytes);
+      } catch (error) {
+        const message = safeError(error);
+        if (/10\s*МБ/i.test(message)) json(res, 413, { error: "Файл должен быть не больше 10 МБ" });
+        else if (/ENOENT|не найден/i.test(message)) json(res, 404, { error: "Файл не найден" });
+        else if (/Codex|runtime|app-server/i.test(message)) json(res, 502, { error: "Не удалось скачать файл из проекта" });
+        else json(res, 400, { error: "Файл недоступен для скачивания" });
+      }
       return;
     }
     if ((path === "/api/git/status" || path === "/api/git/diff") && method === "GET") {

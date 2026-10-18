@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, FileCode2, Folder, Image as ImageIcon, Pencil, Plus, Save, Trash2, X } from "lucide-react";
-import { projectImageUrl, readFileListing, readProjectFile } from "../api.js";
+import { ArrowLeft, Download, FileCode2, Folder, Image as ImageIcon, Pencil, Plus, Save, Trash2, X } from "lucide-react";
+import { downloadProjectFile, projectImageUrl, readFileListing, readProjectFile } from "../api.js";
 import type { MobileFile, MobileFileListing, MobileOperation } from "../types.js";
 import { Button, Card, Input } from "./ui/primitives.js";
 
@@ -34,6 +34,7 @@ export function FilesPanel({ sessionId, connected, onClose, onOperation }: {
   const [renameName, setRenameName] = useState("");
   const [directoryConfirmation, setDirectoryConfirmation] = useState("");
   const [entryError, setEntryError] = useState("");
+  const [downloadingPath, setDownloadingPath] = useState("");
 
   async function refreshDirectory(path = directory) {
     setLoading(true);
@@ -153,6 +154,20 @@ export function FilesPanel({ sessionId, connected, onClose, onOperation }: {
     } finally { setSaving(false); }
   }
 
+  async function downloadEntry(entry: MobileFileListing["entries"][number]) {
+    if (entry.kind !== "file" || downloadingPath) return;
+    const path = [directory, entry.name].filter(Boolean).join("/");
+    setDownloadingPath(path);
+    setError("");
+    setNotice("");
+    try {
+      await downloadProjectFile(sessionId, path);
+      setNotice(`Скачивание началось: ${entry.name}`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Не удалось скачать файл");
+    } finally { setDownloadingPath(""); }
+  }
+
   function goBack() {
     if (file || imagePreview) { setFile(undefined); setImagePreview(undefined); setDraft(""); setNotice(""); void refreshDirectory(); return; }
     const parts = directory.split("/").filter(Boolean);
@@ -200,6 +215,7 @@ export function FilesPanel({ sessionId, connected, onClose, onOperation }: {
               <span className="min-w-0 flex-1 truncate text-sm">{entry.name}</span>
               {entry.kind === "file" && <span className="shrink-0 text-[11px] text-muted">{sizeLabel(entry.size)}</span>}
             </button>
+            {entry.kind === "file" && <Button type="button" variant="ghost" className="min-h-10 shrink-0 px-2" disabled={Boolean(downloadingPath)} aria-label={`Скачать ${entry.name}`} aria-busy={downloadingPath === [directory, entry.name].filter(Boolean).join("/")} onClick={() => void downloadEntry(entry)}><Download size={15} /></Button>}
             <Button type="button" variant="ghost" className="min-h-10 shrink-0 px-2" disabled={!connected || saving} aria-label={`Переименовать ${entry.name}`} onClick={() => requestEntryAction(entry, "rename")}><Pencil size={15} /></Button>
             <Button type="button" variant="ghost" className="min-h-10 shrink-0 px-2 text-[#ffc3bd]" disabled={!connected || saving} aria-label={`Удалить ${entry.name}`} onClick={() => requestEntryAction(entry, "delete")}><Trash2 size={15} /></Button>
           </div>)}

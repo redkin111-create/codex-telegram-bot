@@ -1364,6 +1364,41 @@ test("mobile project files stay inside the authorized session, hide secrets and 
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile downloads return only bounded regular files inside an authorized project",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-download-"));
+  const project=join(dir,"project");mkdirSync(join(project,"assets"),{recursive:true});
+  const payload=Buffer.from([0x50,0x4b,0x03,0x04,0,0xff,0x42]);
+  writeFileSync(join(project,"assets","release.zip"),payload);
+  writeFileSync(join(project,".env"),"private");
+  writeFileSync(join(project,"large.bin"),Buffer.alloc(10*1024*1024+1));
+  const outside=join(dir,"outside.bin");writeFileSync(outside,Buffer.from([1,2,3]));
+  try{symlinkSync(outside,join(project,"assets","outside-link.bin"),"file");}catch{/* Symlink creation can be disabled by the host OS. */}
+  const sessionId="24242424-2424-4424-8424-242424242424";
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"project",roots:[project]}],
+    listThreads:async()=>[{id:sessionId,name:"Mobile download",cwd:project,source:"cli",recencyAt:2}],
+    availableModels:[],
+  }) as unknown as AcpClient;
+  const registry={controller:()=>({list:()=>[]}),get:()=>({sessionId,isBusy:false}),runtimeForSession:()=>undefined} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef09",op:"snapshot",userId:101,args:{}});
+    const result=await agent.executeMobile({op:"downloadFile" as never,userId:101,args:{sessionId,path:"assets/release.zip"}}) as {name:string;size:number;bytes:Buffer};
+    assert.equal(result.name,"release.zip");
+    assert.equal(result.size,payload.length);
+    assert.deepEqual(result.bytes,payload);
+    await assert.rejects(agent.executeMobile({op:"downloadFile" as never,userId:202,args:{sessionId,path:"assets/release.zip"}}),/Пользователь не разрешён|Доступ к сеансу запрещён/);
+    await assert.rejects(agent.executeMobile({op:"downloadFile" as never,userId:101,args:{sessionId,path:"assets"}}),/обычн.*файл|папк/i);
+    await assert.rejects(agent.executeMobile({op:"downloadFile" as never,userId:101,args:{sessionId,path:".env"}}),/недоступен/i);
+    await assert.rejects(agent.executeMobile({op:"downloadFile" as never,userId:101,args:{sessionId,path:"../outside.bin"}}),/путь|предел/i);
+    await assert.rejects(agent.executeMobile({op:"downloadFile" as never,userId:101,args:{sessionId,path:"large.bin"}}),/10 МБ/i);
+    if(existsSync(join(project,"assets","outside-link.bin")))
+      await assert.rejects(agent.executeMobile({op:"downloadFile" as never,userId:101,args:{sessionId,path:"assets/outside-link.bin"}}),/символическ|предел/i);
+    assert.deepEqual(readFileSync(outside),Buffer.from([1,2,3]));
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile rename keeps a project file inside its authorized folder and rejects stale listings",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-rename-file-"));
   const project=join(dir,"project");mkdirSync(join(project,"src"),{recursive:true});

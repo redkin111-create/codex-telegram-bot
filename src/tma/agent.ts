@@ -2,7 +2,7 @@
  * Windows-side outbound TMA agent. Reuses the SAME AcpClient/RuntimeRegistry as
  * the Telegram bot and never listens on the PC's public network interface.
  */
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFile as execFileCallback, execFileSync } from "node:child_process";
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
@@ -33,6 +33,7 @@ const MAX_MOBILE_PTY_BUFFER=512*1024;
 const MAX_MOBILE_PTY_READ=64*1024;
 const MAX_MOBILE_CONFLICT_STAGE_BYTES=512*1024;
 const MAX_MOBILE_BINARY_CONFLICT_BYTES=10*1024*1024;
+const MAX_MOBILE_DOWNLOAD_BYTES=10*1024*1024;
 const MOBILE_PTY_IDLE_MS=30*60*1000;
 import { normalizeMobileIntegrations, normalizeMobileMcpServers, normalizePluginInstallResult, type MobileMcpResourceSummary } from "../mobile/integrations.js";
 import { normalizeMobileMarketplaces } from "../mobile/marketplaces.js";
@@ -159,7 +160,7 @@ interface MobileMcpResourceRef {
   ownerId:number;sessionId:string;serverName:string;uri?:string;uriTemplate?:string;expiresAt:number;
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; stt?:Pick<SttService,"enabled"|"transcribe">; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "listRealtimeVoices" | "startRealtime" | "stopRealtime" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "createSideChat" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "createDirectory" | "renameProjectEntry" | "deleteProjectEntry" | "gitStatus" | "gitDiff" | "gitConflictStages" | "gitResolveConflictStage" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "listRealtimeVoices" | "startRealtime" | "stopRealtime" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "createSideChat" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "downloadFile" | "writeFile" | "createFile" | "createDirectory" | "renameProjectEntry" | "deleteProjectEntry" | "gitStatus" | "gitDiff" | "gitConflictStages" | "gitResolveConflictStage" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 const MOBILE_GLOBAL_OPERATIONS=new Set<MobileLocalOperation>(["listThreadSections","createThreadSection","renameThreadSection","deleteThreadSection"]);
 export class MiniAppAgent {
@@ -1242,6 +1243,10 @@ export class MiniAppAgent {
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
         return this.mobileReadImage(sessionId,chatId,argumentString(args,"path",1200));
       }
+      case "downloadFile":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        return this.mobileDownloadFile(sessionId,chatId,argumentString(args,"path",1200));
+      }
       case "writeFile":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
         const content=typeof args.content==="string"?args.content:undefined;
@@ -1727,6 +1732,37 @@ export class MiniAppAgent {
     try{text=new TextDecoder("utf-8",{fatal:true}).decode(bytes);}catch{throw new Error("Файл не является корректным UTF-8 текстом");}
     return {project:name,path:relative(root,absolute).split(sep).join("/"),text,size:stat.size,
       sha256:createHash("sha256").update(bytes).digest("hex")};
+  }
+  private mobileDownloadFile(sessionId:string,userId:number,rawPath:string):{name:string;size:number;bytes:Buffer}{
+    const {root}=this.mobileRoot(sessionId,userId);
+    const entry=this.mobileProjectEntry(root,rawPath);
+    if(entry.kind!=="file")throw new Error("Скачивать можно только обычный файл проекта");
+    if(entry.size>MAX_MOBILE_DOWNLOAD_BYTES)throw new Error("Файл должен быть не больше 10 МБ");
+    const before=lstatSync(entry.absolute);
+    if(before.isSymbolicLink()||!before.isFile()||before.size>MAX_MOBILE_DOWNLOAD_BYTES||
+      !isPathWithinRoot(root,realpathSync.native(dirname(entry.absolute))))throw new Error("Файл изменился. Обновите список проекта и повторите скачивание.");
+    const descriptor=openSync(entry.absolute,"r");
+    try{
+      const opened=fstatSync(descriptor);
+      if(!opened.isFile()||opened.dev!==before.dev||opened.ino!==before.ino||opened.size>MAX_MOBILE_DOWNLOAD_BYTES)
+        throw new Error("Файл изменился. Обновите список проекта и повторите скачивание.");
+      const buffer=Buffer.alloc(MAX_MOBILE_DOWNLOAD_BYTES+1);
+      let length=0;
+      while(length<buffer.length){
+        const count=readSync(descriptor,buffer,length,buffer.length-length,length);
+        if(count===0)break;
+        length+=count;
+      }
+      if(length>MAX_MOBILE_DOWNLOAD_BYTES)throw new Error("Файл должен быть не больше 10 МБ");
+      const after=fstatSync(descriptor);
+      const current=lstatSync(entry.absolute);
+      if(current.isSymbolicLink()||!current.isFile()||current.dev!==opened.dev||current.ino!==opened.ino||
+        current.size!==opened.size||current.mtimeMs!==opened.mtimeMs||current.ctimeMs!==opened.ctimeMs||
+        after.size!==opened.size||after.mtimeMs!==opened.mtimeMs||after.ctimeMs!==opened.ctimeMs||
+        !isPathWithinRoot(root,realpathSync.native(dirname(entry.absolute)))||length!==opened.size)
+        throw new Error("Файл изменился во время скачивания. Обновите список проекта и повторите действие.");
+      return {name:entry.name,size:length,bytes:buffer.subarray(0,length)};
+    }finally{closeSync(descriptor);}
   }
   private mobileReadImage(sessionId:string,userId:number,rawPath:string){
     const {root,name}=this.mobileRoot(sessionId,userId);

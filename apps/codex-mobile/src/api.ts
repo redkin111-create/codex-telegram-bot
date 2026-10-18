@@ -70,6 +70,34 @@ export function readProjectFile(sessionId: string, path: string) {
   return jsonRequest<MobileFile>(`/api/file?${query}`);
 }
 
+export async function downloadProjectFile(sessionId: string, path: string): Promise<void> {
+  const query = new URLSearchParams({ sessionId, path });
+  const response = await fetch(`/api/file-download?${query}`, {
+    credentials: "same-origin", cache: "no-store", redirect: "error",
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { error?: unknown };
+    throw new MobileApiError(typeof payload.error === "string" ? payload.error : `Не удалось скачать файл (${response.status})`, response.status);
+  }
+  if (response.headers.get("content-type") !== "application/octet-stream") {
+    throw new MobileApiError("Сервер вернул неподдерживаемый формат файла", 415);
+  }
+  const bytes = await response.blob();
+  if (bytes.size > 10 * 1024 * 1024) throw new MobileApiError("Файл больше 10 МБ", 413);
+  const segments = path.replaceAll("\\", "/").split("/");
+  const filename = segments.at(-1) || "download";
+  const objectUrl = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename;
+  link.rel = "noopener noreferrer";
+  link.style.display = "none";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30_000);
+}
+
 export function readGitStatus(sessionId: string) {
   return jsonRequest<MobileGitStatus>(`/api/git/status?sessionId=${encodeURIComponent(sessionId)}`);
 }

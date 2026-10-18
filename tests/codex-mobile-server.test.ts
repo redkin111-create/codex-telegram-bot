@@ -36,6 +36,7 @@ async function startFixture() {
   const feed = new FixtureFeed();
   const calls: Array<{ op: string; userId: number; args: Record<string, unknown>; attachments?: unknown[] }> = [];
   let failNext = false;
+  let downloadValue: unknown = { name: "release.zip", size: 4, bytes: Buffer.from([0x50, 0x4b, 0x03, 0x04]) };
   let readImageValue: unknown = { name: "pixel.png", mime: "image/png", data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString("base64") };
   const settings = { model: "fixture-model", mode: "code", reasoning: "medium" };
   const approvalId = "44444444-4444-4444-8444-444444444444";
@@ -74,6 +75,7 @@ async function startFixture() {
       calls.push(job);
       if (failNext) { failNext = false; throw new Error("Codex runtime unavailable"); }
       if (job.op === "readImage") return readImageValue;
+      if (job.op === "downloadFile") return downloadValue;
       if (job.op === "capabilities") return {
         online: true, ...settings, models: [{ id: settings.model, name: "Fixture Model" }],
         modes: [{ id: settings.mode, name: "Code" }], reasoningLevels: ["low", "medium", "high"],
@@ -114,7 +116,8 @@ async function startFixture() {
   const address = server.address();
   assert.ok(address && typeof address !== "string");
   const origin = `http://127.0.0.1:${address.port}`;
-  return { server, auth, feed, calls, approvalDecisions, approvalId, accountCalls, dataDir, origin, failNext: () => { failNext = true; }, setReadImageValue: (value: unknown) => { readImageValue = value; } };
+  return { server, auth, feed, calls, approvalDecisions, approvalId, accountCalls, dataDir, origin, failNext: () => { failNext = true; },
+    setDownloadValue: (value: unknown) => { downloadValue = value; }, setReadImageValue: (value: unknown) => { readImageValue = value; } };
 }
 
 async function pair(origin: string, auth: MobileAuthStore) {
@@ -1052,6 +1055,43 @@ test("project file reads and writes use the authorized session and write CSRF ch
     });
     assert.equal(create.status, 200);
     assert.equal(f.calls.at(-1)?.op, "createFile");
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("project downloads require an authenticated device and an owned session, and return safe attachment headers", async () => {
+  const f = await startFixture();
+  try {
+    const url = (sessionId: string) => f.origin + `/api/file-download?sessionId=${sessionId}&path=assets%2Frelease.zip`;
+    const anonymous = await fetch(url(allowedSession));
+    assert.equal(anonymous.status, 401);
+    const login = await pair(f.origin, f.auth);
+    const beforeForeign = f.calls.filter((call) => call.op === "downloadFile").length;
+    const foreign = await fetch(url(foreignSession), { headers: { origin: f.origin, cookie: login.sessionCookie } });
+    assert.equal(foreign.status, 403);
+    assert.equal(f.calls.filter((call) => call.op === "downloadFile").length, beforeForeign);
+
+    const downloaded = await fetch(url(allowedSession), { headers: { origin: f.origin, cookie: login.sessionCookie } });
+    assert.equal(downloaded.status, 200);
+    assert.equal(downloaded.headers.get("content-type"), "application/octet-stream");
+    assert.match(downloaded.headers.get("content-disposition") ?? "", /attachment; filename="release\.zip"/);
+    assert.equal(downloaded.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(downloaded.headers.get("cache-control"), "no-store");
+    assert.deepEqual([...new Uint8Array(await downloaded.arrayBuffer())], [0x50, 0x4b, 0x03, 0x04]);
+    assert.equal(f.calls.at(-1)?.op, "downloadFile");
+
+    f.setDownloadValue({ name: 'bad"name\r\nX-Evil: yes.zip', size: 4, bytes: Buffer.from([0x50, 0x4b, 0x03, 0x04]) });
+    const unsafeName = await fetch(url(allowedSession), { headers: { origin: f.origin, cookie: login.sessionCookie } });
+    const disposition = unsafeName.headers.get("content-disposition") ?? "";
+    assert.equal(unsafeName.status, 200);
+    assert.equal(disposition.includes("\r"), false);
+    assert.equal(disposition.includes("\n"), false);
+    assert.match(disposition, /filename\*=UTF-8''/);
+
+    f.setDownloadValue({ name: "release.zip", size: 4, bytes: Buffer.from([0x50, 0x4b, 0x03, 0x04]) });
+    f.failNext();
+    const codexFailure = await fetch(url(allowedSession), { headers: { origin: f.origin, cookie: login.sessionCookie } });
+    assert.equal(codexFailure.status, 502);
+    assert.deepEqual(await codexFailure.json(), { error: "Не удалось скачать файл из проекта" });
   } finally { await cleanup(f.server, f.dataDir); }
 });
 

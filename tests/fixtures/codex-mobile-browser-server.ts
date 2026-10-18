@@ -131,6 +131,7 @@ const fixtureFiles = new Map<string, string>([
   ["src/main.ts", "export function greet() {\n  return \"Hello from fixture\";\n}\n"],
   ["src/conflict.ts", "<<<<<<< HEAD\nexport const greeting = \"Hello\";\n=======\nexport const greeting = \"Hi\";\n>>>>>>> feature/greeting\n"],
   ["assets/preview.png", "fixture raster preview"],
+  ["assets/release.zip", "PK\u0003\u0004fixture archive bytes"],
 ]);
 const fixtureDirectories = new Set<string>(["src", "assets"]);
 
@@ -680,6 +681,13 @@ const agent = {
       const text = fixtureFiles.get(path);
       if (text === undefined) throw new Error("Файл не найден");
       return { project: "codex-mobile", path, text, size: Buffer.byteLength(text), sha256: createHash("sha256").update(text).digest("hex") };
+    }
+    if (job.op === "downloadFile") {
+      const path = String(args.path ?? "");
+      const content = fixtureFiles.get(path);
+      if (content === undefined) throw new Error("Файл не найден");
+      const bytes = Buffer.from(content, "utf8");
+      return { name: path.split(/[\\/]/).at(-1) ?? "download", size: bytes.length, bytes };
     }
     if (job.op === "readImage") {
       if (args.path !== "assets/preview.png") throw new Error("Неподдерживаемый формат изображения");
