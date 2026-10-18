@@ -104,6 +104,12 @@ export class ChatController {
     }));
   }
 
+  /** True when this chat has a prompt or session operation that must finish first. */
+  hasPendingWork(): boolean {
+    return Boolean(this.pendingPrompt || this.continuationInFlight)
+      || this.runtimes.some((runtime) => runtime.hasPendingWork);
+  }
+
   /** Start a brand-new session and bring it to the foreground. */
   async addNew(cwd: string, projectName?: string, options: { preserveWatchOnly?: boolean } = {}): Promise<SessionRuntime> {
     this.ensureRestored();

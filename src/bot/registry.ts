@@ -126,6 +126,11 @@ export class RuntimeRegistry {
     return this.findChatBySession(sessionId) !== undefined;
   }
 
+  /** Account changes restart the one shared Codex process; guard every chat first. */
+  hasPendingWork(): boolean {
+    return [...this.controllers.values()].some((controller) => controller.hasPendingWork());
+  }
+
   /**
    * The chat a session belongs to for permission/routing purposes: a directly
    * controlled session, otherwise the parent chat of a subagent.

@@ -668,8 +668,41 @@ const mobileApprovals = new MobileApprovalBroker(
     new Set([String(ownerId)]),
     async () => ({ outcome: { outcome: "cancelled" } }),
   );
+let fixtureAccountActive = "fixture-personal";
+let fixtureAccountAutoRotate = false;
+const fixtureAccounts = [
+  { id: "fixture-personal", label: "Fixture личный", email: "personal@example.test", accountType: "Plus", savedAt: "2026-10-18T00:00:00.000Z" },
+  { id: "fixture-work", label: "Fixture рабочий", email: "work@example.test", accountType: "Team", savedAt: "2026-10-17T00:00:00.000Z" },
+];
+const mobileAccounts = {
+  async snapshot(userId: number) {
+    if (userId !== ownerId) throw new Error("Доступ к аккаунтам запрещён");
+    return {
+      loggedIn: true,
+      activeAccountId: fixtureAccountActive,
+      activeLabel: fixtureAccounts.find((account) => account.id === fixtureAccountActive)?.email ?? "Fixture личный",
+      activeAccountType: fixtureAccounts.find((account) => account.id === fixtureAccountActive)?.accountType ?? "Plus",
+      autoRotate: fixtureAccountAutoRotate,
+      accounts: fixtureAccounts.map((account) => ({ ...account, active: account.id === fixtureAccountActive })),
+    };
+  },
+  async execute(userId: number, value: unknown) {
+    if (userId !== ownerId) throw new Error("Доступ к аккаунтам запрещён");
+    const body = value as { action?: string; id?: string; label?: string; enabled?: boolean };
+    const target = fixtureAccounts.find((account) => account.id === body.id);
+    if (body.action === "saveCurrent") return { snapshot: await this.snapshot(userId), message: "Текущий тестовый аккаунт сохранён" };
+    if (body.action === "rename" && target) target.label = String(body.label ?? "");
+    else if (body.action === "forget" && target) fixtureAccounts.splice(fixtureAccounts.indexOf(target), 1);
+    else if (body.action === "setAutoRotate") fixtureAccountAutoRotate = body.enabled === true;
+    else if (body.action === "switch" && target) {
+      if (process.env.CODEX_MOBILE_FIXTURE_ACCOUNT_SWITCH_BLOCKED === "1") throw new Error("Codex занят. Дождитесь завершения текущей задачи перед сменой аккаунта");
+      fixtureAccountActive = target.id;
+    } else if (body.action !== "saveCurrent") throw new Error("Сохранённый тестовый аккаунт не найден");
+    return { snapshot: await this.snapshot(userId), message: "Тестовый аккаунт обновлён" };
+  },
+};
 const server: Server = createMobileServer({
-  auth, agent, feed: feed as unknown as TmaLiveFeed, approvals: mobileApprovals, dataDir,
+  auth, agent, accounts: mobileAccounts as never, feed: feed as unknown as TmaLiveFeed, approvals: mobileApprovals, dataDir,
   staticRoot: resolve("apps/codex-mobile/dist"), port: 0,
 });
 server.listen(0, "127.0.0.1");

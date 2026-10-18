@@ -9,6 +9,7 @@ import { enabledLocalTma, startLocalTma, type LocalTmaService } from "./tma/loca
 import { TmaLiveFeed } from "./tma/live.js";
 import { codexMobileEnabled, startCodexMobileService, type CodexMobileService } from "./mobile/service.js";
 import { MobileApprovalBroker } from "./mobile/approvals.js";
+import { MobileAccountController } from "./mobile/accounts.js";
 import { createBot } from "./bot/bot.js";
 import { CANONICAL_DIR, loadConfig } from "./config.js";
 import { InstanceLock } from "./app/instance-lock.js";
@@ -55,7 +56,7 @@ async function main(): Promise<void> {
   });
 
   await acp.start();
-  const { bot, registry, scheduler, updater } = await createBot(cfg, acp);
+  const { bot, registry, scheduler, updater, accounts, usage, accountRotator } = await createBot(cfg, acp);
   // TMA_LOCAL runs the UI, gateway and outbound Codex bridge in this existing
   // service. No VPS required. Failures never prevent the Telegram bot starting.
   let localTma: LocalTmaService | undefined;
@@ -85,7 +86,15 @@ async function main(): Promise<void> {
       restoreMobileApproval = () => {
         if (acp.permissionHandler === approvals.handle) acp.permissionHandler = previousApproval;
       };
-      mobile = await startCodexMobileService(cfg, agent, feed, { approvals });
+      const mobileAccounts = new MobileAccountController({
+        allowedOwners: cfg.allowedUsers,
+        accounts,
+        usage,
+        rotator: accountRotator,
+        acp,
+        registry,
+      });
+      mobile = await startCodexMobileService(cfg, agent, feed, { approvals, accounts: mobileAccounts });
     } catch (error) {
       restoreMobileApproval?.();
       restoreMobileApproval = undefined;

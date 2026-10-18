@@ -185,6 +185,11 @@ export class SessionRuntime {
   get isBusy(): boolean {
     return this.busy;
   }
+  /** True when changing the shared Codex login could interrupt pending work. */
+  get hasPendingWork(): boolean {
+    return this.busy || Boolean(this.sessionInitialization) || this.queueDispatching
+      || Boolean(this.queueInFlight) || this.queue.length > 0;
+  }
   /** Closing is safe only when neither a turn, session attach, queued
    * dispatch nor live watch can still produce callbacks for this runtime. */
   get canClose(): boolean {

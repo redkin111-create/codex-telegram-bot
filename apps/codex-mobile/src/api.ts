@@ -1,5 +1,5 @@
 import type {
-  MobileActivity, MobileApproval, MobileAttachment, MobileCapabilities, MobileDevice, MobileFile, MobileFileListing, MobileGitDiff, MobileGitStatus, MobileHistory, MobileLiveEvent, MobileOperation, MobileSnapshot,
+  MobileAccountAction, MobileAccountsSnapshot, MobileActivity, MobileApproval, MobileAttachment, MobileCapabilities, MobileDevice, MobileFile, MobileFileListing, MobileGitDiff, MobileGitStatus, MobileHistory, MobileLiveEvent, MobileOperation, MobileSnapshot,
 } from "./types.js";
 
 export class MobileApiError extends Error {
@@ -37,6 +37,18 @@ export function pairingStatus() {
 
 export function readSnapshot() {
   return jsonRequest<MobileSnapshot>("/api/snapshot");
+}
+
+export function readAccounts() {
+  return jsonRequest<MobileAccountsSnapshot>("/api/accounts");
+}
+
+export function manageAccount(action: MobileAccountAction, csrfToken: string) {
+  return jsonRequest<{ snapshot: MobileAccountsSnapshot; message?: string }>("/api/accounts", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrfToken },
+    body: JSON.stringify(action),
+  });
 }
 
 export function readCapabilities(sessionId: string) {

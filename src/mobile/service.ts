@@ -9,6 +9,7 @@ import { createLogger } from "../logger.js";
 import { MobileAuthStore } from "./auth.js";
 import { getOrCreateMobileAdminToken, startMobileControlChannel } from "./control.js";
 import { createMobileServer, type MobileAgent, type MobileApprovals } from "./server.js";
+import type { MobileAccountController } from "./accounts.js";
 
 const log = createLogger("mobile");
 
@@ -50,6 +51,7 @@ export interface StartCodexMobileOptions {
   allowedOrigins?: string[];
   staticRoot?: string;
   approvals?: MobileApprovals;
+  accounts?: MobileAccountController;
 }
 
 export async function startCodexMobileService(
@@ -69,6 +71,7 @@ export async function startCodexMobileService(
   const server: Server = createMobileServer({
     auth,
     agent,
+    accounts: options.accounts,
     approvals: options.approvals,
     feed,
     dataDir: cfg.dataDir,

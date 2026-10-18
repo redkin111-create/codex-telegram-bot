@@ -5,6 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { MobileAuthStore } from "../src/mobile/auth.js";
+import type { MobileAccountController } from "../src/mobile/accounts.js";
 import { createMobileServer, type MobileServerOptions } from "../src/mobile/server.js";
 import type { LiveEvent, TmaLiveFeed } from "../src/tma/live.js";
 
@@ -39,6 +40,26 @@ async function startFixture() {
   const settings = { model: "fixture-model", mode: "code", reasoning: "medium" };
   const approvalId = "44444444-4444-4444-8444-444444444444";
   const approvalDecisions: Array<{ ownerId: number; sessionId: string; id: string; optionId: string }> = [];
+  const accountCalls: Array<{ ownerId: number; action?: unknown }> = [];
+  let activeAccount = "account-personal-1";
+  let autoRotate = false;
+  const accountController = {
+    async snapshot(ownerId: number) {
+      accountCalls.push({ ownerId });
+      if (ownerId !== 101) throw new Error("Доступ к аккаунтам запрещён");
+      return { loggedIn: true, activeAccountId: activeAccount, activeLabel: activeAccount, autoRotate,
+        accounts: [{ id: "account-personal-1", label: "Личный", savedAt: "2026-10-18T00:00:00.000Z", active: activeAccount === "account-personal-1" },
+          { id: "account-work-001", label: "Работа", savedAt: "2026-10-17T00:00:00.000Z", active: activeAccount === "account-work-001" }] };
+    },
+    async execute(ownerId: number, action: unknown) {
+      accountCalls.push({ ownerId, action });
+      if (ownerId !== 101) throw new Error("Доступ к аккаунтам запрещён");
+      const body = action as { action?: string; id?: string; label?: string; enabled?: boolean };
+      if (body.action === "switch") activeAccount = body.id ?? activeAccount;
+      if (body.action === "setAutoRotate") autoRotate = body.enabled === true;
+      return { snapshot: await accountController.snapshot(ownerId), message: "Действие аккаунта выполнено" };
+    },
+  } as unknown as MobileAccountController;
   const agent = {
     async canReadSession(id: string, ownerId: number) { return (id === allowedSession || id === secondOwnedSession) && ownerId === 101; },
     async execute(job: { op: string; userId: number; args: Record<string, unknown> }, attachments?: unknown[]) {
@@ -71,6 +92,7 @@ async function startFixture() {
   const options: MobileServerOptions = {
     auth,
     agent: agent as unknown as MobileServerOptions["agent"],
+    accounts: accountController,
     feed: feed as unknown as TmaLiveFeed,
     approvals: {
       listFor(ownerId: number, sessionId: string) {
@@ -92,7 +114,7 @@ async function startFixture() {
   const address = server.address();
   assert.ok(address && typeof address !== "string");
   const origin = `http://127.0.0.1:${address.port}`;
-  return { server, auth, feed, calls, approvalDecisions, approvalId, dataDir, origin, failNext: () => { failNext = true; }, setReadImageValue: (value: unknown) => { readImageValue = value; } };
+  return { server, auth, feed, calls, approvalDecisions, approvalId, accountCalls, dataDir, origin, failNext: () => { failNext = true; }, setReadImageValue: (value: unknown) => { readImageValue = value; } };
 }
 
 async function pair(origin: string, auth: MobileAuthStore) {
@@ -139,6 +161,33 @@ test("private API and event stream reject requests without a paired device", asy
       body: JSON.stringify({ sessionId: allowedSession, after: 0, epoch: "" }),
     });
     assert.equal(events.status, 401);
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("account API requires a paired device, Origin and CSRF and delegates only the paired owner", async () => {
+  const f = await startFixture();
+  try {
+    assert.equal((await fetch(f.origin + "/api/accounts")).status, 401);
+    const login = await pair(f.origin, f.auth);
+    const read = await fetch(f.origin + "/api/accounts", { headers: { origin: f.origin, cookie: login.sessionCookie } });
+    assert.equal(read.status, 200);
+    const snapshot = await read.json() as { accounts: Array<Record<string, unknown>> };
+    assert.equal(snapshot.accounts.length, 2);
+    assert.equal(JSON.stringify(snapshot).includes("fingerprint"), false);
+    const body = JSON.stringify({ action: "switch", id: "account-work-001" });
+    assert.equal((await fetch(f.origin + "/api/accounts", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body,
+    })).status, 403);
+    assert.equal((await fetch(f.origin + "/api/accounts", {
+      method: "POST", headers: { origin: "https://attacker.invalid", cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body,
+    })).status, 403);
+    assert.equal(f.accountCalls.some((call) => call.action !== undefined), false);
+    const changed = await fetch(f.origin + "/api/accounts", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body,
+    });
+    assert.equal(changed.status, 200);
+    assert.equal(f.accountCalls.at(-1)?.ownerId, 101);
+    assert.equal((await changed.json() as { snapshot: { activeAccountId: string } }).snapshot.activeAccountId, "account-work-001");
   } finally { await cleanup(f.server, f.dataDir); }
 });
 

@@ -7,6 +7,7 @@ import { MobileAttachmentStore, MAX_MOBILE_ATTACHMENT_BYTES, type MobilePromptAt
 import type { MiniAppAgent, MobileLocalJob, MobileLocalOperation } from "../tma/agent.js";
 import type { LiveEvent, TmaLiveFeed } from "../tma/live.js";
 import { MobileAuthStore } from "./auth.js";
+import type { MobileAccountController } from "./accounts.js";
 
 const SESSION_COOKIE = "__Host-codex-mobile-session";
 const PAIR_COOKIE = "__Host-codex-mobile-pair";
@@ -33,6 +34,7 @@ export interface MobileApprovals {
 export interface MobileServerOptions {
   auth: MobileAuthStore;
   agent: MobileAgent;
+  accounts?: MobileAccountController;
   approvals?: MobileApprovals;
   feed: TmaLiveFeed;
   dataDir?: string;
@@ -262,6 +264,30 @@ export function createMobileServer(options: MobileServerOptions): Server {
       const csrfToken = cookie(req, CSRF_COOKIE);
       if (!csrfToken || !options.auth.verifyCsrf(device.id, csrfToken)) { json(res, 401, { error: "Сессия требует повторной привязки" }); return; }
       json(res, 200, { device, csrfToken });
+      return;
+    }
+    if (path === "/api/accounts" && method === "GET") {
+      if (!options.accounts) { json(res, 503, { error: "Управление аккаунтами недоступно" }); return; }
+      try { json(res, 200, await options.accounts.snapshot(device.ownerId)); }
+      catch (error) {
+        const message = safeError(error);
+        json(res, message.includes("Доступ к аккаунтам запрещён") ? 403 : 502, { error: message });
+      }
+      return;
+    }
+    if (path === "/api/accounts" && method === "POST") {
+      if (!options.accounts) { json(res, 503, { error: "Управление аккаунтами недоступно" }); return; }
+      try {
+        const body = await readJson(req, 8192);
+        json(res, 200, await options.accounts.execute(device.ownerId, body));
+      } catch (error) {
+        const message = safeError(error);
+        const status = message.includes("Доступ к аккаунтам запрещён") ? 403
+          : message.includes("Codex занят") || message.includes("ожидающие запросы") ? 409
+          : message.includes("Codex") || message.includes("runtime") ? 502
+          : 400;
+        json(res, status, { error: message });
+      }
       return;
     }
     if (path === "/api/attachments" && method === "POST") {

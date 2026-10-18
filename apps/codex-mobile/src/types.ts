@@ -7,6 +7,31 @@ export interface MobileDevice {
   revokedAt?: number;
 }
 
+export interface MobileAccount {
+  id: string;
+  label: string;
+  email?: string;
+  accountType?: string;
+  savedAt: string;
+  active: boolean;
+}
+
+export interface MobileAccountsSnapshot {
+  loggedIn: boolean;
+  activeAccountId?: string;
+  activeLabel?: string;
+  activeAccountType?: string;
+  autoRotate: boolean;
+  accounts: MobileAccount[];
+}
+
+export type MobileAccountAction =
+  | { action: "saveCurrent" }
+  | { action: "rename"; id: string; label: string }
+  | { action: "forget"; id: string }
+  | { action: "setAutoRotate"; enabled: boolean }
+  | { action: "switch"; id: string };
+
 export interface MobileProject { path: string; name: string; }
 
 export interface MobileThreadSection { id: string; name: string; builtIn?: boolean; }

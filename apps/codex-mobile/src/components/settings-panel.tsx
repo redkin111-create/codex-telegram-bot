@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Activity, Bot, ChevronDown, CircleHelp, Clock3, Download, ExternalLink, Pause, Play, Plug, Puzzle, RefreshCw, ShieldCheck, Sparkles, Target, Trash2, X } from "lucide-react";
 import { readCapabilities } from "../api.js";
+import { AccountsPanel } from "./accounts-panel.js";
 import type { MobileCapabilities, MobileOperation } from "../types.js";
 import { Badge, Button, Card, Input, Textarea } from "./ui/primitives.js";
 
@@ -43,11 +44,13 @@ function mcpAuthLabel(status: MobileCapabilities["mcpServers"][number]["authStat
   }
 }
 
-export function SettingsPanel({ sessionId, connected, onClose, onOperation }: {
+export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation, onAccountChanged }: {
   sessionId: string;
   connected: boolean;
+  csrf: string;
   onClose: () => void;
   onOperation: (op: MobileOperation, args: Record<string, unknown>) => Promise<unknown>;
+  onAccountChanged: () => void;
 }) {
   const [capabilities, setCapabilities] = useState<MobileCapabilities>();
   const [loading, setLoading] = useState(true);
@@ -204,6 +207,7 @@ export function SettingsPanel({ sessionId, connected, onClose, onOperation }: {
         {error && <p role="alert" className="rounded-xl border border-[#733b39] bg-[#351f1e] p-3 text-sm text-[#ffc3bd]">{error}</p>}
         {loading && !capabilities ? <p className="text-sm text-muted">Читаю данные текущего Codex…</p> : null}
         {capabilities && <>
+          <AccountsPanel csrf={csrf} onAccountChanged={onAccountChanged} />
           <div className="flex items-center justify-between gap-3">
             <div><p className="text-sm font-semibold">Текущий сеанс</p><p className="mt-1 text-xs text-muted">{connected ? "Подключён для управления" : "История доступна, управление отключено"}</p></div>
             <Badge className={capabilities.online ? "border-[#3d5630] text-[#c7e89a]" : "border-[#733b39] text-[#ffc3bd]"}>{capabilities.online ? "Codex онлайн" : "Codex офлайн"}</Badge>
