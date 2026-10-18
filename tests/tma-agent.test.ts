@@ -660,6 +660,62 @@ test("mobile MCP OAuth is limited to a configured login-required server in an ow
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile MCP tool calls require an owned idle thread and reuse its connected ACP server",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-mcp-tool-agent-"));
+  const sessionId="31313131-3131-4131-8131-313131313131";
+  const foreignSessionId="32323232-3232-4232-8232-323232323232";
+  const threads=[
+    {id:sessionId,name:"Owned MCP thread",cwd:dir,source:"appServer",createdAt:1,updatedAt:2,recencyAt:2},
+    {id:foreignSessionId,name:"Foreign MCP thread",cwd:dir,source:"appServer",createdAt:1,updatedAt:1,recencyAt:1},
+  ];
+  const owners=new TelegramSessionRegistry(dir);
+  owners.recordMobile(sessionId,101,dir,"Fixture");
+  owners.recordMobile(foreignSessionId,202,dir,"Fixture");
+  let busy=false;
+  let pending=false;
+  let online=true;
+  const calls:Array<{threadId:string;server:string;tool:string;arguments:unknown}>=[];
+  const acp=Object.assign(new EventEmitter(),{
+    isConnected:true,
+    hasInflightPrompt:()=>busy,
+    listProjects:async()=>[{id:"project",name:"Fixture",roots:[dir]}],
+    listThreads:async()=>threads,
+    listAllThreads:async(params?:{archived?:boolean})=>params?.archived?[]:threads,
+    availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],currentModelId:"default",
+    async callMobileMcpTool(threadId:string,server:string,tool:string,args:unknown){
+      calls.push({threadId,server,tool,arguments:args});
+      return {text:"Fixture MCP result",isError:false,truncated:false,omittedContentBlocks:0};
+    },
+  }) as unknown as AcpClient;
+  Object.defineProperty(acp,"isConnected",{get:()=>online});
+  const runtime={sessionId,isBusy:false,queueLength:0};
+  const registry={
+    hasPendingWork:()=>pending,
+    runtimeForSession:(owner:number,id:string)=>owner===101&&id===sessionId?runtime:undefined,
+    ownerChatForSession:(id:string)=>id===sessionId?101:id===foreignSessionId?202:undefined,
+    controller:()=>({list:()=>[]}),get:()=>runtime,
+  } as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  const perform=(userId:number,args:Record<string,unknown>)=>agent.executeMobile({op:"callMcpTool",userId,args} as never);
+  try{
+    await agent.execute({id:"aabbccddeeff001122334455",op:"snapshot",userId:101,args:{}});
+    await assert.rejects(perform(101,{sessionId:foreignSessionId,server:"fixture-mcp",tool:"read_status",arguments:{}}),/Доступ к сеансу запрещён/);
+    busy=true;
+    await assert.rejects(perform(101,{sessionId,server:"fixture-mcp",tool:"read_status",arguments:{}}),/Дождитесь завершения/);
+    busy=false;
+    pending=true;
+    await assert.rejects(perform(101,{sessionId,server:"fixture-mcp",tool:"read_status",arguments:{}}),/очередь|задач Codex/i);
+    pending=false;
+    online=false;
+    await assert.rejects(perform(101,{sessionId,server:"fixture-mcp",tool:"read_status",arguments:{}}),/офлайн/i);
+    online=true;
+    const result=await perform(101,{sessionId,server:"fixture-mcp",tool:"read_status",arguments:{query:"latest"}});
+    assert.deepEqual(result,{text:"Fixture MCP result",isError:false,truncated:false,omittedContentBlocks:0});
+    assert.deepEqual(calls,[{threadId:sessionId,server:"fixture-mcp",tool:"read_status",arguments:{query:"latest"}}]);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile skill controls expose disabled skills without local paths and write only one authorized skill",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-skills-"));
   const sessionId="21212121-2121-4212-8212-212121212121";

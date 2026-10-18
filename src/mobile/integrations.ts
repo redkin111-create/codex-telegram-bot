@@ -1,5 +1,7 @@
 type JsonRecord = Record<string, unknown>;
 
+import { normalizeMobileMcpInputSchema, type MobileMcpInputSchema } from "../acp/mobile-mcp.js";
+
 export interface MobilePluginSummary {
   id: string;
   name: string;
@@ -28,6 +30,7 @@ export interface MobileAppSummary {
 export interface MobileMcpToolSummary {
   name: string;
   description?: string;
+  inputSchema?: MobileMcpInputSchema;
 }
 
 export interface MobileMcpServerSummary {
@@ -215,7 +218,8 @@ export function normalizeMobileMcpServers(value: unknown): MobileMcpServerSummar
       if (!toolName) return [];
       const tool = record(rawTool);
       const description = safeText(tool?.description, 500);
-      return [{ name: toolName, ...(description ? { description } : {}) }];
+      const inputSchema = normalizeMobileMcpInputSchema(tool?.inputSchema);
+      return [{ name: toolName, ...(description ? { description } : {}), ...(inputSchema ? { inputSchema } : {}) }];
     });
     const status = server?.runtimeStatus;
     const allowedStatuses = new Set(["notStarted", "starting", "connected", "authenticationRequired", "failed", "cancelled", "disabled"]);

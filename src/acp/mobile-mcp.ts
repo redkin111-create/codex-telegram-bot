@@ -1,0 +1,150 @@
+type JsonRecord = Record<string, unknown>;
+
+const MAX_ARGUMENT_BYTES = 32 * 1024;
+const MAX_RESULT_CHARS = 24_000;
+const MAX_SCHEMA_BYTES = 8 * 1024;
+const SCHEMA_TYPES = new Set(["object", "array", "string", "integer", "number", "boolean", "null"]);
+
+export interface MobileMcpInputSchema {
+  type?: string;
+  description?: string;
+  required?: string[];
+  properties?: Record<string, MobileMcpInputSchema>;
+  items?: MobileMcpInputSchema;
+  enum?: Array<string | number | boolean | null>;
+  additionalProperties?: boolean;
+}
+
+export interface MobileMcpToolResult {
+  text: string;
+  isError: boolean;
+  truncated: boolean;
+  omittedContentBlocks: number;
+}
+
+function record(value: unknown): JsonRecord | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as JsonRecord
+    : undefined;
+}
+
+function safeText(value: unknown, max: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const result = value.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, max);
+  return result || undefined;
+}
+
+function sanitizeSchema(value: unknown, depth: number): MobileMcpInputSchema | undefined {
+  const input = record(value);
+  if (!input || depth > 6) return undefined;
+  const result: MobileMcpInputSchema = {};
+  if (typeof input.type === "string" && SCHEMA_TYPES.has(input.type)) result.type = input.type;
+  const description = safeText(input.description, 400);
+  if (description) result.description = description;
+  if (Array.isArray(input.required)) {
+    result.required = input.required.flatMap((entry) => {
+      const name = safeText(entry, 100);
+      return name && !/[\\/]/.test(name) ? [name] : [];
+    }).slice(0, 40);
+  }
+  const rawProperties = record(input.properties);
+  if (rawProperties) {
+    const properties: Record<string, MobileMcpInputSchema> = {};
+    for (const [rawName, rawSchema] of Object.entries(rawProperties).slice(0, 40)) {
+      const name = safeText(rawName, 100);
+      const property = sanitizeSchema(rawSchema, depth + 1);
+      if (name && !/[\\/]/.test(name) && property) properties[name] = property;
+    }
+    if (Object.keys(properties).length) result.properties = properties;
+  }
+  const items = sanitizeSchema(input.items, depth + 1);
+  if (items) result.items = items;
+  if (typeof input.additionalProperties === "boolean") result.additionalProperties = input.additionalProperties;
+  if (Array.isArray(input.enum)) {
+    result.enum = input.enum.flatMap((entry) => {
+      if (entry === null || typeof entry === "boolean") return [entry];
+      if (typeof entry === "string") return [entry.slice(0, 200)];
+      if (typeof entry === "number" && Number.isFinite(entry)) return [entry];
+      return [];
+    }).slice(0, 20);
+  }
+  return Object.keys(result).length ? result : undefined;
+}
+
+/** Keep only a small, harmless subset of JSON Schema; defaults, examples and extensions stay local. */
+export function normalizeMobileMcpInputSchema(value: unknown): MobileMcpInputSchema | undefined {
+  const schema = sanitizeSchema(value, 0);
+  if (!schema) return undefined;
+  try {
+    return Buffer.byteLength(JSON.stringify(schema), "utf8") <= MAX_SCHEMA_BYTES ? schema : undefined;
+  } catch { return undefined; }
+}
+
+/** Validate before crossing the ACP boundary; the MCP server receives only a bounded JSON object. */
+export function validateMobileMcpArguments(value: unknown): Record<string, unknown> {
+  const root = record(value);
+  if (!root) throw new Error("Аргументы MCP-инструмента должны быть JSON-объектом");
+  let serialized: string;
+  try { serialized = JSON.stringify(root); }
+  catch { throw new Error("Аргументы MCP-инструмента должны быть корректным JSON"); }
+  if (!serialized || Buffer.byteLength(serialized, "utf8") > MAX_ARGUMENT_BYTES) {
+    throw new Error("Аргументы MCP-инструмента не должны превышать 32 КБ");
+  }
+  const pending: Array<{ value: unknown; depth: number }> = [{ value: root, depth: 0 }];
+  let nodes = 0;
+  while (pending.length) {
+    const current = pending.pop()!;
+    if (++nodes > 4000 || current.depth > 20) throw new Error("Структура аргументов MCP-инструмента слишком сложная");
+    if (typeof current.value !== "object" || current.value === null) continue;
+    for (const child of Object.values(current.value)) pending.push({ value: child, depth: current.depth + 1 });
+  }
+  return root;
+}
+
+function boundedJson(value: unknown): string | undefined {
+  let nodes = 0;
+  const visit = (input: unknown, depth: number): unknown => {
+    if (++nodes > 1000) return "[пропущено: слишком много данных]";
+    if (depth > 8) return "[пропущено: слишком глубокая структура]";
+    if (input === null || typeof input === "boolean") return input;
+    if (typeof input === "number") return Number.isFinite(input) ? input : null;
+    if (typeof input === "string") return input.slice(0, 4_000);
+    if (Array.isArray(input)) return input.slice(0, 100).map((entry) => visit(entry, depth + 1));
+    const obj = record(input);
+    if (!obj) return undefined;
+    const result: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(obj).slice(0, 100)) {
+      result[key.slice(0, 120)] = visit(child, depth + 1);
+    }
+    return result;
+  };
+  try {
+    const normalized = visit(value, 0);
+    return JSON.stringify(normalized);
+  } catch { return undefined; }
+}
+
+/** Return only text and structured JSON; image bytes, links, resources and metadata remain server-side. */
+export function normalizeMobileMcpToolResult(value: unknown): MobileMcpToolResult {
+  const response = record(value);
+  const pieces: string[] = [];
+  let omittedContentBlocks = 0;
+  const blocks = Array.isArray(response?.content) ? response.content : [];
+  for (const raw of blocks.slice(0, 100)) {
+    const block = record(raw);
+    if (block?.type === "text" && typeof block.text === "string") pieces.push(block.text);
+    else omittedContentBlocks++;
+  }
+  omittedContentBlocks += Math.max(0, blocks.length - 100);
+  if (response && response.structuredContent !== undefined) {
+    const structured = boundedJson(response.structuredContent);
+    if (structured) pieces.push(structured);
+  }
+  const combined = pieces.join("\n\n");
+  return {
+    text: combined.slice(0, MAX_RESULT_CHARS),
+    isError: response?.isError === true,
+    truncated: combined.length > MAX_RESULT_CHARS,
+    omittedContentBlocks,
+  };
+}

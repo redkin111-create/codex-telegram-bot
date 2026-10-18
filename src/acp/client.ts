@@ -15,6 +15,7 @@ import { codexLaunchInfo, codexSpawn } from "../app/codex-cli.js";
 import { createLogger } from "../logger.js";
 import { killPid } from "../sessions/process.js";
 import { AcpError, isAccountExhaustedError, isContextExhaustedError, isTransientAcpError, toAcpError } from "./errors.js";
+import { normalizeMobileMcpToolResult, validateMobileMcpArguments } from "./mobile-mcp.js";
 import { decideApproval, decidePermissionsApproval } from "./approvals.js";
 import { handleServerRequest, type ServerHandlerOptions } from "./server-handlers.js";
 import { JsonRpcTransport } from "./transport.js";
@@ -461,6 +462,38 @@ export class AcpClient extends EventEmitter {
       cursor = response?.nextCursor ?? undefined;
     } while (cursor);
     return servers;
+  }
+
+  /** Invoke one MCP tool on the already-connected Codex thread after a live catalog check. */
+  async callMobileMcpTool(
+    threadId: string,
+    serverName: string,
+    toolName: string,
+    argumentValue: unknown,
+  ): Promise<ReturnType<typeof normalizeMobileMcpToolResult>> {
+    if (!threadId.trim() || threadId.length > 128 || /[\u0000-\u001f\u007f]/.test(threadId) ||
+        !serverName.trim() || serverName.length > 120 || /[\u0000-\u001f\u007f]/.test(serverName) ||
+        !toolName.trim() || toolName.length > 120 || /[\u0000-\u001f\u007f]/.test(toolName)) {
+      throw new Error("Выберите MCP-сервер и инструмент из текущего сеанса Codex");
+    }
+    const argumentsValue = validateMobileMcpArguments(argumentValue);
+    const servers = await this.listMobileMcpServers(threadId);
+    const server = servers.find((entry) => entry.name === serverName);
+    if (!server || server.runtimeStatus !== "connected") {
+      throw new Error("Сервер MCP не подключён к выбранному сеансу Codex");
+    }
+    if (!server.tools || !Object.hasOwn(server.tools, toolName)) {
+      throw new Error("MCP-инструмент не найден в текущем каталоге сеанса Codex");
+    }
+    let response: unknown;
+    try {
+      response = await this.request("mcpServer/tool/call", {
+        threadId, server: serverName, tool: toolName, arguments: argumentsValue,
+      });
+    } catch {
+      throw new AcpError("Codex не смог выполнить MCP-инструмент");
+    }
+    return normalizeMobileMcpToolResult(response);
   }
 
   /** Read the current skill inventory for one authorized project directory. */

@@ -13,6 +13,13 @@ const effortLabel: Record<string, string> = {
 type PluginAction = { kind: "install" | "uninstall"; pluginId: string; };
 type PluginInstallNotice = { name: string; installUrl?: string }[];
 type SkillAction = { name: string; enabled: boolean };
+type McpToolAction = {
+  serverName: string;
+  toolName: string;
+  description?: string;
+  inputSchema?: NonNullable<MobileCapabilities["mcpServers"][number]["tools"][number]["inputSchema"]>;
+};
+type McpToolResult = { text: string; isError: boolean; truncated: boolean; omittedContentBlocks: number };
 type MarketplaceAction =
   | { kind: "add"; source: string; refName: string }
   | { kind: "remove" | "upgrade"; marketplaceName: string };
@@ -70,6 +77,10 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
   const [marketplaceAction, setMarketplaceAction] = useState<MarketplaceAction>();
   const [marketplaceNotice, setMarketplaceNotice] = useState("");
   const [mcpLoginLinks, setMcpLoginLinks] = useState<Record<string, string>>({});
+  const [mcpToolAction, setMcpToolAction] = useState<McpToolAction>();
+  const [mcpToolArguments, setMcpToolArguments] = useState("{}");
+  const [mcpToolError, setMcpToolError] = useState("");
+  const [mcpToolResult, setMcpToolResult] = useState<McpToolResult>();
 
   async function reload() {
     setLoading(true);
@@ -228,6 +239,35 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
     } finally { setSaving(false); }
   }
 
+  async function confirmMcpToolCall() {
+    const action = mcpToolAction;
+    if (!action) return;
+    let argumentsValue: unknown;
+    try { argumentsValue = JSON.parse(mcpToolArguments || "{}"); }
+    catch { setMcpToolError("Проверьте JSON-аргументы MCP-инструмента."); return; }
+    if (!argumentsValue || typeof argumentsValue !== "object" || Array.isArray(argumentsValue)) {
+      setMcpToolError("Аргументы MCP-инструмента должны быть JSON-объектом.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    setMcpToolError("");
+    setMcpToolResult(undefined);
+    try {
+      const result = await onOperation("callMcpTool", {
+        sessionId, server: action.serverName, tool: action.toolName, arguments: argumentsValue,
+      }) as Partial<McpToolResult>;
+      if (!result || typeof result.text !== "string") throw new Error("Codex вернул некорректный результат MCP-инструмента");
+      setMcpToolResult({
+        text: result.text.slice(0, 24_000), isError: result.isError === true,
+        truncated: result.truncated === true, omittedContentBlocks: Number.isSafeInteger(result.omittedContentBlocks) && Number(result.omittedContentBlocks) > 0 ? Number(result.omittedContentBlocks) : 0,
+      });
+      setMcpToolAction(undefined);
+    } catch (cause) {
+      setMcpToolError(cause instanceof Error ? cause.message : "Не удалось вызвать MCP-инструмент");
+    } finally { setSaving(false); }
+  }
+
   const inputClass = "min-h-11 w-full appearance-none rounded-xl border border-border bg-[#111613] px-3 pr-9 text-sm text-text outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:opacity-50";
   const usable = Boolean(capabilities?.online && connected && !saving);
   const selectedPlugin = capabilities?.plugins.find((entry) => entry.id === pluginAction?.pluginId);
@@ -288,10 +328,17 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
                 {server.discoveryFailed && <p className="mt-2 text-[11px] text-[#ffc3bd]">Codex сообщил об ошибке списка инструментов. Подробности доступны в локальном Codex.</p>}
                 {(server.status === "authenticationRequired" || server.authStatus === "notLoggedIn") && <div className="mt-3 flex flex-wrap gap-2"><Button type="button" variant="outline" className="min-h-9 px-3 text-xs" disabled={!usable} onClick={() => void beginMcpOAuth(server.name)}><ShieldCheck size={14} /> Начать вход</Button></div>}
                 {mcpLoginLinks[server.name] && safeLinkHost(mcpLoginLinks[server.name]) && <div className="mt-3 space-y-2 rounded-lg border border-border bg-[#111613] p-3" role="status"><p className="text-xs leading-relaxed text-muted">Продолжите вход у провайдера. Перед вводом пароля проверьте адрес: <span className="font-medium text-text">{safeLinkHost(mcpLoginLinks[server.name])}</span>.</p><div className="flex flex-wrap items-center gap-2"><a className="inline-flex min-h-9 items-center gap-1 text-xs text-accent underline" href={mcpLoginLinks[server.name]} target="_blank" rel="noopener noreferrer">Открыть страницу входа <ExternalLink size={12} /></a><Button type="button" variant="ghost" className="min-h-9 px-2 text-xs" disabled={loading || saving} onClick={() => void reload()}>Проверить подключение</Button></div></div>}
-                {server.tools.length > 0 && <details className="mt-3 border-t border-border pt-2"><summary className="min-h-8 cursor-pointer py-1 text-xs font-medium">Доступные инструменты ({server.toolCount})</summary><ul className="mt-1 space-y-2">{server.tools.map((tool) => <li key={tool.name} className="rounded-lg bg-[#171d18] p-2"><p className="break-words font-mono text-[11px]">{tool.name}</p>{tool.description && <p className="mt-1 break-words text-[11px] leading-relaxed text-muted">{tool.description}</p>}</li>)}</ul></details>}
+                {server.tools.length > 0 && <details className="mt-3 border-t border-border pt-2"><summary className="min-h-8 cursor-pointer py-1 text-xs font-medium">Доступные инструменты ({server.toolCount})</summary><ul className="mt-1 space-y-2">{server.tools.map((tool) => <li key={tool.name} className="rounded-lg bg-[#171d18] p-2"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><p className="break-words font-mono text-[11px]">{tool.name}</p>{tool.description && <p className="mt-1 break-words text-[11px] leading-relaxed text-muted">{tool.description}</p>}</div>{server.status === "connected" && <Button type="button" variant="outline" className="min-h-8 shrink-0 px-2 text-[11px]" disabled={!usable} onClick={() => { setMcpToolResult(undefined); setMcpToolArguments("{}"); setMcpToolError(""); setMcpToolAction({ serverName: server.name, toolName: tool.name, description: tool.description, inputSchema: tool.inputSchema }); }}>Вызвать</Button>}</div></li>)}</ul></details>}
               </li>)}</ul> : <p className="text-xs text-muted">В этом сеансе нет подключённых MCP-серверов.</p>}
-            <p className="text-[11px] leading-relaxed text-muted">Показано состояние выбранного сеанса. Адреса, параметры инструментов и секреты авторизации не передаются в мобильный интерфейс.</p>
+            <p className="text-[11px] leading-relaxed text-muted">Показано состояние выбранного сеанса. Схемы аргументов очищены от примеров и секретных метаданных; результаты выводятся как обычный текст.</p>
           </Card>
+          {mcpToolResult && <Card className="space-y-2 p-4" role={mcpToolResult.isError ? "alert" : "status"}>
+            <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-semibold">Результат MCP-инструмента</h3><Button type="button" variant="ghost" className="min-h-8 px-2 text-xs" onClick={() => setMcpToolResult(undefined)}>Скрыть</Button></div>
+            {mcpToolResult.isError && <p className="text-xs text-[#ffc3bd]">Инструмент сообщил об ошибке.</p>}
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-[#111613] p-3 text-xs leading-relaxed">{mcpToolResult.text || "Инструмент не вернул текст."}</pre>
+            {mcpToolResult.truncated && <p className="text-[11px] text-muted">Вывод ограничен по размеру.</p>}
+            {mcpToolResult.omittedContentBlocks > 0 && <p className="text-[11px] text-muted">Скрыто нетекстовых блоков: {mcpToolResult.omittedContentBlocks}. Изображения, ссылки и встроенные ресурсы не открывались.</p>}
+          </Card>}
           <McpConfigPanel sessionId={sessionId} canChange={capabilities.online} onOperation={onOperation} onRestarted={reload} />
           <Card className="space-y-3 p-4">
             <h3 className="flex items-center gap-2 text-sm font-semibold"><Puzzle size={16} className="text-accent" /> Плагины Codex</h3>
@@ -364,6 +411,19 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
             <p className="mt-2 text-xs leading-relaxed text-muted">{marketplaceAction.kind === "add" ? "Codex загрузит список плагинов по этому адресу. Код плагинов не запускается этой кнопкой, но их инструкции и инструменты могут повлиять на последующие задачи." : marketplaceAction.kind === "upgrade" ? "Codex получит новую версию этого каталога. Состав и инструкции плагинов могут измениться и затронуть другие сеансы." : "Codex удалит запись каталога из настроек. Плагины из него могут перестать быть доступными в других сеансах."}</p>
           </div>
           <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={saving} onClick={() => setMarketplaceAction(undefined)}>Отмена</Button><Button type="button" className="flex-1" disabled={saving || !usable} onClick={() => void confirmMarketplaceAction()}>{saving ? "Выполняю…" : marketplaceAction.kind === "add" ? "Добавить" : marketplaceAction.kind === "upgrade" ? "Обновить" : "Удалить"}</Button></div>
+        </section>
+      </div>}
+      {mcpToolAction && <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
+        <section role="alertdialog" aria-modal="true" aria-labelledby="mcp-tool-confirm-title" className="safe-area-bottom max-h-[92svh] w-full max-w-md space-y-4 overflow-y-auto rounded-2xl border border-border bg-elevated p-5 shadow-soft">
+          <div><h3 id="mcp-tool-confirm-title" className="text-base font-semibold">Подтвердите вызов MCP</h3>
+            <p className="mt-2 break-words text-sm"><span className="font-medium">{mcpToolAction.serverName}</span> · <span className="font-mono">{mcpToolAction.toolName}</span></p>
+            {mcpToolAction.description && <p className="mt-2 break-words text-xs leading-relaxed text-muted">{mcpToolAction.description}</p>}
+            <p className="mt-2 text-xs leading-relaxed text-[#e6c990]">Инструмент может изменять данные во внешнем сервисе. Проверьте аргументы: они будут переданы выбранному MCP-серверу.</p>
+          </div>
+          {mcpToolAction.inputSchema && <details><summary className="min-h-9 cursor-pointer py-2 text-xs font-medium">Схема входных данных</summary><pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-[#111613] p-3 text-[11px] text-muted">{JSON.stringify(mcpToolAction.inputSchema, null, 2)}</pre></details>}
+          {mcpToolError && <p role="alert" className="rounded-xl border border-[#733b39] bg-[#351f1e] p-3 text-sm text-[#ffc3bd]">{mcpToolError}</p>}
+          <label className="block space-y-1.5"><span className="text-xs text-muted">Аргументы JSON</span><Textarea aria-label="Аргументы MCP JSON" value={mcpToolArguments} onChange={(event) => setMcpToolArguments(event.target.value)} rows={7} maxLength={32_768} spellCheck={false} autoCapitalize="off" autoCorrect="off" className="font-mono text-xs" /></label>
+          <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={saving} onClick={() => setMcpToolAction(undefined)}>Отмена</Button><Button type="button" className="flex-1" disabled={saving || !usable} onClick={() => void confirmMcpToolCall()}>{saving ? "Выполняю…" : "Вызвать инструмент"}</Button></div>
         </section>
       </div>}
     </section>

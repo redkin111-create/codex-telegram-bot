@@ -555,6 +555,13 @@ const agent = {
       fixtureMcpAuthorized = true;
       return { authorizationUrl: "https://login.example.invalid/oauth/fixture" };
     }
+    if (job.op === "callMcpTool") {
+      if (!fixtureMcpAuthorized || args.sessionId !== firstSession || args.server !== "fixture-mcp") throw new Error("Fixture MCP-сервер не подключён к выбранному сеансу");
+      if (args.tool !== "read_status") throw new Error("Fixture MCP-инструмент не найден");
+      const input = args.arguments as { query?: unknown };
+      if (!input || typeof input !== "object" || typeof input.query !== "string") throw new Error("Fixture MCP ждёт строку query");
+      return { text: `Fixture MCP result: ${input.query}\n<script>alert(1)</script>`, isError: false, truncated: false, omittedContentBlocks: 0 };
+    }
     if (job.op === "capabilities") {
       fixtureCapabilitiesCalls++;
       if (fixtureCapabilitiesFailOnCall > 0 && fixtureCapabilitiesCalls === fixtureCapabilitiesFailOnCall) {
@@ -571,8 +578,10 @@ const agent = {
         name: "fixture-mcp", status: fixtureMcpAuthorized ? "connected" : "authenticationRequired",
         authStatus: fixtureMcpAuthorized ? "oauth" : "notLoggedIn", serverName: "Fixture MCP server",
         serverVersion: "1.0", tools: [
-          { name: "read_status", description: "Read a safe fixture status." },
-          { name: "host_info", description: "Text only: <script>alert(1)</script>." },
+          { name: "read_status", description: "Read a safe fixture status.", inputSchema: {
+            type: "object", required: ["query"], properties: { query: { type: "string", description: "Search phrase" } },
+          } },
+          { name: "host_info", description: "Text only: <script>alert(1)</script>.", inputSchema: { type: "object", properties: {} } },
         ], toolCount: 2, resourceCount: 1, resourceTemplateCount: 0, discoveryFailed: false,
       }],
       plugins: [{ id: "reviewer@official", name: "Review helper", marketplace: "Fixture official",
