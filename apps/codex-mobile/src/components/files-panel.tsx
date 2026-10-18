@@ -24,6 +24,7 @@ export function FilesPanel({ sessionId, connected, onClose, onOperation }: {
   const [draft, setDraft] = useState("");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -168,6 +169,25 @@ export function FilesPanel({ sessionId, connected, onClose, onOperation }: {
     } finally { setDownloadingPath(""); }
   }
 
+  async function loadMoreEntries() {
+    const current = listing;
+    if (!current || current.nextOffset === undefined || loadingMore) return;
+    setLoadingMore(true);
+    setError("");
+    setNotice("");
+    try {
+      const page = await readFileListing(sessionId, directory, current.nextOffset);
+      setListing((latest) => {
+        if (!latest || latest.path !== page.path || latest.nextOffset !== current.nextOffset) return latest;
+        const known = new Set(latest.entries.map((entry) => `${entry.kind}:${entry.name}`));
+        return { ...page, entries: [...latest.entries, ...page.entries.filter((entry) => !known.has(`${entry.kind}:${entry.name}`))] };
+      });
+      setNotice("Загружена следующая страница файлов");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Не удалось загрузить следующую страницу");
+    } finally { setLoadingMore(false); }
+  }
+
   function goBack() {
     if (file || imagePreview) { setFile(undefined); setImagePreview(undefined); setDraft(""); setNotice(""); void refreshDirectory(); return; }
     const parts = directory.split("/").filter(Boolean);
@@ -220,6 +240,8 @@ export function FilesPanel({ sessionId, connected, onClose, onOperation }: {
             <Button type="button" variant="ghost" className="min-h-10 shrink-0 px-2 text-[#ffc3bd]" disabled={!connected || saving} aria-label={`Удалить ${entry.name}`} onClick={() => requestEntryAction(entry, "delete")}><Trash2 size={15} /></Button>
           </div>)}
         </Card>
+        {listing && <p className="mt-3 text-center text-[11px] text-muted">Показано {listing.entries.length} из {listing.total}</p>}
+        {listing?.nextOffset !== undefined && <Button type="button" variant="outline" className="mt-3 w-full" aria-label="Загрузить следующую страницу файлов" disabled={loadingMore || loading} onClick={() => void loadMoreEntries()}>{loadingMore ? "Загружаю ещё…" : "Показать ещё 250 файлов"}</Button>}
         <p className="mt-4 text-[11px] leading-relaxed text-muted">Секретные файлы, каталоги сборки и символические ссылки скрыты. Текстовые файлы ограничены 512 КБ.</p>
       </div>}
     </section>

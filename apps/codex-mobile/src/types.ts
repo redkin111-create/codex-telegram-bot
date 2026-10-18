@@ -213,6 +213,8 @@ export interface MobileFileListing {
   project: string;
   path: string;
   entries: MobileFileEntry[];
+  total: number;
+  nextOffset?: number;
 }
 
 export interface MobileFile {

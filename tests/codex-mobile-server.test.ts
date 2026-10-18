@@ -74,6 +74,10 @@ async function startFixture() {
     async executeMobile(job: { op: string; userId: number; args: Record<string, unknown> }) {
       calls.push(job);
       if (failNext) { failNext = false; throw new Error("Codex runtime unavailable"); }
+      if (job.op === "files" && job.args.offset === 250) return {
+        project: "fixture", path: String(job.args.path ?? ""),
+        entries: [{ name: "file-250.txt", kind: "file", size: 10, mtimeMs: 1 }], total: 260, nextOffset: 251,
+      };
       if (job.op === "readImage") return readImageValue;
       if (job.op === "downloadFile") return downloadValue;
       if (job.op === "capabilities") return {
@@ -1092,6 +1096,27 @@ test("project downloads require an authenticated device and an owned session, an
     const codexFailure = await fetch(url(allowedSession), { headers: { origin: f.origin, cookie: login.sessionCookie } });
     assert.equal(codexFailure.status, 502);
     assert.deepEqual(await codexFailure.json(), { error: "Не удалось скачать файл из проекта" });
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("project folder listing pages carry a validated offset to the existing agent", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const url = f.origin + `/api/files?sessionId=${allowedSession}&path=src&offset=250`;
+    const page = await fetch(url, { headers: { origin: f.origin, cookie: login.sessionCookie } });
+    assert.equal(page.status, 200);
+    assert.deepEqual(await page.json(), {
+      project: "fixture", path: "src", entries: [{ name: "file-250.txt", kind: "file", size: 10, mtimeMs: 1 }], total: 260, nextOffset: 251,
+    });
+    assert.equal(f.calls.at(-1)?.op, "files");
+    assert.equal(f.calls.at(-1)?.args.offset, 250);
+
+    const invalid = await fetch(f.origin + `/api/files?sessionId=${allowedSession}&offset=1.5`, {
+      headers: { origin: f.origin, cookie: login.sessionCookie },
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal(f.calls.at(-1)?.args.offset, 250, "invalid page offsets must not reach the Codex agent");
   } finally { await cleanup(f.server, f.dataDir); }
 });
 

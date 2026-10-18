@@ -1399,6 +1399,37 @@ test("mobile downloads return only bounded regular files inside an authorized pr
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile project folder listings expose sorted pages without hiding entries after the first 250",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-file-pages-"));
+  const project=join(dir,"project"),folder=join(project,"bulk");mkdirSync(folder,{recursive:true});
+  for(let index=0;index<260;index++)writeFileSync(join(folder,`file-${String(index).padStart(3,"0")}.txt`),String(index));
+  const sessionId="25252525-2525-4525-8525-252525252525";
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"project",roots:[project]}],
+    listThreads:async()=>[{id:sessionId,name:"Mobile file pages",cwd:project,source:"cli",recencyAt:2}],
+    availableModels:[],
+  }) as unknown as AcpClient;
+  const registry={controller:()=>({list:()=>[]}),get:()=>({sessionId,isBusy:false}),runtimeForSession:()=>undefined} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef10",op:"snapshot",userId:101,args:{}});
+    const first=await agent.executeMobile({op:"files",userId:101,args:{sessionId,path:"bulk"}}) as {entries:Array<{name:string}>;total:number;nextOffset?:number};
+    assert.equal(first.entries.length,250);
+    assert.equal(first.entries[0]?.name,"file-000.txt");
+    assert.equal(first.entries.at(-1)?.name,"file-249.txt");
+    assert.equal(first.total,260);
+    assert.equal(first.nextOffset,250);
+    const second=await agent.executeMobile({op:"files",userId:101,args:{sessionId,path:"bulk",offset:first.nextOffset}}) as {entries:Array<{name:string}>;total:number;nextOffset?:number};
+    assert.equal(second.entries.length,10);
+    assert.equal(second.entries[0]?.name,"file-250.txt");
+    assert.equal(second.entries.at(-1)?.name,"file-259.txt");
+    assert.equal(second.total,260);
+    assert.equal(second.nextOffset,undefined);
+    await assert.rejects(agent.executeMobile({op:"files",userId:101,args:{sessionId,path:"bulk",offset:1.5}}),/смещение|страниц/i);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile rename keeps a project file inside its authorized folder and rejects stale listings",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-rename-file-"));
   const project=join(dir,"project");mkdirSync(join(project,"src"),{recursive:true});

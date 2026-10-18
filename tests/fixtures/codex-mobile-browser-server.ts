@@ -134,6 +134,10 @@ const fixtureFiles = new Map<string, string>([
   ["assets/release.zip", "PK\u0003\u0004fixture archive bytes"],
 ]);
 const fixtureDirectories = new Set<string>(["src", "assets"]);
+fixtureDirectories.add("bulk");
+for (let index = 0; index < 260; index++) {
+  fixtureFiles.set(`bulk/file-${String(index).padStart(3, "0")}.txt`, `Fixture entry ${index}`);
+}
 
 const voiceAcp = {
   isConnected: true,
@@ -673,8 +677,11 @@ const agent = {
         if (slash >= 0) children.set(name, { name, kind: "directory", mtimeMs: 1 });
         else children.set(name, { name, kind: "file", size: filePath === "assets/preview.png" ? 75 : Buffer.byteLength(text), mtimeMs: 1 });
       }
-      const entries = [...children.values()].sort((a, b) => a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "directory" ? -1 : 1);
-      return { project: "codex-mobile", path, entries };
+      const allEntries = [...children.values()].sort((a, b) => a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "directory" ? -1 : 1);
+      const offset = Number(args.offset ?? 0);
+      const entries = allEntries.slice(offset, offset + 250);
+      const nextOffset = offset + entries.length < allEntries.length ? offset + entries.length : undefined;
+      return { project: "codex-mobile", path, entries, total: allEntries.length, ...(nextOffset === undefined ? {} : { nextOffset }) };
     }
     if (job.op === "readFile") {
       const path = String(args.path ?? "");

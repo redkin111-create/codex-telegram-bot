@@ -60,8 +60,9 @@ export function readApprovals(sessionId: string) {
   return jsonRequest<{ approvals: MobileApproval[] }>(`/api/approvals?sessionId=${encodeURIComponent(sessionId)}`);
 }
 
-export function readFileListing(sessionId: string, path: string) {
+export function readFileListing(sessionId: string, path: string, offset?: number) {
   const query = new URLSearchParams({ sessionId, path });
+  if (offset !== undefined) query.set("offset", String(offset));
   return jsonRequest<MobileFileListing>(`/api/files?${query}`);
 }
 

@@ -406,14 +406,19 @@ export function createMobileServer(options: MobileServerOptions): Server {
     if ((path === "/api/files" || path === "/api/file") && method === "GET") {
       const sessionId = url.searchParams.get("sessionId") ?? "";
       const filePath = url.searchParams.get("path") ?? "";
+      const offsetText = path === "/api/files" ? url.searchParams.get("offset") : null;
+      const offset = offsetText === null ? undefined : /^(?:0|[1-9]\d{0,8})$/.test(offsetText) ? Number(offsetText) : Number.NaN;
       if (!safeSessionId(sessionId) || !await options.agent.canReadSession(sessionId, device.ownerId)) {
         json(res, 403, { error: "Доступ к файлам проекта запрещён" }); return;
+      }
+      if (offsetText !== null && (!Number.isSafeInteger(offset) || offset! > 100_000_000)) {
+        json(res, 400, { error: "Недопустимое смещение списка файлов" }); return;
       }
       if (!options.agent.executeMobile) { json(res, 503, { error: "Файлы проекта недоступны" }); return; }
       try {
         const result = await options.agent.executeMobile({
           op: path === "/api/files" ? "files" : "readFile", userId: device.ownerId,
-          args: { sessionId, path: filePath },
+          args: { sessionId, path: filePath, ...(offset === undefined ? {} : { offset }) },
         });
         json(res, 200, result);
       } catch (error) { json(res, 502, { error: safeError(error) }); }

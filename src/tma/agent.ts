@@ -1233,7 +1233,9 @@ export class MiniAppAgent {
       }
       case "files":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
-        return this.mobileFileList(sessionId,chatId,typeof args.path==="string"?args.path:"");
+        const offset=args.offset===undefined?0:args.offset;
+        if(typeof offset!=="number"||!Number.isSafeInteger(offset)||offset<0||offset>100_000_000)throw new Error("Недопустимое смещение списка файлов");
+        return this.mobileFileList(sessionId,chatId,typeof args.path==="string"?args.path:"",offset);
       }
       case "readFile":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
@@ -1704,11 +1706,11 @@ export class MiniAppAgent {
     return new Set([".git","node_modules",".codex",".ssh",".history",".cache","dist","build","out","target",".venv","__pycache__"]).has(lower)||
       /^\.env(?:\.|$)/i.test(name)||/^\.npmrc$/i.test(name)||/^(?:id_rsa|id_ed25519|credentials?)(?:\.|$)/i.test(name)||/\.(?:pem|key|p12|pfx)$/i.test(name);
   }
-  private mobileFileList(sessionId:string,userId:number,rawPath:string){
+  private mobileFileList(sessionId:string,userId:number,rawPath:string,offset:number){
     const {root,name}=this.mobileRoot(sessionId,userId);
     const directory=rawPath?this.mobilePath(root,rawPath):root;
     if(!statSync(directory).isDirectory())throw new Error("Это не папка проекта");
-    const entries=readdirSync(directory,{withFileTypes:true}).flatMap(entry=>{
+    const allEntries=readdirSync(directory,{withFileTypes:true}).flatMap(entry=>{
       if(this.isHiddenMobileFile(entry.name))return [];
       const absolute=resolve(directory,entry.name);
       try{
@@ -1717,8 +1719,10 @@ export class MiniAppAgent {
         return [{name:entry.name,kind:info.isDirectory()?"directory" as const:"file" as const,
           size:info.isFile()?info.size:undefined,mtimeMs:info.mtimeMs}];
       }catch{return [];}
-    }).sort((a,b)=>a.kind===b.kind?a.name.localeCompare(b.name):a.kind==="directory"?-1:1).slice(0,250);
-    return {project:name,path:rawPath.split(/[\\/]+/).filter(Boolean).join("/"),entries};
+    }).sort((a,b)=>a.kind===b.kind?a.name.localeCompare(b.name):a.kind==="directory"?-1:1);
+    const entries=allEntries.slice(offset,offset+250);
+    const nextOffset=offset+entries.length<allEntries.length?offset+entries.length:undefined;
+    return {project:name,path:rawPath.split(/[\\/]+/).filter(Boolean).join("/"),entries,total:allEntries.length,...(nextOffset===undefined?{}:{nextOffset})};
   }
   private mobileReadFile(sessionId:string,userId:number,rawPath:string){
     const {root,name}=this.mobileRoot(sessionId,userId);
