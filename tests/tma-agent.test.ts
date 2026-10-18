@@ -58,6 +58,44 @@ test("mobile native search finds older sessions without exposing another owner's
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile session pages continue past the snapshot cap within the selected project and hide foreign threads",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-session-pages-"));
+  const project=join(dir,"workspace"),otherProject=join(dir,"other");
+  mkdirSync(project);mkdirSync(otherProject);
+  const foreignIds=new Set<string>();
+  const targetThreads=Array.from({length:620},(_,index)=>{
+    const id=`target-session-${String(index).padStart(3,"0")}`;
+    if(index%52===0)foreignIds.add(id);
+    return {id,name:`Target ${index}`,cwd:project,source:"cli",createdAt:index,updatedAt:index,recencyAt:10000-index};
+  });
+  const otherThreads=Array.from({length:20},(_,index)=>{
+    const id=`other-session-${String(index).padStart(3,"0")}`;
+    return {id,name:`Other ${index}`,cwd:otherProject,source:"cli",createdAt:index,updatedAt:index,recencyAt:5000-index};
+  });
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"workspace",roots:[project]},{id:"p2",name:"other",roots:[otherProject]}],
+    listThreads:async()=>[...targetThreads,...otherThreads],availableModels:[],
+  }) as unknown as AcpClient;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project,otherProject],allowedUsers:new Set(["101"])} as AppConfig;
+  const sessions=new TelegramSessionRegistry(dir);
+  for(const id of foreignIds)sessions.record(id,202,project,"private");
+  const agent=new MiniAppAgent({cfg,acp,registry:{get:()=>({sessionId:""}),runtimeForSession:()=>undefined,controller:()=>({list:()=>[]})} as unknown as RuntimeRegistry});
+  try{
+    const snapshot=await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}}) as {sessions:Array<{id:string}>};
+    assert.equal(snapshot.sessions.length,500);
+    assert.equal(snapshot.sessions.some((entry)=>foreignIds.has(entry.id)),false);
+    const page=await agent.executeMobile({op:"listMoreThreads" as never,userId:101,args:{offset:500,cwd:project}}) as {
+      sessions:Array<{id:string;cwd:string}>;nextOffset?:number;
+    };
+    assert.equal(page.sessions.length,100);
+    assert.ok(page.sessions.every((entry)=>entry.cwd===project&&!foreignIds.has(entry.id)));
+    assert.equal(page.nextOffset,600);
+    const end=await agent.executeMobile({op:"listMoreThreads" as never,userId:101,args:{offset:600,cwd:project}}) as {sessions:Array<unknown>;nextOffset?:number};
+    assert.equal(end.sessions.length,8);
+    assert.equal(end.nextOffset,undefined);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile terminal runs a bounded one-shot command in the authorized project and refuses a busy Codex session",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-terminal-"));
   const project=join(dir,"workspace");

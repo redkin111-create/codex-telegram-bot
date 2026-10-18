@@ -15,7 +15,7 @@ const MUTATING_OPERATIONS = new Set<TmaOperation>([
   "create", "select", "send", "cancel", "queue", "queueRemove", "queueResume",
 ]);
 const MOBILE_MUTATING_OPERATIONS = new Set<MobileLocalOperation>(["setModel", "setMode", "setReasoning", "setGoal", "clearGoal", "setSkillEnabled", "steer", "forkThread", "compactThread", "archiveThread", "unarchiveThread", "renameThread", "installPlugin", "uninstallPlugin", "createWorktree", "terminalExec", "terminalStart", "terminalInput", "terminalResize", "terminalStop", "writeFile", "createFile", "gitStage", "gitUnstage", "gitCommit", "gitCreateBranch", "gitSwitchBranch", "gitTrackRemoteBranch", "gitFetch", "gitPush"]);
-const MOBILE_READ_OPERATIONS = new Set<MobileLocalOperation>(["searchThreads", "readImage", "terminalRead"]);
+const MOBILE_READ_OPERATIONS = new Set<MobileLocalOperation>(["searchThreads", "listMoreThreads", "readImage", "terminalRead"]);
 
 export interface MobileAgent {
   canReadSession(id: string, userId: number): Promise<boolean>;

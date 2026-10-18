@@ -4,7 +4,8 @@ import type { MobileSession, MobileSnapshot } from "../types.js";
 import { Button, Input } from "./ui/primitives.js";
 
 export function Workspace({
-  snapshot, selectedProject, search, searchResults, searchCursor, searchLoading, searchMoreLoading,
+  snapshot, selectedProject, search, searchResults, searchCursor, searchLoading, searchMoreLoading, extraSessions,
+  sessionsMoreLoading, sessionsHasMore, onLoadMoreSessions,
   showArchived, selectedId, open, connectedIds,
   onProjectChange, onSearchChange, onArchivedChange, onLoadMore, onSelect, onCreate, onClose, onArchive, onUnarchive, onRename,
 }: {
@@ -15,6 +16,10 @@ export function Workspace({
   searchCursor: string;
   searchLoading: boolean;
   searchMoreLoading: boolean;
+  extraSessions: MobileSession[];
+  sessionsMoreLoading: boolean;
+  sessionsHasMore: boolean;
+  onLoadMoreSessions: () => void;
   showArchived: boolean;
   selectedId: string;
   open: boolean;
@@ -34,10 +39,16 @@ export function Workspace({
   const [renameValue, setRenameValue] = useState("");
   const [savingName, setSavingName] = useState(false);
   const nativeSearch = search.trim().length >= 2;
-  const sessions = useMemo(() => (nativeSearch ? searchResults ?? [] : (showArchived ? snapshot.archivedSessions ?? [] : snapshot.sessions)).filter((session) =>
-    (!selectedProject || session.cwd === selectedProject) &&
-    (nativeSearch || !search || `${session.title} ${session.cwd}`.toLowerCase().includes(search.toLowerCase())),
-  ), [snapshot.sessions, snapshot.archivedSessions, searchResults, selectedProject, search, showArchived, nativeSearch]);
+  const sessions = useMemo(() => {
+    const source = nativeSearch ? searchResults ?? [] : [...(showArchived ? snapshot.archivedSessions ?? [] : snapshot.sessions), ...extraSessions];
+    const known = new Set<string>();
+    return source.filter((session) => {
+      if (known.has(session.id)) return false;
+      known.add(session.id);
+      return (!selectedProject || session.cwd === selectedProject) &&
+        (nativeSearch || !search || `${session.title} ${session.cwd}`.toLowerCase().includes(search.toLowerCase()));
+    });
+  }, [snapshot.sessions, snapshot.archivedSessions, searchResults, extraSessions, selectedProject, search, showArchived, nativeSearch]);
   const currentProject = snapshot.projects.find((project) => project.path === selectedProject);
 
   async function saveRename(session: MobileSession) {
@@ -106,6 +117,7 @@ export function Workspace({
           })}
           {sessions.length === 0 && <p className="rounded-xl border border-dashed border-border px-3 py-5 text-center text-xs leading-5 text-muted">{nativeSearch && (searchLoading || searchResults === undefined) ? "Ищу сеансы в Codex…" : showArchived ? "В архиве нет сеансов." : "Сеансы не найдены. Проверьте фильтр или обновите список."}</p>}
           {nativeSearch && searchCursor && <Button type="button" variant="outline" className="mt-2 w-full" onClick={onLoadMore} disabled={searchLoading || searchMoreLoading}>{searchMoreLoading ? "Загружаю…" : "Ещё результаты"}</Button>}
+          {!nativeSearch && sessionsHasMore && <Button type="button" variant="outline" className="mt-2 w-full" onClick={onLoadMoreSessions} disabled={sessionsMoreLoading}>{sessionsMoreLoading ? "Загружаю сеансы…" : "Ещё сеансы"}</Button>}
         </div>
       </div>
       <div className="border-t border-border px-4 py-3 text-[11px] text-[#788278]">Codex Desktop · история и управление</div>

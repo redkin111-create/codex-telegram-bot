@@ -15,6 +15,7 @@ const ownerId = 101;
 const firstSession = "11111111-1111-4111-8111-111111111111";
 const secondSession = "22222222-2222-4222-8222-222222222222";
 const archivedFixtureSession = "44444444-4444-4444-8444-444444444444";
+const olderArchivedFixtureSession = "77777777-7777-4777-8777-777777777777";
 const projectOne = "C:\\fixture\\codex-mobile";
 const projectTwo = "C:\\fixture\\other-project";
 const screenshotPath = "C:\\fixture\\codex-mobile\\screenshots\\sample.png";
@@ -64,6 +65,7 @@ const sessions = [
 ];
 const archivedSessions = [
   { id: archivedFixtureSession, title: "Старый архивный сеанс", cwd: projectOne, updatedAt: Date.now() - 30_000, source: "appServer" },
+  { id: olderArchivedFixtureSession, title: "Ещё один архивный сеанс", cwd: projectOne, updatedAt: Date.now() - 60_000, source: "cli" },
 ];
 const history = new Map<string, Array<{ role: "user" | "assistant" | "tool"; text: string; tool?: string; timestamp: number }>>([
   [firstSession, [
@@ -111,7 +113,7 @@ const agent = {
           const runtime = controlled.get(session.id);
           return { ...session, archived: false, busy: runtime?.busy ?? false, queue: runtime?.queue.length ?? 0 };
         }),
-        archivedSessions: archivedSessions.map((session) => ({ ...session, archived: true, busy: false, queue: 0 })),
+        archivedSessions: archivedSessions.slice(0, 1).map((session) => ({ ...session, archived: true, busy: false, queue: 0 })),
         archiveAvailable: true,
         selected, controlled: [...controlled].map(([id, runtime]) => ({ id, busy: runtime.busy, queue: runtime.queue.length, paused: runtime.paused })),
         online: true, model: "fixture", models: [{ id: "fixture", name: "Fixture" }],
@@ -201,6 +203,17 @@ const agent = {
       return {
         sessions: page.map((session) => ({ ...session, archived: args.archived === true, busy: false, queue: 0, liveStatus: "unknown", liveLabel: "Статус неизвестен" })),
         nextCursor: offset + page.length < matching.length ? String(offset + page.length) : undefined,
+      };
+    }
+    if (job.op === "listMoreThreads") {
+      const archived = args.archived === true;
+      const source = archived ? archivedSessions : sessions;
+      const matching = source.filter((session) => !args.cwd || session.cwd === args.cwd);
+      const offset = Number(args.offset ?? 0);
+      const page = matching.slice(offset, offset + 1);
+      return {
+        sessions: page.map((session) => ({ ...session, archived, busy: false, queue: 0, liveStatus: "unknown", liveLabel: "Статус неизвестен" })),
+        ...(offset + page.length < matching.length ? { nextOffset: offset + page.length } : {}),
       };
     }
     if (job.op === "terminalExec") {

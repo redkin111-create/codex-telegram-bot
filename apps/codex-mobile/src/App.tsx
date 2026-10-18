@@ -21,6 +21,7 @@ import { Button } from "./components/ui/primitives.js";
 const TerminalPanel = lazy(() => import("./components/terminal-panel.js").then((module) => ({ default: module.TerminalPanel })));
 
 const emptyQueue: MobileQueue = { items: [], busy: false, paused: false };
+type SessionPage = { sessions: MobileSession[]; nextOffset?: number; loaded: boolean; loading: boolean };
 
 export default function App() {
   const [device, setDevice] = useState<MobileDevice>();
@@ -35,6 +36,7 @@ export default function App() {
   const [searchCursor, setSearchCursor] = useState("");
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchMoreLoading, setSearchMoreLoading] = useState(false);
+  const [sessionPages, setSessionPages] = useState<Record<string, SessionPage>>({});
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [activity, setActivity] = useState<MobileActivity>();
   const [queue, setQueue] = useState<MobileQueue>(emptyQueue);
@@ -60,6 +62,7 @@ export default function App() {
   const eventSession = useRef("");
   const pendingSend = useRef<{ fingerprint: string; requestId: string } | undefined>(undefined);
   const searchGeneration = useRef(0);
+  const sessionPageRequests = useRef(new Set<string>());
 
   const expireSession = useCallback(() => {
     setDevice(undefined);
@@ -71,6 +74,8 @@ export default function App() {
     setSearchCursor("");
     setSearchMoreLoading(false);
     setSearchLoading(false);
+    setSessionPages({});
+    sessionPageRequests.current.clear();
     setHistory([]);
     setActivity(undefined);
     setQueue(emptyQueue);
@@ -139,6 +144,13 @@ export default function App() {
     [snapshot?.controlled],
   );
   const connected = !selectedSession?.archived && connectedIds.has(selectedId);
+  const sessionPageKey = `${showArchived ? "archived" : "active"}:${selectedProject}`;
+  const currentSessionPage = sessionPages[sessionPageKey];
+  const baseProjectSessions = useMemo(
+    () => (showArchived ? snapshot?.archivedSessions ?? [] : snapshot?.sessions ?? [])
+      .filter((session) => !selectedProject || session.cwd === selectedProject),
+    [snapshot?.sessions, snapshot?.archivedSessions, selectedProject, showArchived],
+  );
 
   useEffect(() => {
     if (!device || !selectedId) {
@@ -257,7 +269,10 @@ export default function App() {
     setError("");
     try {
       const result = await runOperation<T>(op, args, csrf);
-      if (!op.startsWith("terminal")) void refreshSnapshot();
+      if (op === "create" || op === "forkThread" || op === "archiveThread" || op === "unarchiveThread" || op === "renameThread" || op === "createWorktree") {
+        setSessionPages({});
+      }
+      if (!op.startsWith("terminal") && op !== "listMoreThreads" && op !== "searchThreads") void refreshSnapshot();
       return result;
     } catch (cause) { handleApiError(cause); throw cause; }
   }, [csrf, handleApiError, refreshSnapshot]);
@@ -307,6 +322,37 @@ export default function App() {
       setSearchCursor(result.nextCursor ?? "");
     } catch { /* The app-level alert reports the Codex search error. */ }
     finally { if (searchGeneration.current === generation) setSearchMoreLoading(false); }
+  }
+
+  async function loadMoreSessions() {
+    if (!device || !snapshot || search.trim().length >= 2 || sessionPageRequests.current.has(sessionPageKey)) return;
+    const page = sessionPages[sessionPageKey];
+    if (page?.loaded && page.nextOffset === undefined) return;
+    const offset = page?.nextOffset ?? baseProjectSessions.length + (page?.sessions.length ?? 0);
+    sessionPageRequests.current.add(sessionPageKey);
+    setSessionPages((current) => ({ ...current, [sessionPageKey]: { ...(current[sessionPageKey] ?? { sessions: [], loaded: false }), loading: true } }));
+    try {
+      const result = await operation<{ sessions: MobileSession[]; nextOffset?: number }>("listMoreThreads", {
+        offset, archived: showArchived, ...(selectedProject ? { cwd: selectedProject } : {}),
+      });
+      setSessionPages((current) => {
+        const previous = current[sessionPageKey] ?? { sessions: [], loaded: false, loading: false };
+        const known = new Set([...baseProjectSessions, ...previous.sessions].map((session) => session.id));
+        return {
+          ...current,
+          [sessionPageKey]: {
+            sessions: [...previous.sessions, ...result.sessions.filter((session) => !known.has(session.id))],
+            nextOffset: result.nextOffset,
+            loaded: true,
+            loading: false,
+          },
+        };
+      });
+    } catch {
+      setSessionPages((current) => ({ ...current, [sessionPageKey]: { ...(current[sessionPageKey] ?? { sessions: [], loaded: false }), loading: false } }));
+    } finally {
+      sessionPageRequests.current.delete(sessionPageKey);
+    }
   }
 
   async function connectSession() {
@@ -474,6 +520,9 @@ export default function App() {
     <div className="flex min-h-0 flex-1">
       <Workspace snapshot={snapshot} selectedProject={selectedProject} search={search} searchResults={searchResults}
         searchCursor={searchCursor} searchLoading={searchLoading} searchMoreLoading={searchMoreLoading}
+        extraSessions={currentSessionPage?.sessions ?? []} sessionsMoreLoading={currentSessionPage?.loading ?? false}
+        sessionsHasMore={!currentSessionPage?.loaded || currentSessionPage.nextOffset !== undefined}
+        onLoadMoreSessions={() => void loadMoreSessions()}
         showArchived={showArchived} onArchivedChange={setShowArchived} onLoadMore={() => void loadMoreSearch()} selectedId={selectedId}
         open={workspaceOpen} connectedIds={connectedIds} onProjectChange={setSelectedProject} onSearchChange={setSearch}
         onSelect={selectWorkspaceSession} onCreate={() => void createSession()} onClose={() => setWorkspaceOpen(false)}

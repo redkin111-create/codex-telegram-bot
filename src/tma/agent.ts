@@ -69,7 +69,7 @@ interface MobilePtyRecord {
   expiry?:NodeJS.Timeout;dataSubscription?:{dispose():void};exitSubscription?:{dispose():void};
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "searchThreads" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+export type MobileLocalOperation = "capabilities" | "searchThreads" | "listMoreThreads" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 export class MiniAppAgent {
   private readonly abort=new AbortController();
@@ -301,7 +301,7 @@ export class MiniAppAgent {
     const chatId=job.userId,args=job.args;
     if(!cfg.allowedUsers.has(String(chatId)))throw new Error("Пользователь не разрешён на ПК");
     const sessionId=typeof args.sessionId==="string"?args.sessionId:"";
-    if(job.op!=="capabilities"&&job.op!=="searchThreads"&&!sessionId)throw new Error("Сначала выберите сеанс Codex");
+    if(job.op!=="capabilities"&&job.op!=="searchThreads"&&job.op!=="listMoreThreads"&&!sessionId)throw new Error("Сначала выберите сеанс Codex");
     const runtime=sessionId?registry.runtimeForSession(chatId,sessionId):undefined;
     switch(job.op){
       case "searchThreads":{
@@ -352,6 +352,30 @@ export class MiniAppAgent {
           };
         });
         return {sessions,nextCursor:page.nextCursor};
+      }
+      case "listMoreThreads":{
+        const offset=args.offset;
+        if(typeof offset!=="number"||!Number.isSafeInteger(offset)||offset<0||offset>100_000)throw new Error("Неверное место продолжения списка сеансов");
+        let cwd:string|undefined;
+        if(args.cwd!==undefined){
+          if(typeof args.cwd!=="string"||args.cwd.length>700)throw new Error("Неверная папка проекта для списка сеансов");
+          if(args.cwd.trim())cwd=(await this.project(args.cwd.trim(),chatId)).cwd;
+        }
+        const archived=args.archived===true;
+        const threads=archived?await this.archivedCatalogue(chatId):(await this.catalogue(chatId)).threads;
+        const visible=threads.filter(thread=>!cwd||thread.cwd===cwd);
+        const page=visible.slice(offset,offset+100);
+        const sessions=page.map(thread=>{
+          const current=archived?undefined:registry.runtimeForSession(chatId,thread.id);
+          return {
+            id:thread.id,title:(thread.name||thread.preview||(archived?"Без названия":"Новый сеанс")).slice(0,180),cwd:thread.cwd||"",
+            updatedAt:thread.recencyAt||thread.updatedAt||thread.createdAt||0,
+            source:threadSourceKind(thread)||"unknown",archived,busy:Boolean(current?.isBusy),
+            queue:current?.queueLength||0,liveStatus:"unknown",liveLabel:"Статус неизвестен",
+          };
+        });
+        const nextOffset=offset+page.length;
+        return {sessions,...(nextOffset<visible.length?{nextOffset}:{})};
       }
       case "terminalExec":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");

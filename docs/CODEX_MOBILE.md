@@ -36,7 +36,7 @@ full Desktop replacement while any row below has open work.
 
 | Desktop area | Current mobile coverage | Remaining for parity |
 | --- | --- | --- |
-| Projects, sessions, history, live status and screenshots | Browse projects and sessions, read history, tool output and authorized screenshots; reconnect the event stream; rename, archive, restore and fork sessions; native Codex search reaches older active or archived sessions with cursor paging and owner filtering | Unfiltered list paging parity, richer live task details, pinning, side-chat and remaining Desktop session actions |
+| Projects, sessions, history, live status and screenshots | Browse projects and sessions, read history, tool output and authorized screenshots; reconnect the event stream; rename, archive, restore and fork sessions; native Codex search reaches older active or archived sessions with cursor paging and owner filtering; unfiltered active/archive lists continue in 100-session pages scoped to the selected project and owner | Richer live task details, pinning, side-chat and remaining Desktop session actions |
 | Prompting and queue | Send text/images, stop, queue, resume and remove queued prompts; steer a confirmed active turn | Desktop-equivalent attachment types, edit/retry behavior and remaining turn controls |
 | Approvals | Owner-scoped phone cards for the active session; allow/deny choices are checked server-side; no phone response falls back to Telegram after 45 seconds | More approval cases and parity checks for supported Codex builds |
 | Files and edits | Browse the authorized session folder, create text files in existing folders, read UTF-8 text, edit/save up to 512 KB with stale-file detection; safely preview PNG/JPEG/WebP/GIF up to 3 MiB after path, owner and file-signature checks; hides common secret folders/files, skips symlinks and blocks writes while the connected Codex session is busy | Other binary formats, full diff/review UI and Desktop-equivalent file-change navigation |
@@ -56,7 +56,7 @@ they have both server-side authorization tests and browser coverage.
 
 - Root TypeScript check: passed.
 - Mobile app TypeScript check and production build: passed.
-- Current full root test suite: 210/210 passed, including plugin/app redaction, live ACP install/uninstall checks, paired-session/CSRF checks, isolated worktree attach/rollback, owner-filtered native session search, bounded one-shot and interactive terminal checks, local tracking of an already-fetched remote branch, confirmed remote fetch/current-branch push with URL redaction and owner/CSRF/Origin checks, bounded/signature-checked project image reads, Codex skill enable/disable authorization and explicit skill input resolution, and thread-scoped MCP pagination/redaction.
+- Current full root test suite: 212/212 passed, including plugin/app redaction, live ACP install/uninstall checks, paired-session/CSRF checks, isolated worktree attach/rollback, owner-filtered native search and unfiltered active/archive session paging, bounded one-shot and interactive terminal checks, local tracking of an already-fetched remote branch, confirmed remote fetch/current-branch push with URL redaction and owner/CSRF/Origin checks, bounded/signature-checked project image reads, Codex skill enable/disable authorization and explicit skill input resolution, and thread-scoped MCP pagination/redaction.
 - Focused branch-list/switch and API authorization checks: 2/2 passed.
 - Per-file Git diff filtering validates paths inside the authorized project and passes both names for a selected rename.
 - Mobile app `npm audit`: 0 vulnerabilities.
@@ -72,6 +72,10 @@ they have both server-side authorization tests and browser coverage.
 - Browser skill at 574×637 this turn: rename an active session, archive it,
   read its archived history, restore it and return to the active view. All data
   came from the isolated browser fixture.
+- Browser skill with Pixel 7 emulation at 412×915: continue the active session
+  list across two pages, then continue the archived list and verify older
+  records appear and the load control disappears at the end. All data came
+  from the isolated browser fixture.
 - Browser skill at 574×637: fork an idle session and view the copied history;
   create a goal with a token budget, pause/resume and clear it; request manual
   context compaction, confirm the action, and verify the UI says the request was
