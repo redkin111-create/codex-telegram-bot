@@ -92,6 +92,7 @@ const fixtureSettings = { model: "fixture", mode: "code", reasoning: "medium" };
 const fixtureGoals = new Map<string, { threadId: string; objective: string; status: "active" | "paused"; tokenBudget: number | null; tokensUsed: number; timeUsedSeconds: number; createdAt: number; updatedAt: number }>();
 const fixtureStaged = new Set<string>();
 let fixtureConflictResolved = false;
+let fixtureBinaryConflictResolved = false;
 let fixtureBranch = "feat/codex-mobile-fixture";
 let fixtureNotesCommitted = false;
 let fixtureRenameStaged = true;
@@ -690,6 +691,9 @@ const agent = {
       return { path, sha256: createHash("sha256").update(fixtureFiles.get(path)!).digest("hex"), savedAt: Date.now() };
     }
     if (job.op === "gitConflictStages") {
+      if (String(args.path ?? "") === "assets/icon.bin" && !fixtureBinaryConflictResolved) return {
+        project: "codex-mobile", path: "assets/icon.bin", binaryStages: ["base", "ours", "theirs"], worktreeSha256: "a".repeat(64),
+      };
       if (String(args.path ?? "") !== "src/conflict.ts" || fixtureConflictResolved) throw new Error("Файл не находится в состоянии конфликта Git");
       return {
         project: "codex-mobile", path: "src/conflict.ts",
@@ -698,12 +702,21 @@ const agent = {
         theirs: "export const greeting = \"Hi\";\n",
       };
     }
+    if (job.op === "gitResolveConflictStage") {
+      const path = String(args.path ?? "");
+      const stage = String(args.stage ?? "");
+      if (path !== "assets/icon.bin" || fixtureBinaryConflictResolved || !["base", "ours", "theirs"].includes(stage) || args.expectedHash !== "a".repeat(64)) throw new Error("Версии конфликта изменились. Обновите Git и повторите выбор.");
+      fixtureBinaryConflictResolved = true;
+      fixtureStaged.add(path);
+      return { path, stage, size: 4, sha256: "b".repeat(64) };
+    }
     if (job.op === "gitStatus") return {
       project: "codex-mobile", branch: fixtureBranch, branches: [...new Set([fixtureBranch, "main", "release/candidate"])], remoteBranches: ["origin/mobile/feature"],
       remotes: [{ name: "origin", fetchTargets: ["github.com"], pushTargets: ["github.com"] }], clean: false,
       changes: [
         ...(!fixtureStaged.has("src/main.ts") ? [{ code: "M", indexStatus: " ", worktreeStatus: "M", path: "src/main.ts" }] : []),
         ...(fixtureConflictResolved ? [{ code: "M", indexStatus: "M", worktreeStatus: " ", path: "src/conflict.ts" }] : [{ code: "UU", indexStatus: "U", worktreeStatus: "U", path: "src/conflict.ts" }]),
+        ...(fixtureBinaryConflictResolved ? [{ code: "M", indexStatus: "M", worktreeStatus: " ", path: "assets/icon.bin" }] : [{ code: "UU", indexStatus: "U", worktreeStatus: "U", path: "assets/icon.bin" }]),
         ...(!fixtureNotesCommitted ? (!fixtureStaged.has("notes/review.md") ? [{ code: "??", indexStatus: "?", worktreeStatus: "?", path: "notes/review.md" }] : [{ code: "A", indexStatus: "A", worktreeStatus: " ", path: "notes/review.md" }]) : []),
         ...(fixtureRenameStaged ? [{ code: "R", indexStatus: "R", worktreeStatus: " ", path: "src/renamed.ts", previousPath: "src/old-main.ts" }]
           : fixtureStaged.has("src/old-main.ts") && fixtureStaged.has("src/renamed.ts")
@@ -729,6 +742,7 @@ const agent = {
       const path = String(args.path);
       fixtureStaged.add(path);
       if (path === "src/conflict.ts") fixtureConflictResolved = true;
+      if (path === "assets/icon.bin") fixtureBinaryConflictResolved = true;
       return { path, staged: true };
     }
     if (job.op === "gitUnstage") {

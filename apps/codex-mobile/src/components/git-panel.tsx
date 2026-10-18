@@ -6,6 +6,8 @@ import { conflictStagePreview, hasUnresolvedMergeMarkers, isUnmergedGitChange } 
 import { DiffViewer } from "./diff-viewer.js";
 import { Badge, Button, Card, Input, Textarea } from "./ui/primitives.js";
 
+const conflictVersionLabels = { base: "общая версия", ours: "моя версия", theirs: "их версия" } as const;
+
 export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktreeCreated, initialReviewLocation }: {
   sessionId: string;
   connected: boolean;
@@ -44,6 +46,8 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
   const [conflictDraft, setConflictDraft] = useState("");
   const [conflictError, setConflictError] = useState("");
   const [conflictSaving, setConflictSaving] = useState(false);
+  const [binaryConflict, setBinaryConflict] = useState<MobileGitConflictStages>();
+  const [binaryConflictVersion, setBinaryConflictVersion] = useState<"base" | "ours" | "theirs">();
 
   async function refresh(scope: { path: string; previousPath?: string } | undefined = diffScope) {
     setLoading(true);
@@ -131,23 +135,50 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
   async function openConflictFile(path: string) {
     setConflictFile(undefined);
     setConflictStages(undefined);
+    setBinaryConflict(undefined);
+    setBinaryConflictVersion(undefined);
     setShowConflictComparison(false);
     setConflictVersion(undefined);
     setConflictLoading(true);
     setConflictError("");
     try {
-      const [fileResult, stagesResult] = await Promise.allSettled([
-        readProjectFile(sessionId, path),
-        readGitConflictStages(sessionId, path),
-      ]);
-      if (fileResult.status === "rejected") throw fileResult.reason;
-      const file = fileResult.value;
+      let stages: MobileGitConflictStages | undefined;
+      try { stages = await readGitConflictStages(sessionId, path); }
+      catch { /* A text file can still be resolved manually when Git cannot return stage previews. */ }
+      if (stages && ((stages.binaryStages?.length ?? 0) > 0 || (stages.unsupportedStages?.length ?? 0) > 0)) {
+        setBinaryConflict(stages);
+        const firstSelectable = (["base", "ours", "theirs"] as const).find((version) => stages.binaryStages?.includes(version) || typeof stages[version] === "string");
+        setBinaryConflictVersion(firstSelectable);
+        setConflictStages(stages);
+        return;
+      }
+      const file = await readProjectFile(sessionId, path);
       setConflictFile(file);
       setConflictDraft(file.text);
-      if (stagesResult.status === "fulfilled") setConflictStages(stagesResult.value);
+      if (stages) setConflictStages(stages);
       else setConflictError("Не удалось получить версии из Git. Можно продолжить вручную в редакторе.");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось безопасно прочитать файл конфликта"); }
     finally { setConflictLoading(false); }
+  }
+
+  async function resolveConflictVersion() {
+    if (!binaryConflict || !binaryConflictVersion || !connected || conflictSaving || busyAction || binaryConflict.worktreeSha256 === undefined) return;
+    setConflictSaving(true);
+    setConflictError("");
+    try {
+      await onOperation("gitResolveConflictStage", {
+        sessionId,
+        path: binaryConflict.path,
+        stage: binaryConflictVersion,
+        expectedHash: binaryConflict.worktreeSha256,
+      });
+      setSuccess(`Выбрана ${conflictVersionLabels[binaryConflictVersion]} файла ${binaryConflict.path}; версия добавлена в индекс`);
+      setBinaryConflict(undefined);
+      setBinaryConflictVersion(undefined);
+      await refresh();
+    } catch (cause) {
+      setConflictError(cause instanceof Error ? cause.message : "Не удалось выбрать версию конфликта");
+    } finally { setConflictSaving(false); }
   }
 
   function applyConflictVersion(version: "base" | "ours" | "theirs") {
@@ -300,6 +331,29 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
         </label>}
         <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={Boolean(busyAction)} onClick={() => setReviewDialogOpen(false)}>Отмена</Button><Button type="submit" className="flex-1" disabled={!connected || Boolean(busyAction) || (reviewTargetType === "baseBranch" && !reviewBranch) || (reviewTargetType === "commit" && !reviewCommit.trim()) || (reviewTargetType === "custom" && !reviewInstructions.trim())}>{busyAction === "reviewThread" ? "Проверяю…" : "Запустить ревью"}</Button></div>
       </form>
+    </div>}
+    {binaryConflict && <div className="fixed inset-0 z-[90] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
+      <section className="safe-area-bottom w-full max-w-lg space-y-4 rounded-2xl border border-border bg-elevated p-4 shadow-soft sm:p-5" role="alertdialog" aria-modal="true" aria-labelledby="binary-conflict-title">
+        <div className="flex items-start justify-between gap-3"><div className="min-w-0"><h3 id="binary-conflict-title" className="text-base font-semibold">Выбрать версию конфликтного файла</h3><p className="mt-1 break-all font-mono text-xs text-muted">{binaryConflict.path}</p></div><Button type="button" variant="ghost" className="min-h-9 px-2" aria-label="Закрыть выбор версии конфликта" disabled={conflictSaving} onClick={() => { setBinaryConflict(undefined); setConflictError(""); }}><X size={17} /></Button></div>
+        <p className="text-xs leading-5 text-muted">Выбранная версия полностью заменит файл и сразу попадёт в индекс Git. Содержимое не отображается и не исполняется.</p>
+        {!connected && <p className="rounded-lg border border-border bg-[#111613] p-2 text-xs text-muted">Подключите сеанс к мобильному клиенту, чтобы изменить файл.</p>}
+        <fieldset className="space-y-2" disabled={!connected || conflictSaving || Boolean(busyAction)}>
+          <legend className="mb-2 text-xs font-medium">Сторона конфликта</legend>
+          {([ ["base", "Общая версия"], ["ours", "Моя версия"], ["theirs", "Их версия"] ] as const).map(([version, label]) => {
+            const available = binaryConflict.binaryStages?.includes(version) || typeof binaryConflict[version] === "string";
+            if (!available) return null;
+            const isBinary = binaryConflict.binaryStages?.includes(version) ?? false;
+            return <label key={version} className={`flex min-h-11 cursor-pointer items-center gap-3 rounded-xl border px-3 text-sm ${binaryConflictVersion === version ? "border-accent bg-accent/10" : "border-border"}`}>
+              <input type="radio" name="binary-conflict-version" value={version} checked={binaryConflictVersion === version} onChange={() => setBinaryConflictVersion(version)} />
+              <span className="flex-1">{label}</span><span className="text-[10px] text-muted">{isBinary ? "без предпросмотра" : "текстовая версия"}</span>
+            </label>;
+          })}
+          {binaryConflict.unsupportedStages?.length ? <p className="rounded-lg border border-border bg-[#111613] p-2 text-xs leading-relaxed text-muted">Некоторые стороны недоступны: это могут быть ссылки, подмодули или файлы больше 10 МБ.</p> : null}
+        </fieldset>
+        {(binaryConflict.binaryStages?.length ?? 0) > 0 && binaryConflict.worktreeSha256 === undefined && <p className="rounded-lg border border-[#5f4d2d] bg-[#292316] p-2 text-xs text-[#f0d995]">Текущий файл больше 10 МБ. Чтобы избежать неожиданной замены, сначала уменьшите его или разрешите конфликт на компьютере.</p>}
+        {conflictError && <p role="alert" className="rounded-lg border border-[#733b39] bg-[#351f1e] p-2 text-xs text-[#ffc3bd]">{conflictError}</p>}
+        <div className="flex flex-col gap-2 sm:flex-row sm:justify-end"><Button type="button" variant="outline" className="flex-1" disabled={conflictSaving} onClick={() => { setBinaryConflict(undefined); setConflictError(""); }}>Отмена</Button><Button type="button" className="flex-1" disabled={!connected || conflictSaving || Boolean(busyAction) || !binaryConflictVersion || binaryConflict.worktreeSha256 === undefined} onClick={() => void resolveConflictVersion()}>{conflictSaving ? "Выбираю…" : "Выбрать и отметить решённым"}</Button></div>
+      </section>
     </div>}
     {conflictFile && <div className="fixed inset-0 z-[90] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
       <section className="safe-area-bottom flex max-h-[92svh] w-full max-w-2xl flex-col gap-3 rounded-2xl border border-border bg-elevated p-4 shadow-soft sm:p-5" role="dialog" aria-modal="true" aria-labelledby="conflict-editor-title">

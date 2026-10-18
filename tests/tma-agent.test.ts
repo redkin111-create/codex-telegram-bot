@@ -3,7 +3,7 @@ import test from "node:test";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ReasoningEffort } from "../src/app/types.js";
@@ -1506,6 +1506,45 @@ test("mobile conflict-stage reads return bounded UTF-8 base, ours and theirs onl
     await assert.rejects(agent.executeMobile({op:"gitConflictStages" as never,userId:101,args:{sessionId,path:"..\\outside.txt"}} as never),/Недопустимый путь Git/);
     git("add","src/conflict.ts");
     await assert.rejects(agent.executeMobile({op:"gitConflictStages" as never,userId:101,args:{sessionId,path:"src/conflict.ts"}} as never),/не находится в состоянии конфликта/i);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("mobile binary Git conflict resolution selects a current regular-file stage and stages it safely",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-binary-conflict-"));
+  const project=join(dir,"repo");mkdirSync(project,{recursive:true});
+  const git=(...args:string[])=>execFileSync("git",["-C",project,...args],{encoding:"utf8",windowsHide:true});
+  const sessionId="41414141-4141-4141-8141-414141414141";
+  const file=join(project,"assets","icon.bin");mkdirSync(join(project,"assets"));
+  const base=Buffer.from([0,1,2,3]),ours=Buffer.from([0,4,5,6]),theirs=Buffer.from([0,7,8,9]);
+  git("init","-q","-b","main");
+  git("config","user.name","Mobile Fixture");git("config","user.email","mobile-fixture@example.invalid");
+  writeFileSync(file,base);git("add","assets/icon.bin");git("commit","-m","base");
+  git("switch","-q","-c","theirs");writeFileSync(file,theirs);git("commit","-am","theirs");
+  git("switch","-q","main");writeFileSync(file,ours);git("commit","-am","ours");
+  try{git("merge","theirs");}catch{/* Expected: Git cannot merge binary content. */}
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"repo",roots:[project]}],
+    listThreads:async(params?:{archived?:boolean})=>params?.archived?[]:[{id:sessionId,name:"Binary conflict fixture",cwd:project,source:"cli",recencyAt:2}],
+    availableModels:[],
+  }) as unknown as AcpClient;
+  const runtime={sessionId,isBusy:false};
+  const registry={controller:()=>({list:()=>[]}),get:()=>runtime,runtimeForSession:()=>runtime} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef02",op:"snapshot",userId:101,args:{}});
+    const currentHash=createHash("sha256").update(readFileSync(file)).digest("hex");
+    const stages=await agent.executeMobile({op:"gitConflictStages" as never,userId:101,args:{sessionId,path:"assets/icon.bin"}} as never) as {binaryStages?:string[];worktreeSha256?:string};
+    assert.deepEqual(stages.binaryStages,["base","ours","theirs"]);
+    assert.equal(stages.worktreeSha256,currentHash);
+    await assert.rejects(agent.executeMobile({op:"gitResolveConflictStage" as never,userId:101,args:{sessionId,path:"assets/icon.bin",stage:"theirs",expectedHash:"0".repeat(64)}} as never),/изменился|обновите/i);
+    assert.deepEqual(readFileSync(file),ours,"a stale request must not overwrite the current worktree file");
+    const resolved=await agent.executeMobile({op:"gitResolveConflictStage" as never,userId:101,args:{sessionId,path:"assets/icon.bin",stage:"theirs",expectedHash:currentHash}} as never) as {path:string;size:number;stage:string};
+    assert.deepEqual(resolved,{path:"assets/icon.bin",size:theirs.length,stage:"theirs",sha256:createHash("sha256").update(theirs).digest("hex")});
+    assert.deepEqual(readFileSync(file),theirs);
+    const status=await agent.executeMobile({op:"gitStatus",userId:101,args:{sessionId}}) as {changes:Array<{path:string;indexStatus:string;worktreeStatus:string}>};
+    assert.ok(status.changes.some((change)=>change.path==="assets/icon.bin"&&change.indexStatus==="M"&&change.worktreeStatus===" "));
+    await assert.rejects(agent.executeMobile({op:"gitResolveConflictStage" as never,userId:202,args:{sessionId,path:"assets/icon.bin",stage:"ours",expectedHash:createHash("sha256").update(theirs).digest("hex")}} as never),/Пользователь не разрешён/);
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 

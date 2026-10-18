@@ -1079,6 +1079,35 @@ test("Git conflict-stage reads require a paired device and an owned session", as
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
+test("binary conflict resolution requires paired-device CSRF and an owned session", async () => {
+  const f = await startFixture();
+  try {
+    const payload = JSON.stringify({ op: "gitResolveConflictStage", args: { sessionId: allowedSession, path: "assets/icon.bin", stage: "theirs", expectedHash: "a".repeat(64) } });
+    const unauthenticated = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: payload,
+    });
+    assert.equal(unauthenticated.status, 401);
+    assert.equal(f.calls.length, 0);
+
+    const login = await pair(f.origin, f.auth);
+    const noCsrf = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: payload,
+    });
+    assert.equal(noCsrf.status, 403);
+    const foreign = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ op: "gitResolveConflictStage", args: { sessionId: foreignSession, path: "assets/icon.bin", stage: "theirs", expectedHash: "a".repeat(64) } }),
+    });
+    assert.equal(foreign.status, 403);
+    assert.equal(f.calls.length, 0);
+    const authorized = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: payload,
+    });
+    assert.equal(authorized.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "gitResolveConflictStage");
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
 test("Git status and diffs are exposed only for the paired owner's session", async () => {
   const f = await startFixture();
   try {
