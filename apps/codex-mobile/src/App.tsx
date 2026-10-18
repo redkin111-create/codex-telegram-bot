@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FolderOpen, GitBranch, LoaderCircle, Menu, RefreshCw, Shield, ShieldAlert, SlidersHorizontal } from "lucide-react";
+import { FolderOpen, GitBranch, LoaderCircle, Menu, RefreshCw, Shield, ShieldAlert, SlidersHorizontal, Terminal } from "lucide-react";
 import {
   asLiveEvent, logout, MobileApiError, openEventStream, parseSseBlock, readActivity, readApprovals,
   readHistory, readSession, readSnapshot, resolveApproval, runOperation,
@@ -11,6 +11,7 @@ import { FilesPanel } from "./components/files-panel.js";
 import { GitPanel } from "./components/git-panel.js";
 import { Pairing } from "./components/pairing.js";
 import { SettingsPanel } from "./components/settings-panel.js";
+import { TerminalPanel } from "./components/terminal-panel.js";
 import { Workspace } from "./components/workspace.js";
 import type {
   HistoryEntry, MobileActivity, MobileApproval, MobileDevice, MobileLiveEvent, MobileQueue, MobileSession, MobileSnapshot,
@@ -49,6 +50,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const [gitOpen, setGitOpen] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const [pendingApproval, setPendingApproval] = useState<MobileApproval>();
   const [approvalOpen, setApprovalOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -76,6 +78,7 @@ export default function App() {
     setSettingsOpen(false);
     setFilesOpen(false);
     setGitOpen(false);
+    setTerminalOpen(false);
     setPendingApproval(undefined);
     setApprovalOpen(false);
   }, []);
@@ -456,6 +459,7 @@ export default function App() {
         {pendingApproval && <Button variant="outline" className="min-h-10 px-2 text-[#f2c66d]" aria-label="Открыть подтверждение" onClick={() => setApprovalOpen(true)}><ShieldAlert size={17} /></Button>}
         <Button variant="ghost" className="min-h-10 px-2" aria-label="Файлы проекта" onClick={() => setFilesOpen(true)} disabled={!selectedId}><FolderOpen size={17} /></Button>
         <Button variant="ghost" className="min-h-10 px-2" aria-label="Git и изменения" onClick={() => setGitOpen(true)} disabled={!selectedId}><GitBranch size={17} /></Button>
+        <Button variant="ghost" className="min-h-10 px-2" aria-label="Терминал проекта" onClick={() => setTerminalOpen(true)} disabled={!selectedId}><Terminal size={17} /></Button>
         <Button variant="ghost" className="min-h-10 px-2" aria-label="Настройки Codex" onClick={() => setSettingsOpen(true)}><SlidersHorizontal size={17} /></Button>
         <Button variant="ghost" className="min-h-10 px-2" aria-label="Устройства и безопасность" onClick={() => setDevicesOpen(true)}><Shield size={17} /><span className="sr-only">Устройства</span></Button>
       </div>
@@ -479,6 +483,7 @@ export default function App() {
     {settingsOpen && <SettingsPanel sessionId={selectedId} connected={connected} onClose={() => setSettingsOpen(false)} onOperation={(op: MobileOperation, args) => operation(op, args)} />}
     {filesOpen && selectedId && <FilesPanel sessionId={selectedId} connected={connected} onClose={() => setFilesOpen(false)} onOperation={(op: MobileOperation, args) => operation(op, args)} />}
     {gitOpen && selectedId && <GitPanel key={selectedId} sessionId={selectedId} connected={connected} onClose={() => setGitOpen(false)} onOperation={(op: MobileOperation, args) => operation(op, args)} onWorktreeCreated={async (id, path) => { await operation("select", { sessionId: id }); setSelectedSearchSession(undefined); setSelectedId(id); setSelectedProject(path); setGitOpen(false); setWorkspaceOpen(false); }} />}
+    {terminalOpen && selectedId && selectedSession && <TerminalPanel sessionId={selectedId} cwd={selectedSession.cwd} connected={connected} onClose={() => setTerminalOpen(false)} onOperation={(op: MobileOperation, args) => operation(op, args)} />}
     {approvalOpen && pendingApproval && <ApprovalPanel approval={pendingApproval} onResolve={answerApproval} onClose={() => setApprovalOpen(false)} />}
   </div>;
 }

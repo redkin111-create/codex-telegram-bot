@@ -4,8 +4,9 @@
  */
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFile as execFileCallback, execFileSync } from "node:child_process";
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 import type { AcpClient } from "../acp/client.js";
 import type { CodexThreadSummary, CodexProjectSummary, CodexRateLimitWindow, CodexThreadGoalStatus } from "../acp/codex-protocol.js";
 import { REASONING_LEVELS, textPrompt, type ReasoningEffort } from "../app/types.js";
@@ -23,6 +24,9 @@ import { TelegramSessionRegistry } from "../sessions/telegram-registry.js";
 import { argumentString, isTmaJob, type TmaJob, type TmaResult } from "./protocol.js";
 import { parseTmaImages, tmaPromptFingerprint } from "./prompt-images.js";
 import { DurablePromptJournal } from "./prompt-journal.js";
+
+const execFile=promisify(execFileCallback);
+const MAX_MOBILE_TERMINAL_OUTPUT=64*1024;
 import { normalizeMobileIntegrations, normalizePluginInstallResult } from "../mobile/integrations.js";
 
 const log=createLogger("tma:agent");
@@ -41,7 +45,7 @@ const sleep=(ms:number,signal:AbortSignal)=>new Promise<void>(resolve=>{
 });
 
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; }
-export type MobileLocalOperation = "capabilities" | "searchThreads" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch";
+export type MobileLocalOperation = "capabilities" | "searchThreads" | "terminalExec" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 export class MiniAppAgent {
   private readonly abort=new AbortController();
@@ -323,6 +327,15 @@ export class MiniAppAgent {
           };
         });
         return {sessions,nextCursor:page.nextCursor};
+      }
+      case "terminalExec":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        if(await this.isArchivedThread(sessionId,chatId))throw new Error("Нельзя запускать команду в архивном сеансе");
+        this.requireIdleMobileRuntime(sessionId,chatId);
+        const {root}=this.mobileRoot(sessionId,chatId);
+        const command=argumentString(args,"command",4000).trim();
+        if(!command||command.includes("\0"))throw new Error("Введите корректную команду");
+        return this.mobileTerminalCommand(root,command);
       }
       case "renameThread":{
         const thread=await this.thread(sessionId,chatId);
@@ -726,6 +739,31 @@ export class MiniAppAgent {
     const runtime=this.deps.registry.runtimeForSession(userId,sessionId);
     if(!runtime)throw new Error("Сначала подключите сеанс к мобильному клиенту");
     if(runtime.isBusy)throw new Error("Дождитесь завершения текущей задачи Codex перед изменением настроек или файлов проекта");
+  }
+  private async mobileTerminalCommand(cwd:string,command:string):Promise<{
+    exitCode:number|null;stdout:string;stderr:string;truncated:boolean;durationMs:number;timedOut:boolean;
+  }>{
+    const started=Date.now();
+    const executable=process.platform==="win32"?"powershell.exe":"/bin/sh";
+    const args=process.platform==="win32"?["-NoLogo","-NoProfile","-NonInteractive","-Command",command]:["-c",command];
+    const limit=(value:string)=>value.length>MAX_MOBILE_TERMINAL_OUTPUT;
+    const trim=(value:string)=>limit(value)?value.slice(0,MAX_MOBILE_TERMINAL_OUTPUT)+"\n[Вывод сокращён]":value;
+    try{
+      const result=await execFile(executable,args,{
+        cwd,timeout:60_000,maxBuffer:256*1024,encoding:"utf8",windowsHide:true,
+        env:{...process.env,GIT_TERMINAL_PROMPT:"0"},
+      });
+      const stdout=String(result.stdout),stderr=String(result.stderr);
+      return {exitCode:0,stdout:trim(stdout),stderr:trim(stderr),truncated:limit(stdout)||limit(stderr),durationMs:Date.now()-started,timedOut:false};
+    }catch(error){
+      const failure=error as NodeJS.ErrnoException & {stdout?:string|Buffer;stderr?:string|Buffer;signal?:string};
+      const stdout=String(failure.stdout??""),stderr=String(failure.stderr??"");
+      const timedOut=failure.code==="ETIMEDOUT";
+      return {
+        exitCode:typeof failure.code==="number"?failure.code:null,stdout:trim(stdout),stderr:trim(stderr),
+        truncated:limit(stdout)||limit(stderr),durationMs:Date.now()-started,timedOut,
+      };
+    }
   }
   private mobileRoot(sessionId:string,userId:number):{root:string;name:string}{
     const thread=this.knownThreads.get(userId)?.get(sessionId);

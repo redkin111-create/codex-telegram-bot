@@ -195,6 +195,11 @@ const agent = {
         nextCursor: offset + page.length < matching.length ? String(offset + page.length) : undefined,
       };
     }
+    if (job.op === "terminalExec") {
+      const session = sessions.find((entry) => entry.id === sessionId);
+      if (!session) throw new Error("Сеанс не найден");
+      return { exitCode: 0, stdout: `mobile-terminal-fixture\n${session.cwd}\n`, stderr: "", truncated: false, durationMs: 4, timedOut: false };
+    }
     if (job.op === "createWorktree") {
       const source = sessions.find((session) => session.id === sessionId);
       const branch = String(args.branchName ?? "");

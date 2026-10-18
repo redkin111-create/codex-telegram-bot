@@ -369,6 +369,25 @@ test("native session search requires a paired device, same Origin and CSRF witho
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
+test("terminal commands require the paired device, same Origin, CSRF and an owned session", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const url = f.origin + "/api/operations";
+    const body = (sessionId = allowedSession) => JSON.stringify({ op: "terminalExec", args: { sessionId, command: "Write-Output fixture" } });
+    const anonymous = await fetch(url, { method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: body() });
+    assert.equal(anonymous.status, 401);
+    const noCsrf = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: body() });
+    assert.equal(noCsrf.status, 403);
+    const foreign = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body(foreignSession) });
+    assert.equal(foreign.status, 403);
+    assert.equal(f.calls.filter((call) => call.op === "terminalExec").length, 0);
+    const accepted = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body() });
+    assert.equal(accepted.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "terminalExec");
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
 test("archive, restore and rename actions require a paired owner, Origin and CSRF", async () => {
   const f = await startFixture();
   try {

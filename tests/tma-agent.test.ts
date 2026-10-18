@@ -58,6 +58,39 @@ test("mobile native search finds older sessions without exposing another owner's
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile terminal runs a bounded one-shot command in the authorized project and refuses a busy Codex session",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-terminal-"));
+  const project=join(dir,"workspace");
+  const sessionId="94949494-9494-4494-8494-949494949494";
+  mkdirSync(project);
+  const thread={id:sessionId,name:"Terminal fixture",cwd:project,source:"cli",createdAt:1,updatedAt:2,recencyAt:2};
+  const acp=Object.assign(new EventEmitter(),{
+    async listProjects(){return [{id:"terminal-project",name:"workspace",roots:[project]}];},
+    async listThreads(){return [thread];},
+  }) as unknown as AcpClient;
+  const runtime={sessionId,isBusy:false,queueLength:0};
+  const registry={runtimeForSession:()=>runtime,controller:()=>({list:()=>[]})} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  const command=process.platform==="win32"?"Write-Output mobile-terminal-ok; (Get-Location).Path":"printf 'mobile-terminal-ok\\n'; pwd";
+  try{
+    const result=await agent.executeMobile({op:"terminalExec" as never,userId:101,args:{sessionId,command}}) as {
+      exitCode:number;stdout:string;stderr:string;
+    };
+    assert.equal(result.exitCode,0);
+    assert.match(result.stdout,/mobile-terminal-ok/);
+    assert.match(result.stdout.toLowerCase(),/workspace/);
+    const largeCommand=process.platform==="win32"?"[Console]::Out.Write('x' * 70000)":"printf '%070000d' 0 | tr 0 x";
+    const largeResult=await agent.executeMobile({op:"terminalExec" as never,userId:101,args:{sessionId,command:largeCommand}}) as {
+      stdout:string;truncated:boolean;
+    };
+    assert.equal(largeResult.truncated,true);
+    assert.ok(largeResult.stdout.length<=65_600,"terminal output remains bounded after truncation");
+    runtime.isBusy=true;
+    await assert.rejects(agent.executeMobile({op:"terminalExec" as never,userId:101,args:{sessionId,command}}),/Дождитесь завершения текущей задачи/);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("Windows Mini App agent lists existing Codex projects and sessions",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-tma-agent-"));
   const project=join(dir,"toy");
