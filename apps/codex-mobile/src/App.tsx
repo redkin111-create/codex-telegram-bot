@@ -110,6 +110,12 @@ export default function App() {
     catch (cause) { handleApiError(cause); throw cause; }
   }, [selectedId, handleApiError]);
 
+  const loadMobileApps = useCallback(async () => {
+    if (!selectedId) return [];
+    try { return (await readCapabilities(selectedId)).apps; }
+    catch (cause) { handleApiError(cause); throw cause; }
+  }, [selectedId, handleApiError]);
+
   const refreshSnapshot = useCallback(async (showSpinner = false) => {
     if (showSpinner) setRefreshing(true);
     try {
@@ -519,22 +525,22 @@ export default function App() {
     await refreshSnapshot();
   }
 
-  async function send(text: string, images: PromptImage[], attachments: MobileAttachment[], mode: FollowUpMode) {
+  async function send(text: string, images: PromptImage[], attachments: MobileAttachment[], mode: FollowUpMode, appIds: string[]) {
     if (!selectedId) return;
     if (mode === "steer" && attachments.length) throw new Error("Файлы можно отправить в очередь, но не добавить к активному ходу");
-    const fingerprint = JSON.stringify([selectedId, mode, text, images.map((image) => [image.name, image.mimeType, image.data.length]), attachments.map((file) => file.id)]);
+    const fingerprint = JSON.stringify([selectedId, mode, text, images.map((image) => [image.name, image.mimeType, image.data.length]), attachments.map((file) => file.id), appIds]);
     if (!pendingSend.current || pendingSend.current.fingerprint !== fingerprint) {
       pendingSend.current = { fingerprint, requestId: crypto.randomUUID() };
     }
     if (mode === "steer") {
       await operation("steer", {
         sessionId: selectedId, text, images: images.map(({ name, mimeType, data }) => ({ name, mimeType, data })),
-        attachmentIds: attachments.map((file) => file.id), requestId: pendingSend.current.requestId,
+        attachmentIds: attachments.map((file) => file.id), appIds, requestId: pendingSend.current.requestId,
       });
     } else {
       await operation("send", {
         sessionId: selectedId, text, images: images.map(({ name, mimeType, data }) => ({ name, mimeType, data })),
-        attachmentIds: attachments.map((file) => file.id), requestId: pendingSend.current.requestId,
+        attachmentIds: attachments.map((file) => file.id), appIds, requestId: pendingSend.current.requestId,
       });
     }
     pendingSend.current = undefined;
@@ -684,6 +690,7 @@ export default function App() {
         onCreateSideChat={() => void createSideChat()} sideChatting={sideChatting} onReturnToParent={() => void returnToParent()}
         onCompact={compactSession} compacting={compacting} onSend={send}
         onLoadSkills={loadMobileSkills}
+        onLoadApps={loadMobileApps}
         onSearchHistory={(query, beforeOffset, revision) => operation<MobileHistorySearch>("searchHistory", { sessionId: selectedId, query, includeTools, ...(beforeOffset === undefined ? {} : { beforeOffset, revision }) })}
         onLoadEditableTurns={loadEditableTurns} onEditAndRetry={editAndRetry} onTranscribeAudio={transcribeVoice} onLoadRealtimeVoices={loadRealtimeVoices}
         onStartRealtime={startRealtime} onStopRealtime={stopRealtime}

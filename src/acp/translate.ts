@@ -192,7 +192,7 @@ function str(v: unknown): string {
 export function toCodexInput(content: ContentBlock[]): CodexUserInput[] {
   const out: CodexUserInput[] = [];
   for (const b of content) {
-    if (b.type === "skill") {
+    if (b.type === "skill" || b.type === "appMention") {
       // ACP resolves selected skill names against the thread's native skill inventory.
       continue;
     } else if (b.type === "image" && typeof b.localPath === "string" && b.localPath) {

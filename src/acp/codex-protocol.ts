@@ -242,7 +242,8 @@ export type CodexUserInput =
   | { type: "text"; text: string }
   | { type: "image"; url: string }
   | { type: "localImage"; path: string }
-  | { type: "skill"; name: string; path: string };
+  | { type: "skill"; name: string; path: string }
+  | { type: "mention"; name: string; path: string };
 
 export interface CodexTurnStartParams {
   threadId: string;

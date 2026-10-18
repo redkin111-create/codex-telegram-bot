@@ -216,11 +216,11 @@ test("mobile file attachments enter the shared runtime prompt with safe labels a
   }) as unknown as AcpClient;
   const runtime={sessionId,isBusy:false,queueLength:0};
   const controller={runtimeForSession:()=>runtime,foreground:()=>runtime,list:()=>[]};
-  const submitted:Array<{text:string;attachmentNames?:string[];attachmentContext?:string;attachmentPaths?:string[];displayText?:string}>=[];
+  const submitted:Array<{text:string;appIds?:string[];attachmentNames?:string[];attachmentContext?:string;attachmentPaths?:string[];displayText?:string}>=[];
   const registry={
     controller:()=>controller,
     get:()=>runtime,
-    async submitPrompt(_userId:number,input:{text:string;attachmentNames?:string[];attachmentContext?:string;attachmentPaths?:string[];displayText?:string}){
+    async submitPrompt(_userId:number,input:{text:string;appIds?:string[];attachmentNames?:string[];attachmentContext?:string;attachmentPaths?:string[];displayText?:string}){
       submitted.push(input);
       return {kind:"submitted",outcome:"accepted"};
     },
@@ -234,7 +234,7 @@ test("mobile file attachments enter the shared runtime prompt with safe labels a
     const text="export const ready = true;";
     const result=await agent.execute({
       id:"abcdef0123456789abcdef01",op:"send",userId:101,
-      args:{sessionId,text:"Проверь документы",requestId:"mobile-attachments-0001"},
+      args:{sessionId,text:"Проверь документы",appIds:["calendar"],requestId:"mobile-attachments-0001"},
     },[
       {id:"11111111-1111-4111-8111-111111111111",name:"notes.ts",mimeType:"text/plain",size:text.length,text},
       {id:"22222222-2222-4222-8222-222222222222",name:binary.name,mimeType:"application/pdf",size:18,path:binary.path},
@@ -248,8 +248,18 @@ test("mobile file attachments enter the shared runtime prompt with safe labels a
     assert.deepEqual(input.attachmentNames,["notes.ts","report.pdf"]);
     assert.deepEqual(input.attachmentPaths,[binary.path]);
     assert.equal(input.displayText,"Проверь документы");
+    assert.deepEqual(input.appIds,["calendar"]);
     assert.match(input.attachmentContext??"",/notes\.ts/);
     assert.match(input.attachmentContext??"",/report\.pdf/);
+    await assert.rejects(agent.execute({
+      id:"abcdef0123456789abcdef02",op:"send",userId:101,
+      args:{sessionId,text:"Проверь документы",appIds:["mail"],requestId:"mobile-attachments-0001"},
+    }),/ID.*другого задания/i);
+    await assert.rejects(agent.execute({
+      id:"abcdef0123456789abcdef03",op:"send",userId:101,
+      args:{sessionId,text:"Проверь документы",appIds:["calendar/../../private"],requestId:"mobile-attachments-0002"},
+    }),/не больше трёх доступных приложений/i);
+    assert.equal(submitted.length,1,"invalid app ids never reach the shared runtime");
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 

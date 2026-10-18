@@ -123,6 +123,15 @@ function selectedMobileSkillName(text:string):string|undefined{
   const match=/^\$([\p{L}\p{N}][\p{L}\p{N}_.:-]{0,159})(?=$|[\t \r\n])/u.exec(text.trim());
   return match?.[1];
 }
+const MOBILE_APP_ID_PATTERN=/^[a-z0-9][a-z0-9_.:@-]{0,199}$/i;
+function selectedMobileAppIds(value:unknown):string[]{
+  if(value===undefined)return [];
+  if(!Array.isArray(value)||value.length>3||value.some(id=>typeof id!=="string"||!MOBILE_APP_ID_PATTERN.test(id)))
+    throw new Error("Выберите не больше трёх доступных приложений Codex");
+  const ids=[...new Set(value as string[])];
+  if(ids.length!==value.length)throw new Error("Приложение Codex выбрано несколько раз");
+  return ids;
+}
 function statSyncSafe(path:string):{size:number;mtimeMs:number}{
   try{
     const s=statSync(path);
@@ -987,10 +996,11 @@ export class MiniAppAgent {
       case "steer":{
         const text=typeof args.text==="string"&&args.text.length<=16000?args.text.trim():"";
         const images=parseTmaImages(args.images);
+        const appIds=selectedMobileAppIds(args.appIds);
         if(!text&&!images.length)throw new Error("Напишите направление для Codex или прикрепите фото");
         const requestId=argumentString(args,"requestId",80);
         if(!/^[a-zA-Z0-9_-]{12,80}$/.test(requestId))throw new Error("Неверный идентификатор направления");
-        const fingerprint=tmaPromptFingerprint("steer:"+text,images);
+        const fingerprint=tmaPromptFingerprint("steer:"+text,images,appIds.map(id=>"app:"+id));
         const key=chatId+":"+sessionId+":steer:"+requestId;
         const existing=this.sends.get(key);
         if(existing){
@@ -1009,8 +1019,9 @@ export class MiniAppAgent {
             if(!thread.cwd)throw new Error("Неизвестная рабочая папка сеанса");
             const input=textPrompt(text||"Проанализируй прикреплённые изображения.");
             input.images=images;
+            if(appIds.length)input.appIds=appIds;
             const skillName=selectedMobileSkillName(text);
-            if(skillName)input.skillNames=[skillName];
+            if(skillName&&!appIds.includes(skillName))input.skillNames=[skillName];
             dispatched=true;
             await acp.steer(sessionId,buildContentBlocks(input));
             const result={steered:true};
@@ -2326,11 +2337,15 @@ export class MiniAppAgent {
         const id=argumentString(args,"sessionId",80);
         const message=typeof args.text==="string"&&args.text.length<=16000?args.text.trim():"";
         const images=parseTmaImages(args.images);
+        const appIds=selectedMobileAppIds(args.appIds);
         if(mobileAttachments.length>5||mobileAttachments.some(file=>!isSafeMobilePromptAttachment(file,cfg.dataDir)))
           throw new Error("Одно из вложений недоступно или имеет неверный формат");
         if(!message&&!images.length&&!mobileAttachments.length)throw new Error("Напиши задачу или прикрепи файл");
         const requestId=argumentString(args,"requestId",80);
-        const fingerprint=tmaPromptFingerprint(message,images,mobileAttachments.map(file=>file.id));
+        const fingerprint=tmaPromptFingerprint(message,images,[
+          ...mobileAttachments.map(file=>file.id),
+          ...appIds.map(appId=>"app:"+appId),
+        ]);
         if(!/^[a-zA-Z0-9_-]{12,80}$/.test(requestId))throw new Error("Неверный идентификатор запроса");
         const key=chatId+":"+id+":"+requestId;
         const existing=this.sends.get(key);
@@ -2355,6 +2370,7 @@ export class MiniAppAgent {
             const promptText=[message,...attachmentContexts].filter(Boolean).join("\n\n");
             const input=textPrompt(promptText||"Проанализируй прикреплённые изображения.");
             input.images=images;
+            if(appIds.length)input.appIds=appIds;
             if(mobileAttachments.length){
               input.attachmentNames=mobileAttachments.map(file=>file.name);
               input.attachmentContext=attachmentContexts.join("\n\n");
@@ -2362,7 +2378,7 @@ export class MiniAppAgent {
               input.displayText=message||`Файлы: ${mobileAttachments.map(file=>file.name).join(", ")}`;
             }
             const skillName=selectedMobileSkillName(message);
-            if(skillName)input.skillNames=[skillName];
+            if(skillName&&!appIds.includes(skillName))input.skillNames=[skillName];
             // Once this call starts, a crash or ambiguous error may mean Codex
             // already accepted the task; do not automatically resend.
             dispatched=true;

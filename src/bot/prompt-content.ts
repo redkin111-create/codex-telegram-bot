@@ -41,6 +41,9 @@ export function buildContentBlocks(input: PromptInput, opts: ContentOptions = {}
   for (const name of input.skillNames ?? []) {
     if (name) blocks.push({ type: "skill", name });
   }
+  for (const id of input.appIds ?? []) {
+    if (id) blocks.push({ type: "appMention", id });
+  }
   return blocks;
 }
 
@@ -50,6 +53,7 @@ export function mergeInputs(inputs: PromptInput[]): PromptInput {
     .map((i) => i.quotedText?.trim())
     .filter((q): q is string => !!q);
   const skillNames = [...new Set(inputs.flatMap((i) => i.skillNames ?? []))];
+  const appIds = [...new Set(inputs.flatMap((i) => i.appIds ?? []))];
   return {
     text: inputs
       .map((i) => i.text)
@@ -58,6 +62,7 @@ export function mergeInputs(inputs: PromptInput[]): PromptInput {
     images: inputs.flatMap((i) => i.images),
     ...(inputs.some((i) => i.localImages?.length) ? { localImages: inputs.flatMap((i) => i.localImages ?? []) } : {}),
     ...(skillNames.length ? { skillNames } : {}),
+    ...(appIds.length ? { appIds } : {}),
     replyTo: inputs.find((i) => i.replyTo !== undefined)?.replyTo,
     quotedText: quotes.length > 0 ? [...new Set(quotes)].join("\n\n---\n\n") : undefined,
   };

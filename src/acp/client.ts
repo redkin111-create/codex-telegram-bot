@@ -82,6 +82,28 @@ import type {
 } from "./types.js";
 
 const log = createLogger("codex:client");
+const MOBILE_APP_ID_PATTERN = /^[a-z0-9][a-z0-9_.:@-]{0,199}$/i;
+
+function mobileAppRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function mobileAppList(value: unknown): Record<string, unknown>[] {
+  const data = mobileAppRecord(value)?.data;
+  return Array.isArray(data) ? data.flatMap((entry) => {
+    const app = mobileAppRecord(entry);
+    return app ? [app] : [];
+  }) : [];
+}
+
+function codexAppSlug(name: string): string {
+  return name.normalize("NFKD").toLowerCase()
+    .replace(/\p{M}/gu, "")
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "");
+}
 
 function parseMobileEditableImage(url: unknown): { mimeType: string; data: string } | undefined {
   if (typeof url !== "string") return undefined;
@@ -636,17 +658,69 @@ export class AcpClient extends EventEmitter {
       .filter((block) => block.type === "skill" && typeof block.name === "string")
       .map((block) => block.name!.trim())
       .filter(Boolean))];
-    if (names.length === 0) return input;
+    const rawAppIds = content
+      .filter((block) => block.type === "appMention")
+      .map((block) => block.id);
+    if (rawAppIds.some((id) => typeof id !== "string" || !MOBILE_APP_ID_PATTERN.test(id))) {
+      throw new AcpError("Выбран неверный идентификатор Codex App");
+    }
+    const appIds = [...new Set(rawAppIds as string[])];
+
+    const mentions: Array<Extract<CodexUserInput, { type: "mention" }>> = [];
+    const appTokens: string[] = [];
+    if (appIds.length) {
+      const [catalog, installed] = await Promise.all([
+        this.request("app/list", { limit: 100, threadId: sessionId }).catch(() => undefined),
+        this.request("app/installed", {}).catch(() => undefined),
+      ]);
+      const catalogApps = mobileAppList(catalog);
+      const installedApps = mobileAppRecord(installed)?.apps;
+      const installedRecords = Array.isArray(installedApps)
+        ? installedApps.flatMap((entry) => {
+          const app = mobileAppRecord(entry);
+          return app ? [app] : [];
+        })
+        : [];
+      for (const id of appIds) {
+        const matches = catalogApps.filter((app) => app.id === id);
+        const installedMatches = installedRecords.filter((app) => app.id === id);
+        const app = matches[0];
+        const state = installedMatches[0];
+        if (matches.length !== 1 || installedMatches.length !== 1 ||
+            app?.isAccessible !== true || app.isEnabled === false ||
+            state?.callable !== true || state.enabled === false) {
+          throw new AcpError("Выбранное Codex App сейчас недоступно или не подключено для этого сеанса");
+        }
+        const name = typeof app.name === "string"
+          ? app.name.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 160)
+          : "";
+        const safeName = name || id;
+        const slug = codexAppSlug(safeName);
+        if (!slug) throw new AcpError("У выбранного Codex App не получилось определить имя для вызова");
+        appTokens.push(`$${slug}`);
+        mentions.push({ type: "mention", name: safeName, path: `app://${id}` });
+      }
+    }
+    if (names.length === 0 && appIds.length === 0) return input;
 
     const cwd = this.threadCwd.get(sessionId);
-    if (!cwd) throw new AcpError("Для выбранного навыка не определена папка проекта Codex");
-    const inventory = await this.listMobileSkills(cwd);
-    for (const name of names) {
-      const matches = inventory.filter((skill) => skill.name === name);
-      if (matches.length !== 1 || matches[0]!.enabled === false || !matches[0]!.path) {
-        throw new AcpError("Выбранный навык Codex отключён, недоступен или неоднозначен");
+    if (names.length) {
+      if (!cwd) throw new AcpError("Для выбранного навыка не определена папка проекта Codex");
+      const inventory = await this.listMobileSkills(cwd);
+      for (const name of names) {
+        const matches = inventory.filter((skill) => skill.name === name);
+        if (matches.length !== 1 || matches[0]!.enabled === false || !matches[0]!.path) {
+          throw new AcpError("Выбранный навык Codex отключён, недоступен или неоднозначен");
+        }
+        input.push({ type: "skill", name, path: matches[0]!.path! });
       }
-      input.push({ type: "skill", name, path: matches[0]!.path! });
+    }
+    if (mentions.length) {
+      const appTokenText = appTokens.join(" ");
+      const firstText = input.find((item): item is Extract<CodexUserInput, { type: "text" }> => item.type === "text");
+      if (firstText) firstText.text = `${appTokenText}\n\n${firstText.text}`;
+      else input.unshift({ type: "text", text: appTokenText });
+      input.push(...mentions);
     }
     return input;
   }

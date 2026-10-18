@@ -31,7 +31,7 @@ export type JsonRpcMessage = JsonRpcResponse & JsonRpcNotification & { method?: 
 
 /** A content block in a prompt or message. */
 export interface ContentBlock {
-  type: "text" | "image" | "resource" | "skill";
+  type: "text" | "image" | "resource" | "skill" | "appMention";
   text?: string;
   data?: string;
   mimeType?: string;
@@ -39,6 +39,8 @@ export interface ContentBlock {
   localPath?: string;
   /** Internal selected skill name. ACP resolves its path from Codex, never from browser input. */
   name?: string;
+  /** Internal selected Codex App ID. ACP resolves its native app target from the live thread inventory. */
+  id?: string;
   [k: string]: unknown;
 }
 

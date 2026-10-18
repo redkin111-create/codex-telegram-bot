@@ -226,10 +226,13 @@ const agent = {
       return { sessionId };
     }
     if (job.op === "send") {
+      const appIds = Array.isArray(args.appIds) ? args.appIds.filter((id): id is string => typeof id === "string") : [];
+      if (appIds.some((id) => id !== "calendar")) throw new Error("Fixture Codex App недоступно");
       const fileContext = attachments.map((file) => file.text !== undefined
         ? `\n\nВложенный файл «${file.name}»:\n${file.text}`
         : `\n\nВложенный файл «${file.name}» сохранён по пути: ${file.path ?? "недоступен"}.`).join("");
-      const message = `${String(args.text ?? "")}${fileContext}`.trim();
+      const appMentions = appIds.length ? `${appIds.map((id) => id === "calendar" ? "$calendar-connector" : `$${id}`).join(" ")}\n\n` : "";
+      const message = `${appMentions}${String(args.text ?? "")}${fileContext}`.trim();
       const runtime = controlled.get(sessionId) ?? { busy: false, queue: [], paused: false };
       if (runtime.busy) {
         runtime.queue.push({ id: randomUUID(), text: message || "Проверить прикреплённое фото" });
@@ -698,8 +701,8 @@ const agent = {
         installPolicy: "AVAILABLE", availability: "AVAILABLE", mustShowInstallationInterstitial: false }],
       pluginCatalogAvailable: true,
       marketplaces: fixtureMarketplaces.map((marketplace) => ({ ...marketplace })),
-      apps: [{ id: "calendar", name: "Calendar connector", description: "Fixture connection status only.",
-        enabled: true, accessible: false, callable: false, installUrl: "https://login.example.invalid/connect" }],
+      apps: [{ id: "calendar", name: "Calendar connector", description: "Fixture app for read-only invocation checks.",
+        enabled: true, accessible: true, callable: true, installUrl: "https://login.example.invalid/connect" }],
       appsAvailable: true,
       account: { type: "chatgpt", email: "fixture@example.invalid", plan: "fixture" },
       limits: [{ id: "fixture", name: "Тестовый период", primary: { usedPercent: 28, windowDurationMins: 300, resetsAt: Math.floor(Date.now() / 1000) + 3600 } }],
