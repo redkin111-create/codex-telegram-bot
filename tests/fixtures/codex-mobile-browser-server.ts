@@ -134,6 +134,23 @@ let fixtureMarketplaces = [
   { name: "Built-in catalog", pluginCount: 4, installedPluginCount: 0, manageable: false },
 ];
 let fixtureMcpAuthorized = false;
+const fixtureMcpOAuthState = "codex-mobile-fixture-oauth-state";
+const mcpOAuthCallbackServer = createServer((req, res) => {
+  const callback = new URL(req.url ?? "/", "http://127.0.0.1");
+  if (callback.pathname !== "/callback/fixture-id" || callback.searchParams.get("state") !== fixtureMcpOAuthState || !callback.searchParams.get("code")) {
+    res.statusCode = 400;
+    res.end("Invalid fixture callback");
+    return;
+  }
+  fixtureMcpAuthorized = true;
+  feed.publish(firstSession, { kind: "activity", label: "Вход в MCP-сервер fixture-mcp выполнен" });
+  res.statusCode = 200;
+  res.end("Authentication complete");
+});
+mcpOAuthCallbackServer.listen(0, "127.0.0.1");
+await once(mcpOAuthCallbackServer, "listening");
+const mcpOAuthCallbackAddress = mcpOAuthCallbackServer.address();
+if (!mcpOAuthCallbackAddress || typeof mcpOAuthCallbackAddress === "string") throw new Error("Не удалось открыть фиктивный OAuth callback");
 const fixtureCapabilitiesFailOnCall = Number.parseInt(process.env.CODEX_MOBILE_FIXTURE_CAPABILITIES_FAIL_ON_CALL ?? "0", 10);
 let fixtureCapabilitiesCalls = 0;
 const fixtureSkills = [
@@ -696,9 +713,10 @@ const agent = {
     }
     if (job.op === "mcpOAuthLogin") {
       if (args.name !== "fixture-mcp" || args.sessionId !== firstSession) throw new Error("MCP-сервер не найден в выбранном сеансе");
-      fixtureMcpAuthorized = true;
-      feed.publish(firstSession, { kind: "activity", label: "Вход в MCP-сервер fixture-mcp выполнен" });
-      return { authorizationUrl: "https://login.example.invalid/oauth/fixture" };
+      const authorizationUrl = new URL("https://login.example.invalid/oauth/fixture");
+      authorizationUrl.searchParams.set("redirect_uri", `http://127.0.0.1:${mcpOAuthCallbackAddress.port}/callback/fixture-id`);
+      authorizationUrl.searchParams.set("state", fixtureMcpOAuthState);
+      return { authorizationUrl: authorizationUrl.href };
     }
     if (job.op === "callMcpTool") {
       if (!fixtureMcpAuthorized || args.sessionId !== firstSession || args.server !== "fixture-mcp") throw new Error("Fixture MCP-сервер не подключён к выбранному сеансу");
@@ -1070,6 +1088,7 @@ process.stdout.write(JSON.stringify({
   instanceDir,
   dataDir,
   firstSession,
+  oauthCallbackPasteUrl: `http://127.0.0.1:${mcpOAuthCallbackAddress.port}/callback/fixture-id?code=browser-fixture-code&state=${fixtureMcpOAuthState}`,
 }) + "\n");
 
 let inputBuffer = "";
@@ -1203,6 +1222,8 @@ async function shutdown() {
   voiceAgent.stop();
   browserBootstrap.closeAllConnections();
   await new Promise<void>((resolveClose) => browserBootstrap.close(() => resolveClose()));
+  mcpOAuthCallbackServer.closeAllConnections();
+  await new Promise<void>((resolveClose) => mcpOAuthCallbackServer.close(() => resolveClose()));
   server.closeAllConnections();
   await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
   await rm(instanceDir, { recursive: true, force: true });

@@ -46,6 +46,7 @@ async function startFixture(extensions: Record<string, unknown> = {}) {
   let activeAccount = "account-personal-1";
   let autoRotate = false;
   let deviceLoginPending = false;
+  let mobileOAuthResult: unknown = { authorizationUrl: "https://provider.example/authorize" };
   const accountController = {
     async snapshot(ownerId: number) {
       accountCalls.push({ ownerId });
@@ -78,6 +79,7 @@ async function startFixture(extensions: Record<string, unknown> = {}) {
     async executeMobile(job: { op: string; userId: number; args: Record<string, unknown> }) {
       calls.push(job);
       if (failNext) { failNext = false; throw new Error("Codex runtime unavailable"); }
+      if (job.op === "mcpOAuthLogin") return mobileOAuthResult;
       if (job.op === "listThreadReadStates") return { states: {
         [allowedSession]: { firstUnread: { type: "turn", turnId: "turn-one" }, revision: "rev-one" },
         [foreignSession]: { firstUnread: null, revision: "rev-foreign" },
@@ -130,6 +132,7 @@ async function startFixture(extensions: Record<string, unknown> = {}) {
   assert.ok(address && typeof address !== "string");
   const origin = `http://127.0.0.1:${address.port}`;
   return { server, auth, feed, calls, approvalDecisions, approvalId, accountCalls, dataDir, origin, failNext: () => { failNext = true; },
+    setMobileOAuthResult: (value: unknown) => { mobileOAuthResult = value; },
     setDownloadValue: (value: unknown) => { downloadValue = value; }, setReadImageValue: (value: unknown) => { readImageValue = value; } };
 }
 
@@ -815,7 +818,7 @@ test("MCP OAuth requests require the paired device, same Origin, CSRF and an own
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
-test("MCP OAuth is refused for an allowed remote Origin because its callback only reaches the laptop", async () => {
+test("MCP OAuth from an allowed remote Origin relays only its matching callback to the Codex loopback listener", async () => {
   const reservation = createServer();
   reservation.listen(0, "127.0.0.1");
   await once(reservation, "listening");
@@ -827,6 +830,23 @@ test("MCP OAuth is refused for an allowed remote Origin because its callback onl
 
   const remoteOrigin = `http://phone.localhost:${port}`;
   const f = await startFixture({ port, allowedOrigins: [remoteOrigin] });
+  const callbackServer = createServer();
+  let callbackPath = "";
+  callbackServer.on("request", (req, res) => {
+    const callback = new URL(req.url ?? "/", "http://127.0.0.1");
+    callbackPath = req.url ?? "";
+    res.statusCode = callback.searchParams.has("error") ? 400 : 200;
+    res.end("private-provider-error-detail");
+  });
+  callbackServer.listen(0, "127.0.0.1");
+  await once(callbackServer, "listening");
+  const callbackAddress = callbackServer.address();
+  assert.ok(callbackAddress && typeof callbackAddress !== "string");
+  const redirectUri = `http://127.0.0.1:${callbackAddress.port}/callback/fixture-id`;
+  const authorizationUrl = new URL("https://provider.example/authorize");
+  authorizationUrl.searchParams.set("redirect_uri", redirectUri);
+  authorizationUrl.searchParams.set("state", "expected-state");
+  f.setMobileOAuthResult({ authorizationUrl: authorizationUrl.href });
   try {
     const login = await pair(f.origin, f.auth);
     const response = await fetch(f.origin + "/api/operations", {
@@ -837,9 +857,83 @@ test("MCP OAuth is refused for an allowed remote Origin because its callback onl
       },
       body: JSON.stringify({ op: "mcpOAuthLogin", args: { sessionId: allowedSession, name: "fixture-mcp" } }),
     });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json() as { callbackRelayAvailable?: boolean }).callbackRelayAvailable, true);
+    assert.equal(f.calls.filter((call) => call.op === "mcpOAuthLogin").length, 1);
+
+    const relay = (callbackUrl: string, headers: Record<string, string> = {}) => fetch(f.origin + "/api/mcp/oauth/callback", {
+      method: "POST",
+      headers: { origin: remoteOrigin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json", ...headers },
+      body: JSON.stringify({ sessionId: allowedSession, name: "fixture-mcp", callbackUrl }),
+    });
+    const wrongState = await relay(`${redirectUri}?code=fixture-secret-code&state=wrong-state`);
+    assert.equal(wrongState.status, 400);
+    assert.equal(callbackPath, "");
+    const wrongOrigin = await relay(`${redirectUri}?code=fixture-secret-code&state=expected-state`, { origin: "https://attacker.example" });
+    assert.equal(wrongOrigin.status, 403);
+    const otherLoopbackHost = await relay(`http://localhost:${callbackAddress.port}/callback/fixture-id?code=fixture-secret-code&state=expected-state`);
+    assert.equal(otherLoopbackHost.status, 400);
+    assert.equal(callbackPath, "");
+    const missingCsrf = await relay(`${redirectUri}?code=fixture-secret-code&state=expected-state`, { "x-csrf-token": "wrong" });
+    assert.equal(missingCsrf.status, 403);
+    assert.equal(callbackPath, "");
+    const foreign = await fetch(f.origin + "/api/mcp/oauth/callback", {
+      method: "POST",
+      headers: { origin: remoteOrigin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: foreignSession, name: "fixture-mcp", callbackUrl: `${redirectUri}?code=fixture-secret-code&state=expected-state` }),
+    });
+    assert.equal(foreign.status, 403);
+    assert.equal(callbackPath, "");
+
+    const completed = await relay(`${redirectUri}?code=fixture-secret-code&state=expected-state`);
+    assert.equal(completed.status, 200);
+    const completedText = await completed.text();
+    assert.deepEqual(JSON.parse(completedText), { forwarded: true });
+    assert.equal(callbackPath, "/callback/fixture-id?code=fixture-secret-code&state=expected-state");
+    assert.doesNotMatch(completedText, /fixture-secret-code/);
+    assert.equal((await relay(`${redirectUri}?code=fixture-secret-code&state=expected-state`)).status, 409);
+
+    const secondLogin = await fetch(f.origin + "/api/operations", {
+      method: "POST",
+      headers: { origin: remoteOrigin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ op: "mcpOAuthLogin", args: { sessionId: allowedSession, name: "fixture-mcp" } }),
+    });
+    assert.equal(secondLogin.status, 200);
+    const providerError = await relay(`${redirectUri}?error=access_denied&error_description=private-provider-error-detail&state=expected-state`);
+    assert.equal(providerError.status, 409);
+    const providerErrorText = await providerError.text();
+    assert.match(providerErrorText, /Codex отклонил callback/i);
+    assert.doesNotMatch(providerErrorText, /private-provider-error-detail|access_denied|expected-state/);
+  } finally {
+    callbackServer.closeAllConnections();
+    await new Promise<void>((resolve) => callbackServer.close(() => resolve()));
+    await cleanup(f.server, f.dataDir);
+  }
+});
+
+test("MCP OAuth over a remote Origin refuses callback URLs Codex does not expose", async () => {
+  const reservation = createServer();
+  reservation.listen(0, "127.0.0.1");
+  await once(reservation, "listening");
+  const address = reservation.address();
+  assert.ok(address && typeof address !== "string");
+  const port = address.port;
+  reservation.close();
+  await once(reservation, "close");
+
+  const remoteOrigin = `http://phone.localhost:${port}`;
+  const f = await startFixture({ port, allowedOrigins: [remoteOrigin] });
+  f.setMobileOAuthResult({ authorizationUrl: "https://provider.example/authorize?request_uri=opaque" });
+  try {
+    const login = await pair(f.origin, f.auth);
+    const response = await fetch(f.origin + "/api/operations", {
+      method: "POST",
+      headers: { origin: remoteOrigin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ op: "mcpOAuthLogin", args: { sessionId: allowedSession, name: "fixture-mcp" } }),
+    });
     assert.equal(response.status, 409);
-    assert.match((await response.json() as { error: string }).error, /телефон|ноутбук/i);
-    assert.equal(f.calls.filter((call) => call.op === "mcpOAuthLogin").length, 0);
+    assert.match((await response.json() as { error: string }).error, /callback|возврат/i);
+    assert.equal(f.calls.filter((call) => call.op === "mcpOAuthLogin").length, 1);
   } finally { await cleanup(f.server, f.dataDir); }
 });
 

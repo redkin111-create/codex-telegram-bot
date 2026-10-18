@@ -170,6 +170,14 @@ export function runOperation<T = unknown>(op: MobileOperation, args: Record<stri
   });
 }
 
+export function completeMcpOAuthCallback(sessionId: string, name: string, callbackUrl: string, csrfToken: string) {
+  return jsonRequest<{ forwarded: true }>("/api/mcp/oauth/callback", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrfToken },
+    body: JSON.stringify({ sessionId, name, callbackUrl }),
+  });
+}
+
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
 export async function uploadAttachment(sessionId: string, file: File, csrfToken: string): Promise<MobileAttachment> {

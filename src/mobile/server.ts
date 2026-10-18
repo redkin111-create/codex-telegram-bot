@@ -8,6 +8,7 @@ import type { MiniAppAgent, MobileLocalJob, MobileLocalOperation } from "../tma/
 import type { LiveElicitation, LiveEvent, TmaLiveFeed } from "../tma/live.js";
 import { MobileAuthStore } from "./auth.js";
 import type { MobileAccountController } from "./accounts.js";
+import { forwardMcpOAuthCallback, mcpOAuthCallbackTarget, validateMcpOAuthCallback, type McpOAuthCallbackTarget } from "./oauth-callback.js";
 import { parseCodexThreadReadState } from "../acp/codex-protocol.js";
 
 const SESSION_COOKIE = "__Host-codex-mobile-session";
@@ -227,6 +228,7 @@ export function createMobileServer(options: MobileServerOptions): Server {
   const origins = new Set((options.allowedOrigins ?? []).map((origin) => origin.trim()).filter(Boolean));
   const now = options.now ?? Date.now;
   const started = new Map<string, { at: number; count: number }>();
+  const pendingMcpOAuth = new Map<string, { ownerId: number; deviceId: string; sessionId: string; target: McpOAuthCallbackTarget; expiresAt: number; attempts: number; inFlight: boolean }>();
   const attachments = new MobileAttachmentStore(options.dataDir, now);
   const server = createServer((req, res) => {
     securityHeaders(res);
@@ -376,6 +378,43 @@ export function createMobileServer(options: MobileServerOptions): Server {
     if (revoke && method === "DELETE") {
       const revoked = options.auth.revokeDevice(device.ownerId, revoke[1]!);
       json(res, revoked ? 200 : 404, revoked ? { revoked: true } : { error: "Устройство не найдено" });
+      return;
+    }
+    if (path === "/api/mcp/oauth/callback" && method === "POST") {
+      const body = await readJson(req, 10 * 1024);
+      const sessionId = typeof body.sessionId === "string" ? body.sessionId : "";
+      const serverName = typeof body.name === "string" ? body.name.trim() : "";
+      if (!safeSessionId(sessionId) || !serverName || serverName.length > 120 ||
+          !await options.agent.canReadSession(sessionId, device.ownerId)) {
+        json(res, 403, { error: "Доступ к сеансу запрещён" }); return;
+      }
+      const key = `${device.id}\u0000${sessionId}\u0000${serverName}`;
+      const flow = pendingMcpOAuth.get(key);
+      if (!flow || flow.ownerId !== device.ownerId || flow.deviceId !== device.id) {
+        json(res, 409, { error: "Для этого устройства нет ожидающего входа в MCP" }); return;
+      }
+      if (now() >= flow.expiresAt) {
+        pendingMcpOAuth.delete(key);
+        json(res, 410, { error: "Время входа в MCP истекло. Начните вход заново." }); return;
+      }
+      if (flow.attempts >= 5) {
+        pendingMcpOAuth.delete(key);
+        json(res, 429, { error: "Слишком много неверных адресов callback. Начните вход заново." }); return;
+      }
+      if (flow.inFlight) { json(res, 409, { error: "Callback для этого входа уже обрабатывается" }); return; }
+      flow.attempts++;
+      const callback = validateMcpOAuthCallback(body.callbackUrl, flow.target);
+      if (!callback) { json(res, 400, { error: "Адрес callback не совпадает с текущей попыткой входа" }); return; }
+      flow.inFlight = true;
+      try {
+        const status = await forwardMcpOAuthCallback(callback);
+        pendingMcpOAuth.delete(key);
+        if (status >= 200 && status < 300) json(res, 200, { forwarded: true });
+        else json(res, 409, { error: "Codex отклонил callback. Начните вход в MCP заново." });
+      } catch {
+        flow.inFlight = false;
+        json(res, 502, { error: "Локальный callback Codex недоступен. Начните вход заново, если попытка истекла." });
+      }
       return;
     }
 
@@ -627,10 +666,6 @@ export function createMobileServer(options: MobileServerOptions): Server {
       if (typeof args.sessionId === "string" && !await options.agent.canReadSession(args.sessionId, device.ownerId)) {
         json(res, 403, { error: "Доступ к сеансу запрещён" }); return;
       }
-      if (body.op === "mcpOAuthLogin" && !loopbackOrigin(req)) {
-        json(res, 409, { error: "Вход в MCP через OAuth пока можно завершить только в браузере на ноутбуке: callback Codex не может безопасно вернуться на телефон" });
-        return;
-      }
       let promptAttachments: MobilePromptAttachment[] = [];
       let attachmentIds: string[] = [];
       if (body.op === "send" || body.op === "steer") {
@@ -675,7 +710,30 @@ export function createMobileServer(options: MobileServerOptions): Server {
           json(res, 403, { error: "Доступ к сеансу запрещён" }); return;
         }
         if (!options.agent.executeMobile) { json(res, 503, { error: "Настройки Codex недоступны" }); return; }
-        try { json(res, 200, await options.agent.executeMobile({ op: body.op as MobileLocalOperation, userId: device.ownerId, args })); }
+        if (body.op === "mcpOAuthLogin" && !loopbackOrigin(req)) {
+          for (const [key, flow] of pendingMcpOAuth) if (now() >= flow.expiresAt) pendingMcpOAuth.delete(key);
+          if (pendingMcpOAuth.size >= 64) { json(res, 429, { error: "Слишком много ожидающих входов MCP" }); return; }
+        }
+        try {
+          const result = await options.agent.executeMobile({ op: body.op as MobileLocalOperation, userId: device.ownerId, args });
+          if (body.op === "mcpOAuthLogin" && !loopbackOrigin(req)) {
+            const target = mcpOAuthCallbackTarget(result);
+            const serverName = typeof args.name === "string" ? args.name.trim() : "";
+            if (!target || !serverName || serverName.length > 120) {
+              json(res, 409, { error: "Codex не передал проверяемый loopback callback; вход с телефона для этого MCP-сервера недоступен" });
+              return;
+            }
+            const sessionId = args.sessionId;
+            const key = `${device.id}\u0000${sessionId}\u0000${serverName}`;
+            pendingMcpOAuth.set(key, {
+              ownerId: device.ownerId, deviceId: device.id, sessionId, target,
+              expiresAt: now() + 5 * 60_000, attempts: 0, inFlight: false,
+            });
+            json(res, 200, { ...(result && typeof result === "object" ? result as Record<string, unknown> : {}), callbackRelayAvailable: true });
+            return;
+          }
+          json(res, 200, result);
+        }
         catch (error) { json(res, 502, { error: safeError(error) }); }
         return;
       }

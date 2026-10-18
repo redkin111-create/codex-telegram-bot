@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Activity, Bot, ChevronDown, CircleHelp, Clock3, Download, ExternalLink, Pause, Play, Plug, Puzzle, RefreshCw, ShieldCheck, Sparkles, Target, Trash2, X } from "lucide-react";
-import { readCapabilities } from "../api.js";
+import { completeMcpOAuthCallback, readCapabilities } from "../api.js";
 import { AccountsPanel } from "./accounts-panel.js";
 import { McpConfigPanel } from "./mcp-config-panel.js";
 import type { MobileCapabilities, MobileOperation } from "../types.js";
@@ -85,6 +85,8 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
   const [marketplaceAction, setMarketplaceAction] = useState<MarketplaceAction>();
   const [marketplaceNotice, setMarketplaceNotice] = useState("");
   const [mcpLoginLinks, setMcpLoginLinks] = useState<Record<string, string>>({});
+  const [mcpOAuthRelayAvailable, setMcpOAuthRelayAvailable] = useState<Record<string, boolean>>({});
+  const [mcpOAuthCallbackValues, setMcpOAuthCallbackValues] = useState<Record<string, string>>({});
   const [mcpToolAction, setMcpToolAction] = useState<McpToolAction>();
   const [mcpToolArguments, setMcpToolArguments] = useState("{}");
   const [mcpToolError, setMcpToolError] = useState("");
@@ -240,15 +242,36 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
     setSaving(true);
     setError("");
     setMcpLoginLinks((current) => { const pending = { ...current }; delete pending[serverName]; return pending; });
+    setMcpOAuthRelayAvailable((current) => { const pending = { ...current }; delete pending[serverName]; return pending; });
+    setMcpOAuthCallbackValues((current) => { const pending = { ...current }; delete pending[serverName]; return pending; });
     try {
-      const result = await onOperation("mcpOAuthLogin", { sessionId, name: serverName }) as { authorizationUrl?: unknown };
+      const result = await onOperation("mcpOAuthLogin", { sessionId, name: serverName }) as { authorizationUrl?: unknown; callbackRelayAvailable?: unknown };
       const authorizationUrl = typeof result?.authorizationUrl === "string" ? result.authorizationUrl : "";
       const host = safeLinkHost(authorizationUrl);
       if (!host) throw new Error("Codex не вернул безопасную HTTPS-ссылку для входа");
       setMcpLoginLinks((current) => ({ ...current, [serverName]: authorizationUrl }));
+      setMcpOAuthRelayAvailable((current) => ({ ...current, [serverName]: result.callbackRelayAvailable === true }));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Не удалось начать вход в MCP-сервер");
     } finally { setSaving(false); }
+  }
+
+  async function completeMcpOAuth(serverName: string) {
+    const callbackUrl = mcpOAuthCallbackValues[serverName]?.trim() ?? "";
+    if (!callbackUrl) { setError("Вставьте полный адрес возврата от OAuth-провайдера."); return; }
+    setSaving(true);
+    setError("");
+    try {
+      await completeMcpOAuthCallback(sessionId, serverName, callbackUrl, csrf);
+      setMcpLoginLinks((current) => { const next = { ...current }; delete next[serverName]; return next; });
+      setMcpOAuthRelayAvailable((current) => { const next = { ...current }; delete next[serverName]; return next; });
+      await reload();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Не удалось передать callback в Codex");
+    } finally {
+      setMcpOAuthCallbackValues((current) => { const next = { ...current }; delete next[serverName]; return next; });
+      setSaving(false);
+    }
   }
 
   async function confirmMcpToolCall() {
@@ -361,10 +384,8 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
                 <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="break-words text-sm font-medium">{server.name}</p>{server.serverName && <p className="mt-1 break-words text-[11px] text-muted">{server.serverName}{server.serverVersion ? ` · ${server.serverVersion}` : ""}</p>}</div><Badge>{mcpStatusLabel(server.status)}</Badge></div>
                 <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted"><span>{server.toolCount} инструментов</span><span>{server.resourceCount} ресурсов</span><span>{server.resourceTemplateCount} шаблонов</span>{mcpAuthLabel(server.authStatus) && <span>{mcpAuthLabel(server.authStatus)}</span>}</div>
                 {server.discoveryFailed && <p className="mt-2 text-[11px] text-[#ffc3bd]">Codex сообщил об ошибке списка инструментов. Подробности доступны в локальном Codex.</p>}
-                {(server.status === "authenticationRequired" || server.authStatus === "notLoggedIn") && <div className="mt-3 flex flex-wrap gap-2">{canCompleteMcpOAuthHere()
-                  ? <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" disabled={!usable} onClick={() => void beginMcpOAuth(server.name)}><ShieldCheck size={14} /> Начать вход</Button>
-                  : <p className="text-xs leading-relaxed text-muted" role="status">OAuth-вход с телефона пока не поддерживается: Codex ждёт возврат браузера на ноутбук. Завершите вход в Codex на ноутбуке, затем обновите состояние сервера.</p>}</div>}
-                {mcpLoginLinks[server.name] && safeLinkHost(mcpLoginLinks[server.name]) && <div className="mt-3 space-y-2 rounded-lg border border-border bg-[#111613] p-3" role="status"><p className="text-xs leading-relaxed text-muted">Продолжите вход у провайдера. Перед вводом пароля проверьте адрес: <span className="font-medium text-text">{safeLinkHost(mcpLoginLinks[server.name])}</span>.</p><div className="flex flex-wrap items-center gap-2"><a className="inline-flex min-h-9 items-center gap-1 text-xs text-accent underline" href={mcpLoginLinks[server.name]} target="_blank" rel="noopener noreferrer">Открыть страницу входа <ExternalLink size={12} /></a><Button type="button" variant="ghost" className="min-h-9 px-2 text-xs" disabled={loading || saving} onClick={() => void reload()}>Проверить подключение</Button></div></div>}
+                {(server.status === "authenticationRequired" || server.authStatus === "notLoggedIn") && <div className="mt-3 flex flex-wrap gap-2"><Button type="button" variant="outline" className="min-h-9 px-3 text-xs" disabled={!usable || saving} onClick={() => void beginMcpOAuth(server.name)}><ShieldCheck size={14} /> Начать вход</Button></div>}
+                {mcpLoginLinks[server.name] && safeLinkHost(mcpLoginLinks[server.name]) && <div className="mt-3 space-y-3 rounded-lg border border-border bg-[#111613] p-3" role="status"><p className="text-xs leading-relaxed text-muted">Продолжите вход у провайдера. Перед вводом пароля проверьте адрес: <span className="font-medium text-text">{safeLinkHost(mcpLoginLinks[server.name])}</span>.</p><div className="flex flex-wrap items-center gap-2"><a className="inline-flex min-h-9 items-center gap-1 text-xs text-accent underline" href={mcpLoginLinks[server.name]} target="_blank" rel="noopener noreferrer">Открыть страницу входа <ExternalLink size={12} /></a><Button type="button" variant="ghost" className="min-h-9 px-2 text-xs" disabled={loading || saving} onClick={() => void reload()}>Проверить подключение</Button></div>{!canCompleteMcpOAuthHere() && mcpOAuthRelayAvailable[server.name] && <div className="space-y-2 border-t border-border pt-3"><p className="text-xs leading-relaxed text-muted">После подтверждения провайдер вернёт браузер на ноутбук. Скопируйте полный адрес из строки браузера и вставьте сюда. Codex проверит одноразовый state; адрес не сохраняется.</p><label className="block text-xs font-medium" htmlFor={`mcp-oauth-callback-${server.name}`}>Адрес возврата OAuth</label><Textarea id={`mcp-oauth-callback-${server.name}`} autoComplete="off" spellCheck={false} className="min-h-24 font-mono text-[11px]" value={mcpOAuthCallbackValues[server.name] ?? ""} onChange={(event) => setMcpOAuthCallbackValues((current) => ({ ...current, [server.name]: event.target.value }))} placeholder="http://127.0.0.1:.../callback?..." /><Button type="button" variant="outline" className="min-h-9 px-3 text-xs" disabled={!usable || saving || !(mcpOAuthCallbackValues[server.name] ?? "").trim()} onClick={() => void completeMcpOAuth(server.name)}><ShieldCheck size={14} /> Передать callback в Codex</Button></div>}</div>}
                 {server.tools.length > 0 && <details className="mt-3 border-t border-border pt-2"><summary className="min-h-8 cursor-pointer py-1 text-xs font-medium">Доступные инструменты ({server.toolCount})</summary><ul className="mt-1 space-y-2">{server.tools.map((tool) => <li key={tool.name} className="rounded-lg bg-[#171d18] p-2"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><p className="break-words font-mono text-[11px]">{tool.name}</p>{tool.description && <p className="mt-1 break-words text-[11px] leading-relaxed text-muted">{tool.description}</p>}</div>{server.status === "connected" && <Button type="button" variant="outline" className="min-h-8 shrink-0 px-2 text-[11px]" disabled={!usable} onClick={() => { setMcpToolResult(undefined); setMcpToolArguments("{}"); setMcpToolError(""); setMcpToolAction({ serverName: server.name, toolName: tool.name, description: tool.description, inputSchema: tool.inputSchema }); }}>Вызвать</Button>}</div></li>)}</ul></details>}
                 {server.resources?.length ? <details className="mt-3 border-t border-border pt-2"><summary className="min-h-8 cursor-pointer py-1 text-xs font-medium">Ресурсы и шаблоны ({server.resources.length})</summary><ul className="mt-1 space-y-2">{server.resources.map((resource) => <li key={resource.id} className="flex items-start justify-between gap-2 rounded-lg bg-[#171d18] p-2"><div className="min-w-0"><p className="break-words text-[11px] font-medium">{resource.name}</p>{resource.parameters?.length ? <p className="mt-1 break-words text-[10px] text-accent">Шаблон · параметры: {resource.parameters.join(", ")}</p> : null}{resource.description && <p className="mt-1 break-words text-[11px] leading-relaxed text-muted">{resource.description}</p>}{resource.mimeType && <p className="mt-1 text-[10px] text-muted">{resource.mimeType}</p>}</div>{server.status === "connected" && <Button type="button" variant="outline" className="min-h-8 shrink-0 px-2 text-[11px]" disabled={!usable} onClick={() => { setMcpResourceResult(undefined); setMcpResourceError(""); setMcpResourceParameters(Object.fromEntries((resource.parameters ?? []).map((name) => [name, ""]))); setMcpResourceAction({ serverName: server.name, ...resource }); }}>{resource.parameters?.length ? "Открыть" : "Читать"}</Button>}</li>)}</ul></details> : null}
               </li>)}</ul> : <p className="text-xs text-muted">В этом сеансе нет подключённых MCP-серверов.</p>}
