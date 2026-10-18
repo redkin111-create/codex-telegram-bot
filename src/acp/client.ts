@@ -202,6 +202,8 @@ export class AcpClient extends EventEmitter {
   private readonly threadMode = new Map<string, string>();
   private readonly collaborationModes = new Map<string, CodexCollaborationModeInfo>();
   private readonly subagents = new Map<string, SubagentInfo>();
+  /** Threads with an active native Codex realtime voice transport. */
+  private readonly realtimeThreads = new Set<string>();
   /** itemId -> threadId, so text/reasoning deltas route to the right thread. */
   private readonly itemThread = new Map<string, string>();
 
@@ -890,12 +892,93 @@ export class AcpClient extends EventEmitter {
   }
 
   /** Fork an idle persisted thread through the same Codex app-server process. */
-  async forkThread(threadId: string): Promise<CodexThreadForkResponse> {
-    const response = await this.request("thread/fork", { threadId }) as CodexThreadForkResponse;
+  async forkThread(threadId: string, options: { ephemeral?: boolean; excludeTurns?: boolean } = {}): Promise<CodexThreadForkResponse> {
+    const response = await this.request("thread/fork", { threadId, ...options }) as CodexThreadForkResponse;
     if (!response?.thread?.id) throw new AcpError("thread/fork returned no thread id");
     if (response.cwd) this.threadCwd.set(response.thread.id, response.cwd);
     if (response.model) this.threadModel.set(response.thread.id, response.model);
     return response;
+  }
+
+  /** Start Codex's experimental WebRTC voice transport on the existing thread. */
+  async listRealtimeVoices(): Promise<{ voices: string[]; defaultVoice: string }> {
+    const response = await this.request("thread/realtime/listVoices", {}) as {
+      voices?: { v1?: unknown; v2?: unknown; v3?: unknown; defaultV1?: unknown; defaultV2?: unknown };
+    };
+    const source = response?.voices ?? {};
+    const safeVoices = [source.v1, source.v2, source.v3]
+      .flatMap((group) => Array.isArray(group) ? group : [])
+      .filter((voice): voice is string => typeof voice === "string" && /^[a-z][a-z0-9_]{0,31}$/i.test(voice));
+    const voices = [...new Set(safeVoices)].slice(0, 64);
+    const preferred = [source.defaultV2, source.defaultV1].find((voice): voice is string =>
+      typeof voice === "string" && voices.includes(voice));
+    return { voices, defaultVoice: preferred ?? voices[0] ?? "" };
+  }
+
+  async startRealtime(threadId: string, offerSdp: string, voice?: string): Promise<string> {
+    if (!/^[a-z0-9_-]{8,128}$/i.test(threadId)) throw new Error("Неверный сеанс Codex для голосового режима");
+    if (typeof offerSdp !== "string" || offerSdp.length > 128_000 || !/^v=0\r?$/m.test(offerSdp) ||
+        !/^m=audio\s/m.test(offerSdp) || !/^m=application\s/m.test(offerSdp)) {
+      throw new Error("Браузер не сформировал корректное аудиосоединение");
+    }
+    if (voice !== undefined && (typeof voice !== "string" || !/^[a-z][a-z0-9_]{0,31}$/i.test(voice))) {
+      throw new Error("Неверный голос Codex");
+    }
+    if (this.realtimeThreads.has(threadId)) throw new Error("Голосовой режим уже подключён к этому сеансу");
+
+    let resolveSdp!: (sdp: string) => void;
+    let rejectSdp!: (error: Error) => void;
+    const answer = new Promise<string>((resolve, reject) => { resolveSdp = resolve; rejectSdp = reject; });
+    const onNotification = (method: string, value: unknown) => {
+      const params = value && typeof value === "object" ? value as Record<string, unknown> : {};
+      if (params.threadId !== threadId) return;
+      if (method === "thread/realtime/sdp") {
+        const sdp = params.sdp;
+        if (typeof sdp === "string" && sdp.length <= 128_000 && /^v=0\r?$/m.test(sdp)) {
+          this.realtimeThreads.add(threadId);
+          resolveSdp(sdp);
+        } else rejectSdp(new Error("Неверный SDP-ответ Codex"));
+      } else if (method === "thread/realtime/error" || method === "thread/realtime/closed") {
+        rejectSdp(new Error("Codex закрыл голосовое соединение"));
+      }
+    };
+    this.on("notification", onNotification);
+    let timeout: NodeJS.Timeout | undefined;
+    try {
+      const timedOut = new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error("Codex не ответил на запрос голосового соединения")), 20_000);
+        timeout.unref();
+      });
+      const startup = (async () => {
+        await this.request("thread/realtime/start", {
+          threadId,
+          outputModality: "audio",
+          transport: { type: "webrtc", sdp: offerSdp },
+          ...(voice ? { voice } : {}),
+        });
+        return await answer;
+      })();
+      return await Promise.race([startup, timedOut]);
+    } catch {
+      this.realtimeThreads.delete(threadId);
+      void this.request("thread/realtime/stop", { threadId }).catch(() => undefined);
+      throw new AcpError("Codex не смог начать голосовой сеанс. Проверьте вход и поддержку Live в текущей версии Codex.");
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      this.off("notification", onNotification);
+    }
+  }
+
+  /** Stop only the realtime transport attached to this existing thread. */
+  async stopRealtime(threadId: string): Promise<void> {
+    if (!/^[a-z0-9_-]{8,128}$/i.test(threadId)) throw new Error("Неверный сеанс Codex для остановки голоса");
+    if (!this.realtimeThreads.has(threadId)) return;
+    await this.request("thread/realtime/stop", { threadId });
+    this.realtimeThreads.delete(threadId);
+  }
+
+  isRealtimeActive(threadId: string): boolean {
+    return this.realtimeThreads.has(threadId);
   }
 
   hasActiveTurn(threadId: string): boolean {
@@ -1241,6 +1324,9 @@ export class AcpClient extends EventEmitter {
   /** Decide a Codex exec/patch approval → "accept" | "acceptForSession" | "decline". */
   private routeNotification(method: string, params: unknown): void {
     const p = (params as Record<string, unknown>) ?? {};
+    if ((method === "thread/realtime/closed" || method === "thread/realtime/error") && typeof p.threadId === "string") {
+      this.realtimeThreads.delete(p.threadId);
+    }
     const threadHint = this.resolveThread(p);
     if (threadHint) this.lastActivity.set(threadHint, Date.now());
 

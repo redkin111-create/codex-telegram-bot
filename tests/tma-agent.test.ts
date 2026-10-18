@@ -246,6 +246,64 @@ test("mobile voice transcription accepts bounded audio only for an owned session
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile realtime voice is limited to an owned idle session and stops through the same Codex thread",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-realtime-"));
+  const sessionId="74747474-7474-4474-8474-747474747474";
+  const foreignId="73737373-7373-4373-8373-737373737373";
+  const threads=[
+    {id:sessionId,name:"Owned voice thread",cwd:dir,source:"appServer",createdAt:1,updatedAt:2,recencyAt:2},
+    {id:foreignId,name:"Foreign voice thread",cwd:dir,source:"appServer",createdAt:1,updatedAt:1,recencyAt:1},
+  ];
+  const offer="v=0\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n";
+  const answer="v=0\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n";
+  let busy=false;
+  let queueLength=0;
+  let activeTurn=false;
+  const starts:Array<{threadId:string;sdp:string;voice?:string}>=[];
+  const stops:string[]=[];
+  const acp=Object.assign(new EventEmitter(),{
+    isConnected:true,
+    listProjects:async()=>[{id:"p1",name:"project",roots:[dir]}],
+    listThreads:async(params?:{archived?:boolean})=>params?.archived?[]:threads,
+    listAllThreads:async(params?:{archived?:boolean})=>params?.archived?[]:threads,
+    hasActiveTurn:(id:string)=>id===sessionId&&activeTurn,
+    async listRealtimeVoices(){return {voices:["marin","cedar"],defaultVoice:"marin"};},
+    async startRealtime(threadId:string,sdp:string,voice?:string){starts.push({threadId,sdp,...(voice?{voice}:{})});return answer;},
+    async stopRealtime(threadId:string){stops.push(threadId);},
+  }) as unknown as AcpClient;
+  const runtime={get isBusy(){return busy;},get queueLength(){return queueLength;}};
+  const registry={runtimeForSession:(owner:number,id:string)=>owner===101&&id===sessionId?runtime:undefined} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101","202"])} as AppConfig;
+  const owners=new TelegramSessionRegistry(dir);
+  owners.recordMobile(sessionId,101,dir,"Owned");
+  owners.recordMobile(foreignId,202,dir,"Foreign");
+  const agent=new MiniAppAgent({cfg,acp,registry});
+    const startArgs={sessionId,sdp:offer,voice:"cedar"};
+  try{
+    assert.equal(await agent.canReadSession(sessionId,101),true);
+    await assert.rejects(agent.executeMobile({op:"startRealtime",userId:202,args:startArgs} as never),/Доступ к сеансу запрещён/);
+    busy=true;
+    await assert.rejects(agent.executeMobile({op:"startRealtime",userId:101,args:startArgs} as never),/Дождитесь завершения/);
+    busy=false;
+    queueLength=1;
+    await assert.rejects(agent.executeMobile({op:"startRealtime",userId:101,args:startArgs} as never),/очеред/i);
+    queueLength=0;
+    activeTurn=true;
+    await assert.rejects(agent.executeMobile({op:"startRealtime",userId:101,args:startArgs} as never),/Дождитесь завершения/);
+    activeTurn=false;
+    await assert.rejects(agent.executeMobile({op:"startRealtime",userId:101,args:{...startArgs,sdp:"not sdp"}} as never),/SDP|аудиосоединение/i);
+    await assert.rejects(agent.executeMobile({op:"startRealtime",userId:101,args:{...startArgs,voice:"unknown"}} as never),/голос.*недоступен/i);
+    const started=await agent.executeMobile({op:"startRealtime",userId:101,args:startArgs} as never) as {sdp:string};
+    assert.deepEqual(started,{sdp:answer});
+    assert.deepEqual(starts,[{threadId:sessionId,sdp:offer,voice:"cedar"}]);
+    assert.deepEqual(await agent.executeMobile({op:"listRealtimeVoices",userId:101,args:{sessionId}} as never),{voices:["marin","cedar"],defaultVoice:"marin"});
+    await assert.rejects(agent.executeMobile({op:"listRealtimeVoices",userId:202,args:{sessionId}} as never),/Доступ к сеансу запрещён/);
+    await agent.executeMobile({op:"stopRealtime",userId:101,args:{sessionId}} as never);
+    await assert.rejects(agent.executeMobile({op:"stopRealtime",userId:202,args:{sessionId}} as never),/Доступ к сеансу запрещён/);
+    assert.deepEqual(stops,[sessionId]);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile voice transcription stays disabled until the existing speech endpoint is configured",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-voice-disabled-"));
   const sessionId="76767676-7676-4676-8676-767676767676";
@@ -1092,6 +1150,43 @@ test("mobile fork copies an authorized idle thread and persists the new owner",a
     activeTurn=true;
     await assert.rejects(agent.executeMobile({op:"forkThread",userId:101,args:{sessionId:sourceId}} as never),/выполня|активный ход/i);
     assert.deepEqual(calls,[sourceId]);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("mobile side chat creates an owner-only ephemeral fork while the parent is working",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-side-chat-"));
+  const sourceId="71717171-7171-4171-8171-717171717171";
+  const sideId="81818181-8181-4181-8181-818181818181";
+  const source={id:sourceId,name:"Active source",cwd:dir,source:"appServer",createdAt:1,updatedAt:2,recencyAt:2};
+  const side={thread:{id:sideId,name:"Active source · side chat",source:"appServer",ephemeral:true},cwd:dir};
+  let forkOptions:unknown;
+  const acp=Object.assign(new EventEmitter(),{
+    isConnected:true,
+    availableModels:[],
+    currentModelId:"fixture",
+    listProjects:async()=>[{id:"p1",name:"project",roots:[dir]}],
+    listThreads:async()=>[source],
+    listAllThreads:async()=>[source],
+    hasActiveTurn:(id:string)=>id===sourceId,
+    forkThread:async(_id:string,options:unknown)=>{forkOptions=options;return side;},
+  }) as unknown as AcpClient;
+  const sideController={list:()=>[],runtimeForSession:()=>undefined};
+  const registry={runtimeForSession:(_owner:number,id:string)=>id===sourceId?{sessionId:id,isBusy:true}:undefined,
+    ownerChatForSession:()=>undefined,controller:()=>sideController,get:()=>({sessionId:sourceId})} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101","202"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    const result=await agent.executeMobile({op:"createSideChat",userId:101,args:{sessionId:sourceId}} as never) as {sessionId?:string};
+    assert.equal(result.sessionId,sideId);
+    assert.deepEqual(forkOptions,{ephemeral:true,excludeTurns:true});
+    assert.equal(await agent.canReadSession(sideId,101),true);
+    assert.equal(await agent.canReadSession(sideId,202),false);
+    const snapshot=await agent.execute({op:"snapshot",userId:101,args:{}} as never) as {sessions:Array<{id:string;ephemeral?:boolean;parentThreadId?:string}>};
+    const visibleSideChat=snapshot.sessions.find((session)=>session.id===sideId);
+    assert.equal(visibleSideChat?.ephemeral,true);
+    assert.equal(visibleSideChat?.parentThreadId,sourceId);
+    const foreignSnapshot=await agent.execute({op:"snapshot",userId:202,args:{}} as never) as {sessions:Array<{id:string}>};
+    assert.equal(foreignSnapshot.sessions.some((session)=>session.id===sideId),false);
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 

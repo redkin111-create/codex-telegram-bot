@@ -173,6 +173,7 @@ export function Workspace({
                   <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${session.archived ? "bg-[#59625a]" : session.busy ? "animate-pulse bg-[#d8f58e]" : connected ? "bg-[#76984c]" : "bg-[#59625a]"}`} aria-label={session.archived ? "В архиве" : session.busy ? "Выполняется" : connected ? "Подключён" : "Статус неизвестен"} />
                 </span>
                 <span className="mt-2 block truncate text-xs text-[#839087]">{session.archived ? "В архиве" : session.liveLabel || "Статус неизвестен"}</span>
+                {session.ephemeral && <span className="mt-1 inline-flex rounded-md border border-[#3b4832] bg-[#1c2418] px-2 py-0.5 text-[10px] text-[#bedb92]">Временный side chat</span>}
                 {session.section?.name && <span className="mt-1 inline-flex max-w-full truncate rounded-md border border-[#3b4832] bg-[#1c2418] px-2 py-0.5 text-[10px] text-[#bedb92]">{session.section.name}</span>}
                 <span className="mt-1 block truncate font-mono text-[10px] text-[#657066]">{session.cwd}</span>
               </button>
@@ -180,7 +181,7 @@ export function Workspace({
                 <Input aria-label={`Новое название ${session.title}`} value={renameValue} onChange={(event) => setRenameValue(event.target.value)} maxLength={120} autoFocus />
                 <Button type="submit" variant="outline" className="min-h-10 px-2" aria-label="Сохранить название" disabled={!renameValue.trim() || savingName}><Check size={16} /></Button>
                 <Button type="button" variant="ghost" className="min-h-10 px-2" aria-label="Отменить переименование" onClick={() => setEditingId("")}><X size={16} /></Button>
-              </form> : showArchived ? <div className="mt-2 space-y-1">
+              </form> : session.ephemeral ? <p className="mt-2 rounded-lg bg-[#151a16] px-2 py-2 text-[11px] leading-4 text-muted">Этот side chat существует только пока открыт Codex. Архив, закрепление и переименование недоступны.</p> : showArchived ? <div className="mt-2 space-y-1">
                 <Button type="button" variant="ghost" className="min-h-9 w-full px-2 text-[11px]" onClick={() => { setEditingId(session.id); setRenameValue(session.title); }}><Pencil size={13} /> Переименовать</Button>
                 <div className="flex gap-2">
                   <Button type="button" variant="outline" className="min-h-9 flex-1 px-2 text-[11px]" onClick={() => void onUnarchive(session.id)}><ArchiveRestore size={13} /> Восстановить</Button>

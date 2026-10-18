@@ -26,7 +26,7 @@ const screenshotPath = "C:\\fixture\\codex-mobile\\screenshots\\sample.png";
 const fixturePinnedSection = { id: "01984de2-8f74-7c91-a3b2-5c5e937cf318", name: "Закреплённые", builtIn: true };
 const fixtureSectionsAvailable = process.env.CODEX_MOBILE_FIXTURE_SECTIONS_UNAVAILABLE !== "1";
 const fixtureSections = [{ id: "88888888-8888-4888-8888-888888888888", name: "В работе" }];
-type FixtureSession = { id: string; title: string; cwd: string; updatedAt: number; source: string; section?: { id: string; name: string; builtIn?: boolean } };
+type FixtureSession = { id: string; title: string; cwd: string; updatedAt: number; source: string; section?: { id: string; name: string; builtIn?: boolean }; ephemeral?: boolean; parentThreadId?: string };
 
 class FixtureFeed {
   readonly epoch = randomUUID().replaceAll("-", "");
@@ -287,6 +287,28 @@ const agent = {
       return { sessionId, sectionId: args.sectionId ?? null };
     }
     if (job.op === "transcribeAudio") return voiceAgent.executeMobile(job as unknown as MobileLocalJob);
+    if (job.op === "listRealtimeVoices") {
+      if (job.userId !== ownerId || !sessions.some((session) => session.id === sessionId)) throw new Error("Доступ к сеансу запрещён");
+      return { voices: ["marin", "cedar"], defaultVoice: "marin" };
+    }
+    if (job.op === "startRealtime") {
+      const runtime = controlled.get(sessionId);
+      const offer = typeof args.sdp === "string" ? args.sdp : "";
+      if (job.userId !== ownerId || !sessions.some((session) => session.id === sessionId)) throw new Error("Доступ к сеансу запрещён");
+      if (runtime?.busy || (runtime?.queue.length ?? 0) > 0) throw new Error("Дождитесь завершения текущей задачи и очереди перед запуском голосового режима");
+      if (!/^v=0\r?$/m.test(offer) || !/^m=audio\s/m.test(offer) || !/^m=application\s/m.test(offer)) throw new Error("Браузер не сформировал корректное аудиосоединение");
+      const voice = typeof args.voice === "string" ? args.voice : "по умолчанию";
+      if (voice !== "по умолчанию" && !["marin", "cedar"].includes(voice)) throw new Error("Выбранный голос Codex сейчас недоступен");
+      feed.publish(sessionId, { kind: "activity", label: `Голосовой режим Codex подключён (${voice})` });
+      feed.publish(sessionId, { kind: "transcript", role: "user", text: "Проверь голосовое подключение" });
+      feed.publish(sessionId, { kind: "transcript", role: "assistant", text: "Голосовое подключение тестовой среды готово" });
+      return { sdp: "v=0\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n" };
+    }
+    if (job.op === "stopRealtime") {
+      if (job.userId !== ownerId || !sessions.some((session) => session.id === sessionId)) throw new Error("Доступ к сеансу запрещён");
+      feed.publish(sessionId, { kind: "activity", label: "Голосовой режим Codex завершён" });
+      return { stopped: true };
+    }
     if (job.op === "latestEditableTurn") {
       if (sessionId !== firstSession) throw new Error("Сеанс не найден");
       return fixtureEditUnavailable
@@ -442,6 +464,16 @@ const agent = {
       selected = id;
       return { sessionId: id };
     }
+    if (job.op === "createSideChat") {
+      const source = sessions.find((session) => session.id === sessionId);
+      if (!source || source.ephemeral) throw new Error("Исходный сеанс не найден");
+      const id = randomUUID();
+      sessions.unshift({ ...source, id, title: `${source.title} · side chat`, updatedAt: Date.now(), source: "appServer", ephemeral: true, parentThreadId: sessionId });
+      history.set(id, [...(history.get(sessionId) ?? [])]);
+      controlled.set(id, { busy: false, queue: [], paused: false });
+      selected = id;
+      return { sessionId: id };
+    }
     if (job.op === "steer") {
       const runtime = controlled.get(sessionId);
       if (!runtime?.busy) throw new Error("Нет активной задачи для направления");
@@ -553,6 +585,7 @@ const agent = {
     if (job.op === "mcpOAuthLogin") {
       if (args.name !== "fixture-mcp" || args.sessionId !== firstSession) throw new Error("MCP-сервер не найден в выбранном сеансе");
       fixtureMcpAuthorized = true;
+      feed.publish(firstSession, { kind: "activity", label: "Вход в MCP-сервер fixture-mcp выполнен" });
       return { authorizationUrl: "https://login.example.invalid/oauth/fixture" };
     }
     if (job.op === "callMcpTool") {
@@ -843,6 +876,12 @@ process.stdin.on("data", (chunk: string) => {
       } else if (command.command === "transcriptionReset") {
         fixtureTranscriptionFailure = false;
         process.stdout.write("Fixture transcription failure disabled.\n");
+      } else if (command.command === "voiceClosed") {
+        feed.publish(selected, { kind: "activity", label: "Голосовой режим Codex завершён" });
+        process.stdout.write("Fixture realtime voice closed remotely.\n");
+      } else if (command.command === "voiceError") {
+        feed.publish(selected, { kind: "activity", label: "Ошибка голосового соединения Codex" });
+        process.stdout.write("Fixture realtime voice failed remotely.\n");
       } else if (command.command === "deleteThreadError") {
         fixtureDeleteFailure = true;
         process.stdout.write("Fixture Codex deletion error enabled.\n");

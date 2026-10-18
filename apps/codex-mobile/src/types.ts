@@ -50,6 +50,8 @@ export interface MobileSession {
   liveStatus: LiveStatus;
   liveLabel: string;
   archived?: boolean;
+  ephemeral?: boolean;
+  parentThreadId?: string;
   section?: MobileThreadSection | null;
 }
 
@@ -130,8 +132,9 @@ export interface MobileAttachment {
 export interface MobileLiveEvent {
   id: number;
   sessionId: string;
-  kind: "text" | "tool" | "status" | "activity" | "approval";
+  kind: "text" | "tool" | "status" | "activity" | "approval" | "transcript";
   text?: string;
+  role?: "user" | "assistant";
   label?: string;
   status?: LiveStatus;
   approval?: MobileApproval;
@@ -235,4 +238,6 @@ export interface MobileGitDiff {
   checkedAt: number;
 }
 
-export type MobileOperation = "create" | "select" | "send" | "cancel" | "queue" | "queueRemove" | "queueResume" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "writeFile" | "createFile" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+export type MobileOperation = "create" | "select" | "send" | "cancel" | "queue" | "queueRemove" | "queueResume" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "createSideChat" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "listRealtimeVoices" | "startRealtime" | "stopRealtime" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "writeFile" | "createFile" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+
+export interface MobileRealtimeVoices { voices: string[]; defaultVoice: string; }

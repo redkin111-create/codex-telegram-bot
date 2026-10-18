@@ -223,7 +223,9 @@ export function asLiveEvent(message: ParsedSseMessage): MobileLiveEvent | undefi
   try {
     const value = JSON.parse(message.data) as Partial<MobileLiveEvent>;
     if (!Number.isSafeInteger(value.id) || typeof value.sessionId !== "string" ||
-        !["text", "tool", "status", "activity", "approval"].includes(String(value.kind))) return undefined;
+        !["text", "tool", "status", "activity", "approval", "transcript"].includes(String(value.kind))) return undefined;
+    if (value.kind === "transcript" && (value.role !== "user" && value.role !== "assistant" ||
+        typeof value.text !== "string" || value.text.length === 0 || value.text.length > 4000)) return undefined;
     if (value.kind === "approval") {
       const approval = value.approval as Partial<MobileApproval> | undefined;
       if (!approval || typeof approval.id !== "string" || !/^[a-f0-9-]{36}$/.test(approval.id) ||

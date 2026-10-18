@@ -19,8 +19,9 @@ export interface LiveApproval {
 export interface LiveEvent {
   id:number;
   sessionId:string;
-  kind:"text"|"tool"|"status"|"activity"|"approval";
+  kind:"text"|"tool"|"status"|"activity"|"approval"|"transcript";
   text?:string;
+  role?:"user"|"assistant";
   label?:string;
   status?:LiveStatus;
   approval?:LiveApproval;
@@ -107,6 +108,23 @@ export class TmaLiveFeed {
         turnStatus==="failed"?"Задание завершилось с ошибкой":turnStatus==="interrupted"?"Задача остановлена":"Задание завершено");
     }else if(method==="turn/failed"||(method==="error"&&p.willRetry!==true)){
       this.status(id,"failed","Ошибка выполнения");
+    }else if(method==="mcpServer/oauth/login/completed"&&typeof p.success==="boolean"){
+      const rawName=str(p.name,100).replace(/[\u0000-\u001f\u007f]/g,"").trim();
+      const name=rawName||"MCP-сервер";
+      this.publish(id,{kind:"activity",label:p.success
+        ?`Вход в MCP-сервер ${name} выполнен`
+        :`Вход в MCP-сервер ${name} не выполнен`});
+    }else if(method==="thread/realtime/transcript/done"&&
+      (p.role==="user"||p.role==="assistant")&&typeof p.text==="string"){
+      const text=p.text.slice(0,4000).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g,"").trim();
+      if(text)this.publish(id,{kind:"transcript",role:p.role,text});
+    }else if(method==="thread/realtime/started"){
+      this.publish(id,{kind:"activity",label:"Голосовой режим Codex подключён"});
+    }else if(method==="thread/realtime/closed"){
+      this.publish(id,{kind:"activity",label:"Голосовой режим Codex завершён"});
+    }else if(method==="thread/realtime/error"){
+      // Provider error details may contain private request or account data.
+      this.publish(id,{kind:"activity",label:"Ошибка голосового соединения Codex"});
     }
   }
 }

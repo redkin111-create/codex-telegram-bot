@@ -157,6 +157,28 @@ test("fork requests Codex to copy only the selected source thread", async () => 
   assert.deepEqual(result, { thread: { id: "thread-fork" }, cwd: "C:\\work\\project", model: "fixture-model" });
 });
 
+test("side chat requests an ephemeral fork that excludes the current parent turn", async () => {
+  const client = new AcpClient({ codexCliPath: "codex", workspace: "C:\\work", trustAllTools: false });
+  let call: { method: string; params: unknown } | undefined;
+  const internal = client as unknown as {
+    request: (method: string, params: unknown) => Promise<unknown>;
+    threadCwd: Map<string, string>;
+  };
+  internal.threadCwd.set("thread-source", "C:\\work\\project");
+  internal.request = async (method, params) => {
+    call = { method, params };
+    return { thread: { id: "thread-side-chat", ephemeral: true }, cwd: "C:\\work\\project" };
+  };
+
+  const forkThread = (client as unknown as { forkThread?: (id: string, options: { ephemeral: boolean; excludeTurns: boolean }) => Promise<unknown> }).forkThread;
+  assert.equal(typeof forkThread, "function");
+  await forkThread!.call(client, "thread-source", { ephemeral: true, excludeTurns: true });
+  assert.deepEqual(call, {
+    method: "thread/fork",
+    params: { threadId: "thread-source", ephemeral: true, excludeTurns: true },
+  });
+});
+
 test("full conversation catalogue follows every thread/list cursor page", async () => {
   const client = new AcpClient({
     codexCliPath: "codex",

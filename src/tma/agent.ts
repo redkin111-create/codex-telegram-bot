@@ -157,7 +157,7 @@ interface MobileMcpResourceRef {
   ownerId:number;sessionId:string;serverName:string;uri?:string;uriTemplate?:string;expiresAt:number;
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; stt?:Pick<SttService,"enabled"|"transcribe">; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "listRealtimeVoices" | "startRealtime" | "stopRealtime" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "createSideChat" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 const MOBILE_GLOBAL_OPERATIONS=new Set<MobileLocalOperation>(["listThreadSections","createThreadSection","renameThreadSection","deleteThreadSection"]);
 export class MiniAppAgent {
@@ -297,10 +297,13 @@ export class MiniAppAgent {
       const visible=threads.filter(t=>!t.ephemeral&&
         (!this.telegramSessions.getOwner(t.id)||this.telegramSessions.getOwner(t.id)?.chatId===userId)&&
         ["cli","vscode","appServer"].includes(threadSourceKind(t)??""));
+      const known=this.knownThreads.get(userId)??new Map<string,CodexThreadSummary>();
+      // Only side chats created by this owner in this live adapter are shown;
+      // Codex's other ephemeral threads remain invisible.
+      for(const t of known.values())if(t.ephemeral&&!visible.some(x=>x.id===t.id))visible.unshift(t);
       for(const t of this.ownThreads.values()){
         if(this.telegramSessions.getOwner(t.id)?.chatId===userId&&!visible.some(x=>x.id===t.id))visible.unshift(t);
       }
-      const known=this.knownThreads.get(userId)??new Map<string,CodexThreadSummary>();
       // A transient app-server catalogue may omit an open session. Keep
       // previously authorized references so TMA can still read and send to it.
       // Refresh visible entries in recency order for bounded LRU eviction.
@@ -616,6 +619,43 @@ export class MiniAppAgent {
         if(text.length>16000)throw new Error("Распознанный текст слишком длинный");
         return {text};
       }
+      case "listRealtimeVoices":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        await this.thread(sessionId,chatId);
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        if(typeof acp.listRealtimeVoices!=="function")throw new Error("Эта версия Codex не поддерживает выбор голоса");
+        return await acp.listRealtimeVoices();
+      }
+      case "startRealtime":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        const thread=await this.thread(sessionId,chatId);
+        if(await this.isArchivedThread(sessionId,chatId))throw new Error("Сначала восстановите сеанс из архива");
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        if(!thread.cwd)throw new Error("Для сеанса не определена папка проекта");
+        const current=registry.runtimeForSession(chatId,sessionId);
+        if(!current)throw new Error("Сначала подключите сеанс к мобильному клиенту");
+        if(current.isBusy||current.queueLength>0||(typeof acp.hasActiveTurn==="function"&&acp.hasActiveTurn(sessionId)))
+          throw new Error("Дождитесь завершения текущей задачи и очереди перед запуском голосового режима");
+        if(typeof acp.startRealtime!=="function")throw new Error("Эта версия Codex не поддерживает голосовой режим");
+        const sdp=argumentString(args,"sdp",128_000);
+        if(!/^v=0\r?$/m.test(sdp)||!/^m=audio\s/m.test(sdp)||!/^m=application\s/m.test(sdp))
+          throw new Error("Браузер не сформировал корректное аудиосоединение");
+        const voice=args.voice===undefined?undefined:argumentString(args,"voice",32);
+        if(voice!==undefined){
+          if(typeof acp.listRealtimeVoices!=="function")throw new Error("Эта версия Codex не поддерживает выбор голоса");
+          const available=await acp.listRealtimeVoices();
+          if(!available.voices.includes(voice))throw new Error("Выбранный голос Codex сейчас недоступен");
+        }
+        return {sdp:await acp.startRealtime(sessionId,sdp,voice)};
+      }
+      case "stopRealtime":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        await this.thread(sessionId,chatId);
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        if(typeof acp.stopRealtime!=="function")throw new Error("Эта версия Codex не поддерживает голосовой режим");
+        await acp.stopRealtime(sessionId);
+        return {stopped:true};
+      }
       case "terminalExec":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
         if(await this.isArchivedThread(sessionId,chatId))throw new Error("Нельзя запускать команду в архивном сеансе");
@@ -732,6 +772,44 @@ export class MiniAppAgent {
         this.knownThreads.set(chatId,known);
         this.catalogues.delete(chatId);
         this.archivedCatalogues.delete(chatId);
+        this.selected.set(chatId,forkId);
+        return {sessionId:forkId};
+      }
+      case "createSideChat":{
+        const source=await this.thread(sessionId,chatId);
+        if(await this.isArchivedThread(sessionId,chatId))throw new Error("Нельзя открыть side chat из архивного сеанса");
+        if(!source.cwd)throw new Error("Для сеанса не определена папка проекта");
+        if(!acp.isConnected||typeof acp.forkThread!=="function")throw new Error("Текущая версия Codex не поддерживает side chat");
+        // Codex Desktop side chats are ephemeral forks. Excluding the parent's
+        // current turns lets a phone ask a side question without stopping the
+        // main task or creating a persistent second session.
+        const fork=await acp.forkThread(sessionId,{ephemeral:true,excludeTurns:true});
+        const forkId=fork.thread.id;
+        if(!/^[a-z0-9_-]{8,128}$/i.test(forkId)||forkId===sessionId)throw new Error("Codex вернул недопустимый ID side chat");
+        if(fork.thread.ephemeral!==true){
+          try{await acp.archiveThread(forkId);await acp.deleteThread(forkId);}catch{/* best-effort cleanup of an unsupported persistent fork */}
+          throw new Error("Эта версия Codex не подтвердила временный side chat; создание отменено");
+        }
+        const sourceRoot=realpathSync.native(source.cwd);
+        const forkRoot=realpathSync.native(fork.cwd||source.cwd);
+        if(resolve(sourceRoot).toLowerCase()!==resolve(forkRoot).toLowerCase())throw new Error("Codex открыл side chat в другой папке проекта");
+        const now=Date.now()/1000;
+        const child:CodexThreadSummary={
+          ...fork.thread,
+          id:forkId,
+          name:typeof fork.thread.name==="string"&&fork.thread.name.trim()?fork.thread.name:`${source.name||"Сеанс"} · side chat`,
+          cwd:source.cwd,
+          source:fork.thread.source||"appServer",
+          createdAt:typeof fork.thread.createdAt==="number"?fork.thread.createdAt:now,
+          updatedAt:typeof fork.thread.updatedAt==="number"?fork.thread.updatedAt:now,
+          recencyAt:typeof fork.thread.recencyAt==="number"?fork.thread.recencyAt:now,
+          parentThreadId:sessionId,
+          ephemeral:true,
+        };
+        const known=this.knownThreads.get(chatId)??new Map<string,CodexThreadSummary>();
+        known.set(forkId,child);
+        this.knownThreads.set(chatId,known);
+        this.catalogues.delete(chatId);
         this.selected.set(chatId,forkId);
         return {sessionId:forkId};
       }
@@ -1722,6 +1800,8 @@ export class MiniAppAgent {
             cwd:t.cwd||"",updatedAt:t.recencyAt||t.updatedAt||t.createdAt||0,
             source:threadSourceKind(t)||"unknown",
             archived:false,
+            ephemeral:t.ephemeral===true,
+            parentThreadId:t.parentThreadId,
             section:mobileThreadSection(t.section),
             busy:controlled.some(c=>c.sessionId===t.id&&c.busy),
             queue:controlled.find(c=>c.sessionId===t.id)?.queueLength||0,

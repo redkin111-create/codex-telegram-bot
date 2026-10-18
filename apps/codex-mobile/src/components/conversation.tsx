@@ -1,20 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { FileText, GitFork, ImagePlus, LoaderCircle, Mic, Minimize2, Paperclip, Pencil, Play, Search, Send, Sparkles, Square, Trash2, Wrench, X } from "lucide-react";
+import { FileText, GitFork, ImagePlus, LoaderCircle, MessageSquare, Mic, Minimize2, Paperclip, Pencil, Play, Search, Send, Sparkles, Square, Trash2, Wrench, X } from "lucide-react";
 import "../../../../apps/mini-app/public/photo-input.js";
-import type { HistoryEntry, MobileActivity, MobileAttachment, MobileCapabilities, MobileEditableTurn, MobileEditableTurns, MobileLiveEvent, MobileQueue, MobileSession } from "../types.js";
+import type { HistoryEntry, MobileActivity, MobileAttachment, MobileCapabilities, MobileEditableTurn, MobileEditableTurns, MobileLiveEvent, MobileQueue, MobileRealtimeVoices, MobileSession } from "../types.js";
 import { imageUrl } from "../api.js";
 import { SafeMarkdown } from "../markdown.js";
 import { isMobileSkillNameSafe, prependMobileSkill } from "../skill-prompt.js";
 import { Badge, Button, Input, Textarea } from "./ui/primitives.js";
+import { RealtimeVoiceControl } from "./realtime-voice.js";
 
 export interface PromptImage { name: string; mimeType: string; data: string; preview: string; }
 export type FollowUpMode = "queue" | "steer";
 
 export function Conversation({
   session, history, activity, events, queue, connected, connecting, loading, streamConnected,
-  error, includeTools, onToggleTools, onConnect, onCancel, onFork, forking, onCompact, compacting, onSend, onQueueRemove, onQueueResume, onQueueOpen, onLoadSkills,
-  onLoadEditableTurns, onEditAndRetry, onTranscribeAudio, onUploadAttachment, onRemoveAttachment,
+  error, includeTools, onToggleTools, onConnect, onCancel, onFork, forking, onCreateSideChat, sideChatting, onReturnToParent, onCompact, compacting, onSend, onQueueRemove, onQueueResume, onQueueOpen, onLoadSkills,
+  onLoadEditableTurns, onEditAndRetry, onTranscribeAudio, onLoadRealtimeVoices, onStartRealtime, onStopRealtime, onUploadAttachment, onRemoveAttachment,
 }: {
   session?: MobileSession;
   history: HistoryEntry[];
@@ -32,6 +33,9 @@ export function Conversation({
   onCancel: () => void;
   onFork: () => void;
   forking: boolean;
+  onCreateSideChat: () => void;
+  sideChatting: boolean;
+  onReturnToParent: () => void;
   onCompact: () => Promise<void>;
   compacting: boolean;
   onSend: (text: string, images: PromptImage[], attachments: MobileAttachment[], mode: FollowUpMode) => Promise<void>;
@@ -42,6 +46,9 @@ export function Conversation({
   onLoadEditableTurns: () => Promise<MobileEditableTurns>;
   onEditAndRetry: (turnId: string, text: string, expectedLatestTurnId: string) => Promise<void>;
   onTranscribeAudio: (file: File) => Promise<string>;
+  onLoadRealtimeVoices: () => Promise<MobileRealtimeVoices>;
+  onStartRealtime: (offerSdp: string, voice?: string) => Promise<string>;
+  onStopRealtime: () => Promise<void>;
   onUploadAttachment: (sessionId: string, file: File) => Promise<MobileAttachment>;
   onRemoveAttachment: (sessionId: string, id: string) => Promise<{ removed: boolean }>;
 }) {
@@ -259,7 +266,7 @@ export function Conversation({
   return <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-transparent">
     <header className="sticky top-0 z-10 border-b border-border bg-[#111512]/95 px-4 py-3 backdrop-blur md:px-6">
       <div className="flex min-w-0 items-center justify-between gap-3">
-        <div className="min-w-0"><h1 className="truncate text-base font-semibold">{session.title || "Новый сеанс"}</h1><p className="mt-1 truncate font-mono text-[10px] text-muted">{session.cwd}</p></div>
+        <div className="min-w-0"><h1 className="truncate text-base font-semibold">{session.title || "Новый сеанс"}</h1><p className="mt-1 truncate font-mono text-[10px] text-muted">{session.cwd}</p>{session.ephemeral && <p className="mt-1 text-[10px] text-accent">Временный side chat · не сохраняется в истории Desktop</p>}</div>
         <div className="flex shrink-0 items-center gap-2">
           <Badge className={`${session.liveStatus === "working" ? "border-[#536441] text-[#d5f49c]" : session.liveStatus === "failed" ? "border-[#733b39] text-[#ffc3bd]" : ""}`}><span className={`mr-1.5 h-1.5 w-1.5 rounded-full ${session.busy ? "animate-pulse bg-accent" : "bg-[#748073]"}`} />{status}</Badge>
           {!connected && <Button variant="outline" className="min-h-9 px-3 text-xs" onClick={onConnect} disabled={connecting}>{connecting ? <LoaderCircle size={14} className="animate-spin" /> : <Play size={14} />}{session.archived ? "Восстановить" : "Подключить"}</Button>}
@@ -268,15 +275,19 @@ export function Conversation({
       </div>
       <div className="mt-2 flex flex-wrap justify-end gap-2">
         <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label="Найти в истории" aria-pressed={historySearchOpen} onClick={() => { if (historySearchOpen) setHistorySearch(""); setHistorySearchOpen((value) => !value); }}><Search size={14} />Поиск</Button>
-        <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" onClick={onFork} disabled={forking || turnBusy || session.archived} aria-label="Создать ответвление сеанса">
+        {session.ephemeral && session.parentThreadId ? <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" onClick={onReturnToParent} aria-label="Вернуться к исходному сеансу"><GitFork size={14} />К исходному сеансу</Button> : !session.archived && <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" onClick={onCreateSideChat} disabled={sideChatting} aria-label="Спросить в side chat">
+          {sideChatting ? <LoaderCircle size={14} className="animate-spin" /> : <MessageSquare size={14} />}
+          {sideChatting ? "Открываю…" : "Спросить в side chat"}
+        </Button>}
+        {!session.ephemeral && <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" onClick={onFork} disabled={forking || turnBusy || session.archived} aria-label="Создать ответвление сеанса">
           {forking ? <LoaderCircle size={14} className="animate-spin" /> : <GitFork size={14} />}
           {forking ? "Создаю…" : "Создать ответвление"}
-        </Button>
-        {connected && <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" onClick={() => { setCompactNotice(""); setCompactConfirm(true); }} disabled={compacting || turnBusy || session.archived} aria-label="Сократить контекст сеанса">
+        </Button>}
+        {connected && !session.ephemeral && <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" onClick={() => { setCompactNotice(""); setCompactConfirm(true); }} disabled={compacting || turnBusy || session.archived} aria-label="Сократить контекст сеанса">
           {compacting ? <LoaderCircle size={14} className="animate-spin" /> : <Minimize2 size={14} />}
           Сократить контекст
         </Button>}
-        {connected && !session.archived && <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" onClick={() => void openEditDialog()} disabled={turnBusy || editLoading || editSaving} aria-label="Редактировать запрос из истории">
+        {connected && !session.archived && !session.ephemeral && <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" onClick={() => void openEditDialog()} disabled={turnBusy || editLoading || editSaving} aria-label="Редактировать запрос из истории">
           {editLoading ? <LoaderCircle size={14} className="animate-spin" /> : <Pencil size={14} />}
           Редактировать запрос
         </Button>}
@@ -303,6 +314,10 @@ export function Conversation({
         </details> : <article key={`${entry.timestamp ?? "m"}-${index}`} className={`max-w-[94%] rounded-2xl border px-4 py-3 ${entry.role === "user" ? "ml-auto border-[#46533d] bg-[#20291b]" : "mr-auto border-border bg-panel"}`}>
           <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-[#859084]">{entry.role === "user" ? "Вы" : entry.role === "system" ? "Система" : "Codex"}{entry.timestamp ? <time className="font-normal normal-case tracking-normal">{new Date(entry.timestamp).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" })}</time> : null}</div>
           <SafeMarkdown text={entry.text} />
+        </article>)}
+        {events.filter((event) => event.kind === "transcript" && event.text && event.role).map((event) => <article key={`voice-${event.id}`} className={`max-w-[94%] rounded-2xl border px-4 py-3 ${event.role === "user" ? "ml-auto border-[#46533d] bg-[#20291b]" : "mr-auto border-border bg-panel"}`}>
+          <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-[#859084]">{event.role === "user" ? "Вы · голос" : "Codex · голос"}<time className="font-normal normal-case tracking-normal">{new Date(event.at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}</time></div>
+          <SafeMarkdown text={event.text!} />
         </article>)}
       </div>
 
@@ -337,6 +352,7 @@ export function Conversation({
               <button type="button" className="w-full rounded-lg px-2 py-2 text-left hover:bg-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" aria-label={`Использовать навык ${skill.name}`} onClick={() => chooseSkill(skill.name)}><span className="block break-words text-xs font-medium">${skill.name}</span>{skill.description && <span className="mt-0.5 block text-[11px] leading-relaxed text-muted">{skill.description}</span>}</button>
             </li>)}</ul> : <p className="py-2 text-xs text-muted">Нет включённых навыков, доступных для вызова.</p>}
       </section>}
+      {session && <RealtimeVoiceControl key={session.id} connected={connected && !session.archived} blocked={turnBusy} ephemeral={session.ephemeral === true} events={events} onLoadVoices={onLoadRealtimeVoices} onStart={onStartRealtime} onStop={onStopRealtime} />}
       {images.length > 0 && <div className="mx-auto mb-2 flex max-w-4xl gap-2 overflow-x-auto">{images.map((image, index) => <div key={`${image.name}-${index}`} className="relative h-16 w-20 shrink-0 overflow-hidden rounded-lg border border-border"><img src={image.preview} alt={image.name} className="h-full w-full object-cover" /><button type="button" aria-label={`Убрать ${image.name}`} className="absolute right-1 top-1 rounded-full bg-black/75 px-1.5 text-xs" onClick={() => setImages((current) => current.filter((_, i) => i !== index))}>×</button></div>)}</div>}
       {attachments.length > 0 && <ul className="mx-auto mb-2 flex max-w-4xl flex-wrap gap-2" aria-label="Прикреплённые файлы">{attachments.map((file) => <li key={file.id} className="flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-border bg-panel px-2.5 py-1.5 text-xs"><FileText size={14} className="shrink-0 text-accent" /><span className="max-w-[min(64vw,20rem)] truncate" title={file.name}>{file.name}</span><span className="shrink-0 text-[10px] text-muted">{(file.size / 1024).toFixed(file.size < 10_240 ? 1 : 0)} КБ</span><button type="button" className="min-h-7 min-w-7 rounded-md text-muted hover:bg-elevated" aria-label={`Убрать файл ${file.name}`} disabled={uploadingAttachments} onClick={() => void removeDocument(file.id)}><X size={13} /></button></li>)}</ul>}
       <div className="mx-auto flex max-w-4xl items-end gap-2">

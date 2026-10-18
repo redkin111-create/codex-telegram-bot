@@ -37,6 +37,52 @@ test("live feed publishes safe tool names and confirmed turn/approval statuses",
   }finally{stop();feed.dispose();}
 });
 
+test("live feed reports MCP OAuth completion without forwarding provider errors",()=>{
+  const acp=new EventEmitter() as AcpClient;
+  const feed=new TmaLiveFeed(acp);
+  const received:Array<{kind:string;label?:string;sessionId?:string}>=[];
+  const stop=feed.subscribe(sid,0,e=>received.push(e));
+  try{
+    acp.emit("notification","mcpServer/oauth/login/completed",{
+      threadId:sid,name:"fixture-mcp",success:false,error:"SECRET_PROVIDER_ERROR",
+    });
+    acp.emit("notification","mcpServer/oauth/login/completed",{
+      name:"another-server",success:true,
+    });
+    assert.equal(received.length,1);
+    assert.deepEqual(received.map(({kind,label,sessionId})=>({kind,label,sessionId})),[{
+      kind:"activity",label:"Вход в MCP-сервер fixture-mcp не выполнен",sessionId:sid,
+    }]);
+    assert(!JSON.stringify(received).includes("SECRET_PROVIDER_ERROR"));
+  }finally{stop();feed.dispose();}
+});
+
+test("live feed bounds realtime transcripts and publishes generic connection endings",()=>{
+  const acp=new EventEmitter() as AcpClient;
+  const feed=new TmaLiveFeed(acp);
+  const received:Array<{kind:string;role?:string;text?:string;label?:string}>=[];
+  const stop=feed.subscribe(sid,0,e=>received.push(e));
+  try{
+    acp.emit("notification","thread/realtime/transcript/done",{threadId:sid,role:"user",text:"Проверь изменения"});
+    acp.emit("notification","thread/realtime/transcript/done",{threadId:sid,role:"assistant",text:"Проверяю изменения"});
+    acp.emit("notification","thread/realtime/transcript/done",{threadId:sid,role:"system",text:"internal"});
+    acp.emit("notification","thread/realtime/transcript/done",{role:"assistant",text:"missing-thread"});
+    acp.emit("notification","thread/realtime/started",{threadId:sid});
+    acp.emit("notification","thread/realtime/closed",{threadId:sid,outcome:"ended"});
+    acp.emit("notification","thread/realtime/error",{threadId:sid,message:"SECRET_PROVIDER_ERROR"});
+    assert.deepEqual(received.filter(({kind})=>kind==="transcript").map(({kind,role,text})=>({kind,role,text})),[
+      {kind:"transcript",role:"user",text:"Проверь изменения"},
+      {kind:"transcript",role:"assistant",text:"Проверяю изменения"},
+    ]);
+    assert.deepEqual(received.slice(2).map(({kind,label})=>({kind,label})),[
+      {kind:"activity",label:"Голосовой режим Codex подключён"},
+      {kind:"activity",label:"Голосовой режим Codex завершён"},
+      {kind:"activity",label:"Ошибка голосового соединения Codex"},
+    ]);
+    assert(!JSON.stringify(received).includes("SECRET_PROVIDER_ERROR"));
+  }finally{stop();feed.dispose();}
+});
+
 test("POST event stream verifies Telegram authorization, session ownership and reconnect cursor",async()=>{
   const token="100:live-stream-token",secret="secure-agent-secret-more-than-thirty-two-characters";
   const feed=new TmaLiveFeed(new EventEmitter() as AcpClient);

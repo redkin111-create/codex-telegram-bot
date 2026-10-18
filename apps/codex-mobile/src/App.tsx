@@ -13,7 +13,7 @@ import { Pairing } from "./components/pairing.js";
 import { SettingsPanel } from "./components/settings-panel.js";
 import { Workspace } from "./components/workspace.js";
 import type {
-  HistoryEntry, MobileActivity, MobileApproval, MobileAttachment, MobileDevice, MobileEditableTurns, MobileLiveEvent, MobileQueue, MobileSession, MobileSnapshot,
+  HistoryEntry, MobileActivity, MobileApproval, MobileAttachment, MobileDevice, MobileEditableTurns, MobileLiveEvent, MobileQueue, MobileRealtimeVoices, MobileSession, MobileSnapshot,
   MobileOperation,
 } from "./types.js";
 import { Button } from "./components/ui/primitives.js";
@@ -45,6 +45,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [forking, setForking] = useState(false);
+  const [sideChatting, setSideChatting] = useState(false);
   const [compacting, setCompacting] = useState(false);
   const [streamConnected, setStreamConnected] = useState(false);
   const [error, setError] = useState("");
@@ -401,6 +402,32 @@ export default function App() {
     finally { setForking(false); }
   }
 
+  async function createSideChat() {
+    if (!selectedId || sideChatting || selectedSession?.archived || selectedSession?.ephemeral) return;
+    setSideChatting(true);
+    try {
+      const sideChat = await operation<{ sessionId: string }>("createSideChat", { sessionId: selectedId });
+      await operation("select", { sessionId: sideChat.sessionId });
+      setSelectedSearchSession(undefined);
+      setSelectedId(sideChat.sessionId);
+      setWorkspaceOpen(false);
+      await refreshSnapshot();
+    } catch { /* Keep the original session selected if Codex lacks ephemeral fork support. */ }
+    finally { setSideChatting(false); }
+  }
+
+  async function returnToParent() {
+    const parentId = selectedSession?.ephemeral ? selectedSession.parentThreadId : undefined;
+    if (!parentId) return;
+    try {
+      await operation("select", { sessionId: parentId });
+      setSelectedSearchSession(undefined);
+      setSelectedId(parentId);
+      setWorkspaceOpen(false);
+      await refreshSnapshot();
+    } catch { /* Keep the side chat open if the parent is no longer available. */ }
+  }
+
   async function compactSession() {
     if (!selectedId || compacting) return;
     setCompacting(true);
@@ -494,6 +521,26 @@ export default function App() {
     const result = await transcribeAudioRequest(selectedId, file, csrf);
     return result.text;
   }
+
+  const loadRealtimeVoices = useCallback(async (): Promise<MobileRealtimeVoices> => {
+    if (!selectedId) throw new Error("Сначала выберите сеанс Codex");
+    return runOperation<MobileRealtimeVoices>("listRealtimeVoices", { sessionId: selectedId }, csrf);
+  }, [csrf, selectedId]);
+
+  const startRealtime = useCallback(async (offerSdp: string, voice?: string): Promise<string> => {
+    if (!selectedId) throw new Error("Сначала выберите сеанс Codex");
+    try {
+      const result = await runOperation<{ sdp: string }>("startRealtime", { sessionId: selectedId, sdp: offerSdp, ...(voice ? { voice } : {}) }, csrf);
+      if (typeof result.sdp !== "string" || !result.sdp) throw new Error("Codex не вернул SDP-ответ для голосового режима");
+      return result.sdp;
+    } catch (cause) { handleApiError(cause); throw cause; }
+  }, [csrf, handleApiError, selectedId]);
+
+  const stopRealtime = useCallback(async (): Promise<void> => {
+    if (!selectedId) return;
+    try { await runOperation("stopRealtime", { sessionId: selectedId }, csrf); }
+    catch (cause) { handleApiError(cause); throw cause; }
+  }, [csrf, handleApiError, selectedId]);
 
   async function editAndRetry(turnId: string, text: string, expectedLatestTurnId: string) {
     const targetSession = selectedId;
@@ -593,9 +640,11 @@ export default function App() {
         connected={connected} connecting={connecting} loading={loading} streamConnected={streamConnected}
         error={error} includeTools={includeTools} onToggleTools={() => setIncludeTools((value) => !value)}
         onConnect={() => void connectSession()} onCancel={() => void cancel()} onFork={() => void forkSession()} forking={forking}
+        onCreateSideChat={() => void createSideChat()} sideChatting={sideChatting} onReturnToParent={() => void returnToParent()}
         onCompact={compactSession} compacting={compacting} onSend={send}
         onLoadSkills={loadMobileSkills}
-        onLoadEditableTurns={loadEditableTurns} onEditAndRetry={editAndRetry} onTranscribeAudio={transcribeVoice}
+        onLoadEditableTurns={loadEditableTurns} onEditAndRetry={editAndRetry} onTranscribeAudio={transcribeVoice} onLoadRealtimeVoices={loadRealtimeVoices}
+        onStartRealtime={startRealtime} onStopRealtime={stopRealtime}
         onUploadAttachment={(sessionId, file) => uploadAttachment(sessionId, file, csrf)}
         onRemoveAttachment={(sessionId, id) => removeAttachment(sessionId, id, csrf)}
         onQueueRemove={(id) => void removeQueued(id)} onQueueResume={() => void resumeQueue()}

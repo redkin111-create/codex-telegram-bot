@@ -701,6 +701,48 @@ test("MCP OAuth requests require the paired device, same Origin, CSRF and an own
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
+test("realtime voice start and stop require paired Origin, CSRF and ownership of the target session", async () => {
+  const f = await startFixture();
+  try {
+    const url = f.origin + "/api/operations";
+    const body = (op: "startRealtime" | "stopRealtime", sessionId = allowedSession) => JSON.stringify({
+      op, args: { sessionId, ...(op === "startRealtime" ? { sdp: "v=0\\r\\nm=audio" } : {}) },
+    });
+    for (const op of ["startRealtime", "stopRealtime"] as const) {
+      assert.equal((await fetch(url, { method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: body(op) })).status, 401);
+    }
+    const login = await pair(f.origin, f.auth);
+    for (const op of ["startRealtime", "stopRealtime"] as const) {
+      const payload = body(op);
+      const noCsrf = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: payload });
+      assert.equal(noCsrf.status, 403, `${op} requires CSRF`);
+      const wrongOrigin = await fetch(url, { method: "POST", headers: { origin: "https://attacker.example", cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: payload });
+      assert.equal(wrongOrigin.status, 403, `${op} requires an allowed Origin`);
+      const foreign = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body(op, foreignSession) });
+      assert.equal(foreign.status, 403, `${op} cannot target another owner's session`);
+      const approved = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: payload });
+      assert.equal(approved.status, 200, `${op} is accepted for the authorized session`);
+      assert.equal(f.calls.at(-1)?.op, op);
+    }
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("listing Codex realtime voice choices requires an authenticated session, allowed Origin, CSRF and session ownership", async () => {
+  const f = await startFixture();
+  try {
+    const url = f.origin + "/api/operations";
+    const body = (sessionId = allowedSession) => JSON.stringify({ op: "listRealtimeVoices", args: { sessionId } });
+    assert.equal((await fetch(url, { method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: body() })).status, 401);
+    const login = await pair(f.origin, f.auth);
+    assert.equal((await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: body() })).status, 403);
+    const foreign = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body(foreignSession) });
+    assert.equal(foreign.status, 403);
+    const listed = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body() });
+    assert.equal(listed.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "listRealtimeVoices");
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
 test("stopping a Codex background process requires the paired device, Origin, CSRF and its owned session", async () => {
   const f = await startFixture();
   try {
