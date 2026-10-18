@@ -599,6 +599,27 @@ test("Git status and diffs are exposed only for the paired owner's session", asy
     });
     assert.equal(trackAllowed.status, 200);
     assert.equal(f.calls.at(-1)?.op, "gitTrackRemoteBranch");
+    for (const op of ["gitFetch", "gitPush"] as const) {
+      const remotePayload = JSON.stringify({ op, args: { sessionId: allowedSession, remoteName: "origin" } });
+      const remoteNoCsrf = await fetch(f.origin + "/api/operations", {
+        method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: remotePayload,
+      });
+      assert.equal(remoteNoCsrf.status, 403, `${op} requires CSRF`);
+      const remoteWrongOrigin = await fetch(f.origin + "/api/operations", {
+        method: "POST", headers: { origin: "https://attacker.example", cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: remotePayload,
+      });
+      assert.equal(remoteWrongOrigin.status, 403, `${op} requires the allowed Origin`);
+      const remoteForeign = await fetch(f.origin + "/api/operations", {
+        method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+        body: JSON.stringify({ op, args: { sessionId: foreignSession, remoteName: "origin" } }),
+      });
+      assert.equal(remoteForeign.status, 403, `${op} cannot target another owner's session`);
+      const remoteAllowed = await fetch(f.origin + "/api/operations", {
+        method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: remotePayload,
+      });
+      assert.equal(remoteAllowed.status, 200, `${op} is accepted for the authorized session`);
+      assert.equal(f.calls.at(-1)?.op, op);
+    }
     const fileDiff = await fetch(f.origin + `/api/git/diff?sessionId=${allowedSession}&path=src%2Fmain.ts&previousPath=src%2Fold-main.ts`, {
       headers: { origin: f.origin, cookie: login.sessionCookie },
     });

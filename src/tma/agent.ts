@@ -31,6 +31,7 @@ const MAX_MOBILE_PTY_BUFFER=512*1024;
 const MAX_MOBILE_PTY_READ=64*1024;
 const MOBILE_PTY_IDLE_MS=30*60*1000;
 import { normalizeMobileIntegrations, normalizeMobileMcpServers, normalizePluginInstallResult } from "../mobile/integrations.js";
+import { gitRemoteTarget } from "../mobile/git-remotes.js";
 
 const log=createLogger("tma:agent");
 const MAX_IMG=3*1024*1024;
@@ -68,7 +69,7 @@ interface MobilePtyRecord {
   expiry?:NodeJS.Timeout;dataSubscription?:{dispose():void};exitSubscription?:{dispose():void};
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "searchThreads" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch";
+export type MobileLocalOperation = "capabilities" | "searchThreads" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 export class MiniAppAgent {
   private readonly abort=new AbortController();
@@ -810,7 +811,9 @@ export class MiniAppAgent {
       case "gitCommit":
       case "gitCreateBranch":
       case "gitSwitchBranch":
-      case "gitTrackRemoteBranch":{
+      case "gitTrackRemoteBranch":
+      case "gitFetch":
+      case "gitPush":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
         this.requireIdleMobileRuntime(sessionId,chatId);
         const {root,name}=this.mobileRoot(sessionId,chatId);
@@ -841,6 +844,21 @@ export class MiniAppAgent {
           if(this.gitRefExists(gitRoot,"refs/heads/"+branch))throw new Error("Локальная ветка с таким именем уже существует");
           this.gitMutation(gitRoot,["switch","--track","--no-guess","--create",branch,"refs/remotes/"+remoteBranch]);
           return {project:name,branch,upstream:remoteBranch};
+        }
+        if(job.op==="gitFetch"){
+          const remoteName=argumentString(args,"remoteName",80).trim();
+          this.requireMobileGitRemote(gitRoot,remoteName,"fetch");
+          await this.mobileGitRemoteCommand(gitRoot,["fetch","--prune","--no-recurse-submodules",remoteName],"fetch");
+          return {remoteName,fetched:true};
+        }
+        if(job.op==="gitPush"){
+          const remoteName=argumentString(args,"remoteName",80).trim();
+          this.requireMobileGitRemote(gitRoot,remoteName,"push");
+          const branch=this.gitOutput(gitRoot,["branch","--show-current"],4096).trim();
+          if(!branch)throw new Error("Сначала переключитесь на обычную ветку в Codex Desktop");
+          this.gitOutput(gitRoot,["check-ref-format","--branch",branch],4096);
+          await this.mobileGitRemoteCommand(gitRoot,["push","--porcelain",remoteName,`HEAD:refs/heads/${branch}`],"push");
+          return {remoteName,branch};
         }
         const branch=argumentString(args,"name",120).trim();
         if(!branch||/[\u0000-\u001f\u007f]/.test(branch))throw new Error("Укажите допустимое имя ветки");
@@ -1060,6 +1078,44 @@ export class MiniAppAgent {
       throw new Error(safe||"Git не выполнил действие");
     }
   }
+  private mobileGitRemotes(gitRoot:string):Array<{name:string;fetchTargets:string[];pushTargets:string[]}>{
+    const names=this.gitOutput(gitRoot,["remote"],32*1024).split(/\r?\n/).map(value=>value.trim())
+      .filter(value=>/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(value)).slice(0,20);
+    return names.map(name=>{
+      const targets=(args:string[])=>{
+        try{
+          const urls=this.gitOutput(gitRoot,args,32*1024).split(/\r?\n/).map(value=>value.trim()).filter(Boolean);
+          if(!urls.length)return [];
+          const safe=urls.map(gitRemoteTarget);
+          if(safe.some(value=>!value))return [];
+          return [...new Set(safe.filter((value):value is string=>Boolean(value)))].slice(0,8);
+        }catch{return [];}
+      };
+      return {name,fetchTargets:targets(["remote","get-url","--all",name]),pushTargets:targets(["remote","get-url","--push","--all",name])};
+    }).filter(remote=>remote.fetchTargets.length>0||remote.pushTargets.length>0);
+  }
+  private requireMobileGitRemote(gitRoot:string,name:string,direction:"fetch"|"push"):{name:string;targets:string[]}{
+    if(!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(name))throw new Error("Укажите удалённый репозиторий из списка проекта");
+    const remote=this.mobileGitRemotes(gitRoot).find(item=>item.name===name);
+    const targets=direction==="fetch"?remote?.fetchTargets:remote?.pushTargets;
+    if(!targets?.length)throw new Error("Удалённый адрес отсутствует или использует неподдерживаемый протокол");
+    return {name,targets};
+  }
+  private async mobileGitRemoteCommand(root:string,args:string[],direction:"fetch"|"push"):Promise<void>{
+    try{
+      await execFile("git",["--no-pager","-C",root,"-c","core.fsmonitor=false","-c","color.ui=false",...args],{
+        encoding:"utf8",timeout:120_000,maxBuffer:512*1024,windowsHide:true,
+        env:{...process.env,GIT_TERMINAL_PROMPT:"0"},
+      });
+    }catch(error){
+      const code=(error as NodeJS.ErrnoException).code;
+      if(code==="ENOENT")throw new Error("Git не установлен или не найден");
+      if(code==="ETIMEDOUT")throw new Error(`Git ${direction==="fetch"?"не завершил загрузку":"не завершил отправку"} за отведённое время`);
+      throw new Error(direction==="fetch"
+        ? "Не удалось получить изменения. Проверьте доступ к удалённому репозиторию в Codex Desktop."
+        : "Не удалось отправить ветку. Проверьте доступ к удалённому репозиторию в Codex Desktop.");
+    }
+  }
   private gitHasHead(root:string):boolean{
     try{
       execFileSync("git",["-C",root,"rev-parse","--verify","HEAD"],{
@@ -1111,9 +1167,11 @@ export class MiniAppAgent {
       });
     }
     const branches=this.gitOutput(gitRoot,["branch","--format=%(refname:short)"],128*1024).split(/\r?\n/).map(value=>value.trim()).filter(Boolean).slice(0,250);
+    const remotes=this.mobileGitRemotes(gitRoot);
+    const remoteNames=new Set(remotes.map(remote=>remote.name));
     const remoteBranches=this.gitOutput(gitRoot,["branch","--remotes","--format=%(refname:short)"],128*1024).split(/\r?\n/)
-      .map(value=>value.trim()).filter(value=>value&&!value.endsWith("/HEAD")).slice(0,250);
-    return {project:name,branch,branches,remoteBranches,clean:changes.length===0,changes,checkedAt:Date.now()};
+      .map(value=>value.trim()).filter(value=>value&&!value.endsWith("/HEAD")&&!remoteNames.has(value)).slice(0,250);
+    return {project:name,branch,branches,remoteBranches,remotes,clean:changes.length===0,changes,checkedAt:Date.now()};
   }
   private mobileGitDiff(sessionId:string,userId:number,args:Record<string,unknown>={}){
     const {root,name}=this.mobileRoot(sessionId,userId);

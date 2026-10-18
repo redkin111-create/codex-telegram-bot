@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { FolderPlus, GitBranch, GitCommit, Plus, RefreshCw, X } from "lucide-react";
+import { CloudDownload, CloudUpload, FolderPlus, GitBranch, GitCommit, Plus, RefreshCw, X } from "lucide-react";
 import { readGitDiff, readGitStatus } from "../api.js";
 import type { MobileGitDiff, MobileGitStatus, MobileOperation } from "../types.js";
 import { Badge, Button, Card, Input } from "./ui/primitives.js";
@@ -24,6 +24,8 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
   const [branchName, setBranchName] = useState("");
   const [branchTarget, setBranchTarget] = useState("");
   const [remoteBranchTarget, setRemoteBranchTarget] = useState("");
+  const [remoteName, setRemoteName] = useState("");
+  const [remoteAction, setRemoteAction] = useState<"fetch" | "push">();
   const [worktreeBranchName, setWorktreeBranchName] = useState("");
   const [worktreeDialogOpen, setWorktreeDialogOpen] = useState(false);
 
@@ -35,6 +37,7 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
       setStatus(nextStatus);
       setBranchTarget((current) => nextStatus.branches.includes(current) ? current : nextStatus.branch);
       setRemoteBranchTarget((current) => nextStatus.remoteBranches.includes(current) ? current : nextStatus.remoteBranches[0] ?? "");
+      setRemoteName((current) => nextStatus.remotes.some((remote) => remote.name === current) ? current : nextStatus.remotes[0]?.name ?? "");
       setDiff(nextDiff);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось прочитать Git"); }
     finally { setLoading(false); }
@@ -85,8 +88,18 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
     }
   }
 
+  async function confirmRemoteAction() {
+    if (!remoteAction || !connected || busyAction || !selectedRemote) return;
+    const op: MobileOperation = remoteAction === "fetch" ? "gitFetch" : "gitPush";
+    const message = remoteAction === "fetch" ? "Ссылки удалённого репозитория обновлены" : `Ветка ${status?.branch} отправлена`;
+    const result = await mutate(op, { remoteName: selectedRemote.name }, message);
+    if (result !== undefined) setRemoteAction(undefined);
+  }
+
   const patch = view === "staged" ? diff?.staged ?? "" : diff?.unstaged ?? "";
   const stagedCount = status?.changes.filter((change) => change.indexStatus !== " " && change.indexStatus !== "?").length ?? 0;
+  const selectedRemote = status?.remotes.find((remote) => remote.name === remoteName);
+  const remoteTargets = remoteAction === "push" ? selectedRemote?.pushTargets : selectedRemote?.fetchTargets;
 
   return <div className="fixed inset-0 z-50 flex justify-end bg-black/65" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section role="dialog" aria-modal="true" aria-labelledby="git-title" className="safe-area-top safe-area-bottom flex h-full max-h-[100svh] w-full max-w-3xl flex-col border-l border-border bg-background shadow-soft">
@@ -113,6 +126,17 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
               </li>;
             })}</ul>}
           </Card>
+          {status.remotes.length > 0 && <Card className="mt-3 space-y-3 p-4">
+            <div><h3 className="flex items-center gap-2 text-sm font-semibold"><CloudDownload size={16} className="text-accent" /> Удалённый репозиторий</h3><p className="mt-1 text-xs leading-relaxed text-muted">Выбирается только адрес, уже настроенный в Git на ноутбуке. Полные URL и секреты сюда не передаются.</p></div>
+            <select aria-label="Удалённый Git-репозиторий" className="min-h-11 w-full rounded-xl border border-border bg-[#111613] px-3 text-sm text-text" value={remoteName} onChange={(event) => setRemoteName(event.target.value)}>
+              {status.remotes.map((remote) => <option key={remote.name} value={remote.name}>{remote.name} · {remote.fetchTargets[0] ?? remote.pushTargets[0] ?? "адрес недоступен"}</option>)}
+            </select>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Button type="button" variant="outline" className="flex-1" disabled={!connected || Boolean(busyAction) || !selectedRemote?.fetchTargets.length} onClick={() => setRemoteAction("fetch")}><CloudDownload size={15} /> Получить ветки</Button>
+              <Button type="button" className="flex-1" disabled={!connected || Boolean(busyAction) || !status.branch || !selectedRemote?.pushTargets.length} onClick={() => setRemoteAction("push")}><CloudUpload size={15} /> Отправить ветку</Button>
+            </div>
+            <p className="text-[11px] leading-relaxed text-muted">Получение обновляет ссылки, но не переключает ветку и не меняет файлы. Отправка требует отдельного подтверждения и затрагивает только текущую ветку.</p>
+          </Card>}
           {status.branches.length > 0 && <form className="mt-3 flex flex-col gap-2 sm:flex-row" onSubmit={(event) => { event.preventDefault(); void mutate("gitSwitchBranch", { name: branchTarget }, "Ветка переключена"); }}>
             <select aria-label="Существующая ветка" className="min-h-10 min-w-0 flex-1 rounded-xl border border-border bg-background px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" value={branchTarget} onChange={(event) => setBranchTarget(event.target.value)}>
               {status.branches.map((branch) => <option key={branch} value={branch}>{branch}{branch === status.branch ? " · текущая" : ""}</option>)}
@@ -126,7 +150,7 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
               </select>
               <Button type="submit" variant="outline" className="min-h-10 shrink-0" disabled={!connected || !remoteBranchTarget || Boolean(busyAction)}><GitBranch size={16} />{busyAction === "gitTrackRemoteBranch" ? "Подключаю" : "Создать локальную ветку"}</Button>
             </div>
-            <p className="text-[11px] leading-relaxed text-muted">Показаны уже загруженные на ноутбук ссылки. Телефон не выполняет fetch и не отправляет коммиты.</p>
+            <p className="text-[11px] leading-relaxed text-muted">Показаны уже загруженные на ноутбук ссылки. Здесь можно переключиться на существующую удалённую ветку.</p>
           </form>}
           <div className="mt-5 flex flex-wrap gap-2">{diffScope && <Button variant="ghost" className="min-h-10 px-3" onClick={() => void loadDiff()}>Все файлы</Button>}<Button variant={view === "unstaged" ? "outline" : "ghost"} className="min-h-10 px-3" onClick={() => setView("unstaged")}>Рабочая папка</Button><Button variant={view === "staged" ? "outline" : "ghost"} className="min-h-10 px-3" onClick={() => setView("staged")}>Индекс</Button></div>
           <p className="mt-2 break-all text-[11px] text-muted">{diffScope ? `Diff: ${diffScope.previousPath ? `${diffScope.previousPath} → ` : ""}${diffScope.path}` : "Diff всех файлов"}</p>
@@ -148,6 +172,17 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
         </>}
       </div>
     </section>
+    {remoteAction && selectedRemote && <div className="fixed inset-0 z-[70] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
+      <section role="alertdialog" aria-modal="true" aria-labelledby="remote-confirm-title" className="safe-area-bottom w-full max-w-md space-y-4 rounded-2xl border border-border bg-elevated p-5 shadow-soft">
+        <div><h3 id="remote-confirm-title" className="text-base font-semibold">{remoteAction === "fetch" ? "Получить ссылки из Git?" : "Отправить текущую ветку?"}</h3>
+          <p className="mt-2 text-xs leading-relaxed text-muted">Remote: <strong className="text-text">{selectedRemote.name}</strong> · {remoteTargets?.join(", ") || "адрес недоступен"}</p>
+          {remoteAction === "fetch"
+            ? <p className="mt-2 text-xs leading-relaxed text-muted">Git обновит ссылки удалённого репозитория на ноутбуке. Файлы проекта и текущая ветка останутся без изменений.</p>
+            : <p className="mt-2 text-xs leading-relaxed text-muted">Git отправит ветку <strong className="text-text">{status?.branch || "не определена"}</strong> в указанный репозиторий. Незакоммиченные файлы не отправляются; принудительная запись не включена.</p>}
+        </div>
+        <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={Boolean(busyAction)} onClick={() => setRemoteAction(undefined)}>Отмена</Button><Button type="button" className="flex-1" disabled={!connected || Boolean(busyAction) || !remoteTargets?.length} onClick={() => void confirmRemoteAction()}>{busyAction === (remoteAction === "fetch" ? "gitFetch" : "gitPush") ? "Выполняю…" : remoteAction === "fetch" ? "Получить" : "Отправить"}</Button></div>
+      </section>
+    </div>}
     {worktreeDialogOpen && <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
       <section role="alertdialog" aria-modal="true" aria-labelledby="worktree-confirm-title" className="safe-area-bottom w-full max-w-md space-y-4 rounded-2xl border border-border bg-elevated p-5 shadow-soft">
         <div><h3 id="worktree-confirm-title" className="text-base font-semibold">Создать отдельную рабочую копию?</h3><p className="mt-2 text-xs leading-relaxed text-muted">Codex создаст ветку от текущего коммита и откроет новый сеанс в отдельной папке. Незакоммиченные изменения останутся в исходном сеансе.</p></div>

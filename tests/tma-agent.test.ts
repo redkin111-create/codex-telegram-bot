@@ -3,7 +3,7 @@ import test from "node:test";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ReasoningEffort } from "../src/app/types.js";
@@ -752,6 +752,71 @@ test("mobile Git lists fetched remote branches and tracks only a listed remote r
     assert.equal(tracked.upstream,"origin/feature/phone");
     assert.equal(execFileSync("git",["-C",project,"branch","--show-current"],{encoding:"utf8",windowsHide:true}).trim(),"feature/phone");
     await assert.rejects(agent.executeMobile({op:"gitTrackRemoteBranch" as never,userId:101,args:{sessionId,remoteBranch:"origin/not-fetched"}}),/[Уу]далённая ветка|remote branch/i);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("mobile Git fetches a configured remote and pushes only the current branch after session authorization",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-git-sync-"));
+  const project=join(dir,"repo"),source=join(dir,"source"),remote=join(dir,"origin.git");
+  for(const path of [project,source,remote])mkdirSync(path,{recursive:true});
+  const git=(cwd:string,...args:string[])=>execFileSync("git",["--no-pager","-C",cwd,...args],{stdio:"ignore",windowsHide:true});
+  git(remote,"init","--bare","-q");
+  git(project,"init","-b","main","-q");
+  git(project,"config","user.name","Mobile Fixture");
+  git(project,"config","user.email","mobile-fixture@example.invalid");
+  writeFileSync(join(project,"README.md"),"base\n");
+  git(project,"add","README.md");
+  git(project,"commit","-m","base");
+  git(project,"remote","add","origin",remote);
+  git(project,"push","--set-upstream","origin","main");
+  git(remote,"symbolic-ref","HEAD","refs/heads/main");
+
+  execFileSync("git",["clone",remote,source],{stdio:"ignore",windowsHide:true});
+  git(source,"config","user.name","Mobile Fixture");
+  git(source,"config","user.email","mobile-fixture@example.invalid");
+  git(source,"switch","-c","feature/phone");
+  writeFileSync(join(source,"phone.txt"),"remote branch\n");
+  git(source,"add","phone.txt");
+  git(source,"commit","-m","remote feature");
+  git(source,"push","origin","feature/phone");
+
+  const sessionId="32323232-3232-4232-8232-323232323232";
+  const foreignId="33333333-3333-4333-8333-333333333333";
+  const threads=[
+    {id:sessionId,name:"Git sync fixture",cwd:project,source:"cli",recencyAt:2},
+    {id:foreignId,name:"Foreign fixture",cwd:project,source:"cli",recencyAt:1},
+  ];
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"repo",roots:[project]}],listThreads:async()=>threads,availableModels:[],
+  }) as unknown as AcpClient;
+  const runtime={sessionId,isBusy:false};
+  const registry={controller:()=>({list:()=>[]}),get:()=>runtime,runtimeForSession:()=>runtime} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
+  const sessions=new TelegramSessionRegistry(dir);
+  sessions.record(foreignId,202,project,"private");
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
+    const before=await agent.executeMobile({op:"gitStatus",userId:101,args:{sessionId}}) as {remoteBranches:string[]};
+    assert.deepEqual(before.remoteBranches,["origin/main"]);
+    const fetched=await agent.executeMobile({op:"gitFetch" as never,userId:101,args:{sessionId,remoteName:"origin"}}) as {remoteName:string;fetched:boolean};
+    assert.deepEqual(fetched,{remoteName:"origin",fetched:true});
+    const after=await agent.executeMobile({op:"gitStatus",userId:101,args:{sessionId}}) as {remoteBranches:string[]};
+    assert.deepEqual(after.remoteBranches,["origin/feature/phone","origin/main"]);
+
+    git(project,"switch","-c","mobile/phone");
+    writeFileSync(join(project,"phone-local.txt"),"phone commit\n");
+    git(project,"add","phone-local.txt");
+    git(project,"commit","-m","phone commit");
+    const pushed=await agent.executeMobile({op:"gitPush" as never,userId:101,args:{sessionId,remoteName:"origin"}}) as {remoteName:string;branch:string};
+    assert.deepEqual(pushed,{remoteName:"origin",branch:"mobile/phone"});
+    assert.ok(execFileSync("git",["--git-dir",remote,"show-ref","--verify","refs/heads/mobile/phone"],{encoding:"utf8",windowsHide:true}).trim());
+    await assert.rejects(agent.executeMobile({op:"gitPush" as never,userId:101,args:{sessionId:foreignId,remoteName:"origin"}}),/Доступ к сеансу запрещён/);
+
+    const marker=join(dir,"remote-helper-ran.txt");
+    git(project,"remote","add","unsafe",`ext::sh -c 'echo blocked > ${marker}'`);
+    await assert.rejects(agent.executeMobile({op:"gitFetch" as never,userId:101,args:{sessionId,remoteName:"unsafe"}}),/небезопас|неподдерживаем/i);
+    assert.equal(existsSync(marker),false);
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 

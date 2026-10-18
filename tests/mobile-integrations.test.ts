@@ -2,7 +2,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { AcpClient } from "../src/acp/client.js";
 import { resolveRemotePluginInstall } from "../src/acp/plugins.js";
+import { gitRemoteTarget } from "../src/mobile/git-remotes.js";
 import { normalizeMobileIntegrations, normalizeMobileMcpServers } from "../src/mobile/integrations.js";
+
+test("mobile Git remote display exposes only safe hosts and rejects executable helper protocols", () => {
+  assert.equal(gitRemoteTarget("https://token:secret@github.com/org/repo.git"), "github.com");
+  assert.equal(gitRemoteTarget("ssh://git@git.example:2222/org/repo.git"), "git.example:2222");
+  assert.equal(gitRemoteTarget("git@git.example:org/repo.git"), "git.example");
+  assert.equal(gitRemoteTarget("https://127.0.0.1:8080/origin.git"), "127.0.0.1:8080");
+  assert.equal(gitRemoteTarget("C:\\work\\origin.git"), "Локальный Git");
+  assert.equal(gitRemoteTarget("ext::sh -c echo-injected"), undefined);
+  assert.equal(gitRemoteTarget("http://github.com/org/repo.git"), undefined);
+  assert.equal(gitRemoteTarget("git://github.com/org/repo.git"), undefined);
+});
 
 test("mobile MCP status keeps useful per-thread details while redacting endpoints, errors and schemas", () => {
   const result = normalizeMobileMcpServers([{

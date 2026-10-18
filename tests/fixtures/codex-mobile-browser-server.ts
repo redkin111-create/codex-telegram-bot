@@ -402,7 +402,8 @@ const agent = {
       return { path, sha256: createHash("sha256").update(fixtureFiles.get(path)!).digest("hex"), savedAt: Date.now() };
     }
     if (job.op === "gitStatus") return {
-      project: "codex-mobile", branch: fixtureBranch, branches: [...new Set([fixtureBranch, "main", "release/candidate"])], remoteBranches: ["origin/mobile/feature"], clean: false,
+      project: "codex-mobile", branch: fixtureBranch, branches: [...new Set([fixtureBranch, "main", "release/candidate"])], remoteBranches: ["origin/mobile/feature"],
+      remotes: [{ name: "origin", fetchTargets: ["github.com"], pushTargets: ["github.com"] }], clean: false,
       changes: [
         ...(!fixtureStaged.has("src/main.ts") ? [{ code: "M", indexStatus: " ", worktreeStatus: "M", path: "src/main.ts" }] : []),
         ...(!fixtureNotesCommitted ? (!fixtureStaged.has("notes/review.md") ? [{ code: "??", indexStatus: "?", worktreeStatus: "?", path: "notes/review.md" }] : [{ code: "A", indexStatus: "A", worktreeStatus: " ", path: "notes/review.md" }]) : []),
@@ -459,6 +460,14 @@ const agent = {
       if (args.remoteBranch !== "origin/mobile/feature") throw new Error("Удалённая ветка не найдена среди уже загруженных ссылок");
       fixtureBranch = "mobile/feature";
       return { branch: fixtureBranch, upstream: String(args.remoteBranch) };
+    }
+    if (job.op === "gitFetch") {
+      if (args.remoteName !== "origin") throw new Error("Удалённый репозиторий не найден");
+      return { remoteName: "origin", fetched: true };
+    }
+    if (job.op === "gitPush") {
+      if (args.remoteName !== "origin") throw new Error("Удалённый репозиторий не найден");
+      return { remoteName: "origin", branch: fixtureBranch };
     }
     if (job.op === "setModel") fixtureSettings.model = String(args.modelId);
     else if (job.op === "setMode") fixtureSettings.mode = String(args.modeId);
