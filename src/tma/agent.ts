@@ -56,6 +56,7 @@ function mobileEditableTurnSummary(turn:CodexMobileEditableTurn){
     turnId:turn.turnId,
     text:turn.text,
     skillNames:turn.skillNames,
+    appIds:turn.appIds,
     attachmentCount:turn.attachmentCount,
     editable:turn.editable,
   };
@@ -666,11 +667,12 @@ export class MiniAppAgent {
             this.promptJournal.reserve(key,fingerprint);
             reserved=true;
             dispatched=true;
-            const revertedTurn=await acp.revertMobileThread!(sessionId,turnId,expectedLatestTurnId);
+            const revertedTurn=await acp.revertMobileThread!(sessionId,turnId,expectedLatestTurnId,selected.appIds);
             this.historyCache.delete(sessionId+":chat");
             this.historyCache.delete(sessionId+":tools");
             const input=textPrompt(message);
             input.skillNames=selected.skillNames;
+            input.appIds=revertedTurn?.appIds??selected.appIds??[];
             input.images=revertedTurn?.resendImages??selected.resendImages??[];
             input.localImages=revertedTurn?.resendLocalImages??selected.resendLocalImages??[];
             const result=await registry.submitPrompt(chatId,input);

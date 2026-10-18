@@ -73,12 +73,12 @@ test("mobile edit and retry only reverts the latest owned idle text turn and sub
     {id:sessionId,name:"Editable fixture",cwd:dir,source:"appServer",createdAt:1,updatedAt:2,recencyAt:2},
     {id:foreignId,name:"Foreign fixture",cwd:dir,source:"appServer",createdAt:1,updatedAt:1,recencyAt:1},
   ];
-  let latestTurn={turnId:"12345678-1234-4234-8234-123456789abc",text:"$fixture-review old prompt",skillNames:["fixture-review"],attachmentCount:0,editable:true};
-  const olderTurn={turnId:"87654321-4321-4234-8234-123456789abc",text:"older request",skillNames:[],attachmentCount:0,editable:true};
+  let latestTurn={turnId:"12345678-1234-4234-8234-123456789abc",text:"$fixture-review old prompt",skillNames:["fixture-review"],appIds:["calendar"],attachmentCount:0,editable:true};
+  const olderTurn={turnId:"87654321-4321-4234-8234-123456789abc",text:"older request",skillNames:[],appIds:[],attachmentCount:0,editable:true};
   let busy=false;
   let activeTurn=false;
   const reverts:Array<{threadId:string;turnId:string}>=[];
-  const submitted:Array<{userId:number;text:string;skillNames?:string[]}>=[];
+  const submitted:Array<{userId:number;text:string;skillNames?:string[];appIds?:string[]}>=[];
   const acp=Object.assign(new EventEmitter(),{
     isConnected:true,
     listProjects:async()=>[{id:"project",name:"Fixture",roots:[dir]}],
@@ -87,7 +87,7 @@ test("mobile edit and retry only reverts the latest owned idle text turn and sub
     hasActiveTurn:(id:string)=>id===sessionId&&activeTurn,
     async readMobileLatestEditableTurn(threadId:string){assert.equal(threadId,sessionId);return {...latestTurn};},
     async readMobileEditableTurns(threadId:string){assert.equal(threadId,sessionId);return [{...latestTurn},{...olderTurn}];},
-    async revertMobileThread(threadId:string,turnId:string){reverts.push({threadId,turnId});latestTurn={turnId:"abcdef01-2345-4234-8234-123456789abc",text:"edited prompt",skillNames:[],attachmentCount:0,editable:true};},
+    async revertMobileThread(threadId:string,turnId:string){reverts.push({threadId,turnId});latestTurn={turnId:"abcdef01-2345-4234-8234-123456789abc",text:"edited prompt",skillNames:[],appIds:[],attachmentCount:0,editable:true};},
     availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],
     currentModelId:"default",currentModeId:"code",accountState:async()=>({}),
   }) as unknown as AcpClient;
@@ -97,7 +97,7 @@ test("mobile edit and retry only reverts the latest owned idle text turn and sub
     get:()=>({sessionId}),
     controller:()=>controller,
     runtimeForSession:()=>runtime,
-    async submitPrompt(userId:number,input:{text:string;skillNames?:string[]}){submitted.push({userId,text:input.text,skillNames:input.skillNames});return {kind:"submitted",outcome:{stopReason:"end_turn"}};},
+    async submitPrompt(userId:number,input:{text:string;skillNames?:string[];appIds?:string[]}){submitted.push({userId,text:input.text,skillNames:input.skillNames,appIds:input.appIds});return {kind:"submitted",outcome:{stopReason:"end_turn"}};},
   } as unknown as RuntimeRegistry;
   const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101","202"])} as AppConfig;
   const owners=new TelegramSessionRegistry(dir);
@@ -132,12 +132,12 @@ test("mobile edit and retry only reverts the latest owned idle text turn and sub
     const duplicate=await agent.executeMobile({op:"editAndRetry",userId:101,args}) as {result:unknown};
     assert.deepEqual(duplicate,result);
     assert.deepEqual(reverts,[{threadId:sessionId,turnId}]);
-    assert.deepEqual(submitted,[{userId:101,text:"$fixture-review updated prompt",skillNames:["fixture-review"]}]);
+    assert.deepEqual(submitted,[{userId:101,text:"$fixture-review updated prompt",skillNames:["fixture-review"],appIds:["calendar"]}]);
     const olderArgs={...args,turnId:olderTurn.turnId,expectedLatestTurnId:latestTurn.turnId,requestId:"mobile-edit-older-1234",text:"revised older request"};
     const olderResult=await agent.executeMobile({op:"editAndRetry",userId:101,args:olderArgs}) as {result:unknown};
     assert.deepEqual(olderResult.result,{stopReason:"end_turn"});
     assert.deepEqual(reverts.at(-1),{threadId:sessionId,turnId:olderTurn.turnId});
-    assert.deepEqual(submitted.at(-1),{userId:101,text:"revised older request",skillNames:[]});
+    assert.deepEqual(submitted.at(-1),{userId:101,text:"revised older request",skillNames:[],appIds:[]});
     const mismatchedAgent=new MiniAppAgent({cfg,acp,registry});
     try{
       await assert.rejects(mismatchedAgent.executeMobile({op:"editAndRetry",userId:101,args:{...args,text:"different prompt"}}),/ID задания уже использован/);
@@ -149,8 +149,8 @@ test("mobile edit and retry only reverts the latest owned idle text turn and sub
     }finally{replayAgent.stop();}
     assert.deepEqual(reverts,[{threadId:sessionId,turnId},{threadId:sessionId,turnId:olderTurn.turnId}]);
     assert.deepEqual(submitted,[
-      {userId:101,text:"$fixture-review updated prompt",skillNames:["fixture-review"]},
-      {userId:101,text:"revised older request",skillNames:[]},
+      {userId:101,text:"$fixture-review updated prompt",skillNames:["fixture-review"],appIds:["calendar"]},
+      {userId:101,text:"revised older request",skillNames:[],appIds:[]},
     ]);
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });

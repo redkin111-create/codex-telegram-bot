@@ -133,6 +133,7 @@ export interface MobileEditableTurn {
   turnId: string;
   text: string;
   skillNames?: string[];
+  appIds?: string[];
   attachmentCount?: number;
   editable: boolean;
   reason?: string;

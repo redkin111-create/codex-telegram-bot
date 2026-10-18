@@ -113,6 +113,65 @@ test("unavailable or malformed app selections fail before Codex starts a turn", 
   assert.deepEqual(methods, []);
 });
 
+test("mobile history keeps only safe Codex App mentions editable and removes generated app tokens from the draft", async () => {
+  const client = new AcpClient({ codexCliPath: "codex", workspace: "C:\\work", trustAllTools: false });
+  const internal = client as unknown as { request: (method: string, params: unknown) => Promise<unknown> };
+  internal.request = async (method) => {
+    assert.equal(method, "thread/turns/list");
+    return { data: [
+      { id: "12345678-1234-4234-8234-123456789abc", status: "completed", items: [
+        { type: "userMessage", content: [
+          { type: "text", text: "$calendar-connector\n\nПроверь встречи на завтра" },
+          { type: "mention", name: "Calendar connector", path: "app://calendar" },
+        ] },
+      ] },
+      { id: "87654321-4321-4234-8234-123456789abc", status: "completed", items: [
+        { type: "userMessage", content: [
+          { type: "text", text: "$calendar-connector\n\nОпасный старый путь" },
+          { type: "mention", name: "Calendar connector", path: "app://calendar/../../secret" },
+        ] },
+      ] },
+    ] };
+  };
+
+  const turns = await client.readMobileEditableTurns("thread-1");
+  assert.equal(turns[0]?.editable, true);
+  assert.deepEqual((turns[0] as unknown as { appIds?: string[] }).appIds, ["calendar"]);
+  assert.equal(turns[0]?.text, "Проверь встречи на завтра");
+  assert.equal(turns[1]?.editable, false);
+  assert.equal((turns[1] as unknown as { appIds?: string[] }).appIds, undefined);
+});
+
+test("mobile edit rejects a stale App before changing the Codex conversation history", async () => {
+  const client = new AcpClient({ codexCliPath: "codex", workspace: "C:\\work", trustAllTools: false });
+  const calls: string[] = [];
+  const internal = client as unknown as { request: (method: string, params: unknown) => Promise<unknown> };
+  internal.request = async (method) => {
+    calls.push(method);
+    if (method === "thread/turns/list") return { data: [
+      { id: "12345678-1234-4234-8234-123456789abc", status: "completed", items: [
+        { type: "userMessage", content: [
+          { type: "text", text: "$calendar-connector\n\nПроверь встречи" },
+          { type: "mention", name: "Calendar connector", path: "app://calendar" },
+        ] },
+      ] },
+    ] };
+    if (method === "app/list") return { data: [
+      { id: "calendar", name: "Calendar connector", isEnabled: true, isAccessible: false },
+    ] };
+    if (method === "app/installed") return { apps: [
+      { id: "calendar", enabled: true, callable: true },
+    ] };
+    throw new Error(`Unexpected Codex method: ${method}`);
+  };
+
+  await assert.rejects(
+    client.revertMobileThread("thread-1", "12345678-1234-4234-8234-123456789abc", "12345678-1234-4234-8234-123456789abc", ["calendar"]),
+    /приложение.*недоступно|не подключено/i,
+  );
+  assert.deepEqual(calls, ["thread/turns/list", "app/list", "app/installed"]);
+});
+
 test("selected skills are resolved from Codex and sent as explicit app-server input items", async () => {
   const client = new AcpClient({ codexCliPath: "codex", workspace: "C:\\work", trustAllTools: false });
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];

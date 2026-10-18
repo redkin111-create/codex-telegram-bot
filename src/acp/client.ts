@@ -129,6 +129,8 @@ function parseMobileEditableTurn(value: unknown, retainReplayData = false): Code
     (item as Record<string, unknown>).type === "userMessage") as Array<Record<string, unknown>>;
   if (userMessages.length !== 1 || !Array.isArray(userMessages[0]!.content)) return undefined;
   const skillNames: string[] = [];
+  const appIds: string[] = [];
+  const appTokens: string[] = [];
   const text: string[] = [];
   const resendImages: Array<{ mimeType: string; data: string }> = [];
   const resendLocalImages: string[] = [];
@@ -142,6 +144,19 @@ function parseMobileEditableTurn(value: unknown, retainReplayData = false): Code
       else text.push(item.text);
     }
     else if (item.type === "skill" && typeof item.name === "string" && /^[a-z0-9][a-z0-9._-]{0,79}$/i.test(item.name)) skillNames.push(item.name);
+    else if (item.type === "mention") {
+      const path = typeof item.path === "string" ? item.path : "";
+      const appId = path.startsWith("app://") ? path.slice("app://".length) : "";
+      const name = typeof item.name === "string"
+        ? item.name.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 160)
+        : "";
+      const slug = name ? codexAppSlug(name) : "";
+      if (!MOBILE_APP_ID_PATTERN.test(appId) || path !== `app://${appId}` || !slug) hasUnsupportedContent = true;
+      else {
+        appIds.push(appId);
+        appTokens.push(`$${slug}`);
+      }
+    }
     else if (item.type === "image") {
       attachmentCount++;
       const image = parseMobileEditableImage(item.url);
@@ -158,12 +173,18 @@ function parseMobileEditableTurn(value: unknown, retainReplayData = false): Code
     else { attachmentCount++; hasUnsupportedContent = true; }
   }
   const joinedText = text.join("\n").trim();
+  const uniqueAppTokens = [...new Set(appTokens)];
+  const appTokenPrefix = uniqueAppTokens.length ? `${uniqueAppTokens.join(" ")}\n\n` : "";
+  const editableText = appTokenPrefix && joinedText.startsWith(appTokenPrefix)
+    ? joinedText.slice(appTokenPrefix.length).trim()
+    : joinedText;
   const status = typeof record.status === "string" ? record.status : "";
   const terminalTurn = status === "completed" || status === "interrupted" || status === "failed";
   return {
     turnId: record.id,
-    text: joinedText,
+    text: editableText,
     skillNames: [...new Set(skillNames)],
+    ...(appIds.length ? { appIds: [...new Set(appIds)] } : {}),
     attachmentCount,
     ...(resendImages.length ? { resendImages } : {}),
     ...(resendLocalImages.length ? { resendLocalImages } : {}),
@@ -512,7 +533,7 @@ export class AcpClient extends EventEmitter {
   }
 
   /** Revalidate the selected turn and latest-turn snapshot before changing history. */
-  async revertMobileThread(threadId: string, beforeTurnId: string, expectedLatestTurnId?: string): Promise<CodexMobileEditableTurn> {
+  async revertMobileThread(threadId: string, beforeTurnId: string, expectedLatestTurnId?: string, appIds: string[] = []): Promise<CodexMobileEditableTurn> {
     if (!/^[a-z0-9_-]{8,128}$/i.test(threadId) || !/^[a-z0-9_-]{8,128}$/i.test(beforeTurnId)) {
       throw new Error("Неверный запрос для редактирования истории Codex");
     }
@@ -531,6 +552,7 @@ export class AcpClient extends EventEmitter {
         throw new AcpError("Исходное изображение недоступно. История не изменена; восстановите вложение в Codex Desktop и повторите попытку");
       }
     }
+    await this.resolveMobileAppMentions(threadId, appIds.length ? appIds : selected.appIds ?? []);
     const result = await this.request("thread/revert", { threadId, beforeTurnId }) as {
       thread?: { id?: unknown };
     };
@@ -666,41 +688,7 @@ export class AcpClient extends EventEmitter {
     }
     const appIds = [...new Set(rawAppIds as string[])];
 
-    const mentions: Array<Extract<CodexUserInput, { type: "mention" }>> = [];
-    const appTokens: string[] = [];
-    if (appIds.length) {
-      const [catalog, installed] = await Promise.all([
-        this.request("app/list", { limit: 100, threadId: sessionId }).catch(() => undefined),
-        this.request("app/installed", {}).catch(() => undefined),
-      ]);
-      const catalogApps = mobileAppList(catalog);
-      const installedApps = mobileAppRecord(installed)?.apps;
-      const installedRecords = Array.isArray(installedApps)
-        ? installedApps.flatMap((entry) => {
-          const app = mobileAppRecord(entry);
-          return app ? [app] : [];
-        })
-        : [];
-      for (const id of appIds) {
-        const matches = catalogApps.filter((app) => app.id === id);
-        const installedMatches = installedRecords.filter((app) => app.id === id);
-        const app = matches[0];
-        const state = installedMatches[0];
-        if (matches.length !== 1 || installedMatches.length !== 1 ||
-            app?.isAccessible !== true || app.isEnabled === false ||
-            state?.callable !== true || state.enabled === false) {
-          throw new AcpError("Выбранное Codex App сейчас недоступно или не подключено для этого сеанса");
-        }
-        const name = typeof app.name === "string"
-          ? app.name.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 160)
-          : "";
-        const safeName = name || id;
-        const slug = codexAppSlug(safeName);
-        if (!slug) throw new AcpError("У выбранного Codex App не получилось определить имя для вызова");
-        appTokens.push(`$${slug}`);
-        mentions.push({ type: "mention", name: safeName, path: `app://${id}` });
-      }
-    }
+    const { mentions, appTokens } = await this.resolveMobileAppMentions(sessionId, appIds);
     if (names.length === 0 && appIds.length === 0) return input;
 
     const cwd = this.threadCwd.get(sessionId);
@@ -723,6 +711,51 @@ export class AcpClient extends EventEmitter {
       input.push(...mentions);
     }
     return input;
+  }
+
+  /** Re-resolve every selected app against the live catalog for this exact Codex thread. */
+  private async resolveMobileAppMentions(sessionId: string, appIds: string[]): Promise<{
+    mentions: Array<Extract<CodexUserInput, { type: "mention" }>>;
+    appTokens: string[];
+  }> {
+    if (!appIds.length) return { mentions: [], appTokens: [] };
+    if (appIds.some((id) => !MOBILE_APP_ID_PATTERN.test(id))) {
+      throw new AcpError("Выбран неверный идентификатор Codex App");
+    }
+    const [catalog, installed] = await Promise.all([
+      this.request("app/list", { limit: 100, threadId: sessionId }).catch(() => undefined),
+      this.request("app/installed", {}).catch(() => undefined),
+    ]);
+    const catalogApps = mobileAppList(catalog);
+    const installedApps = mobileAppRecord(installed)?.apps;
+    const installedRecords = Array.isArray(installedApps)
+      ? installedApps.flatMap((entry) => {
+        const app = mobileAppRecord(entry);
+        return app ? [app] : [];
+      })
+      : [];
+    const mentions: Array<Extract<CodexUserInput, { type: "mention" }>> = [];
+    const appTokens: string[] = [];
+    for (const id of [...new Set(appIds)]) {
+      const matches = catalogApps.filter((app) => app.id === id);
+      const installedMatches = installedRecords.filter((app) => app.id === id);
+      const app = matches[0];
+      const state = installedMatches[0];
+      if (matches.length !== 1 || installedMatches.length !== 1 ||
+          app?.isAccessible !== true || app.isEnabled === false ||
+          state?.callable !== true || state.enabled === false) {
+        throw new AcpError("Выбранное Codex App сейчас недоступно или не подключено для этого сеанса");
+      }
+      const name = typeof app.name === "string"
+        ? app.name.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 160)
+        : "";
+      const safeName = name || id;
+      const slug = codexAppSlug(safeName);
+      if (!slug) throw new AcpError("У выбранного Codex App не получилось определить имя для вызова");
+      appTokens.push(`$${slug}`);
+      mentions.push({ type: "mention", name: safeName, path: `app://${id}` });
+    }
+    return { mentions, appTokens };
   }
 
   /** Install only a remote plugin that is present and installable in Codex's live catalog. */

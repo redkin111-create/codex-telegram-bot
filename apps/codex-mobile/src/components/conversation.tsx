@@ -592,6 +592,7 @@ export function Conversation({
               return <option key={turn.turnId} value={turn.turnId} disabled={!turn.editable}>{label}{turn.editable ? "" : " · нельзя редактировать"}</option>;
             })}</select></label>}
             {editTurn.skillNames?.length ? <p className="mt-3 text-xs text-muted">Сохранятся навыки: {editTurn.skillNames.join(", ")}</p> : null}
+            {editTurn.appIds?.length ? <p className="mt-3 text-xs text-muted">Сохранятся подключённые приложения: {editTurn.appIds.length}.</p> : null}
             {(editTurn.attachmentCount ?? 0) > 0 && <p className="mt-3 text-xs text-muted">Исходные вложения сохранятся: {editTurn.attachmentCount}.</p>}
             <label htmlFor="edit-turn-text" className="mt-3 block text-xs font-medium text-muted">Текст запроса</label>
             <Textarea id="edit-turn-text" value={editText} onChange={(event) => setEditText(event.target.value)} rows={6} maxLength={16000} className="mt-1 max-h-[35svh] resize-y" aria-label="Новый текст запроса" />

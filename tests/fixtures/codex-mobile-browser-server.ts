@@ -375,7 +375,7 @@ const agent = {
       if (sessionId !== firstSession) throw new Error("Сеанс не найден");
       return fixtureEditUnavailable
         ? { editable: false, reason: "В запросе есть вложение, которое нельзя безопасно восстановить.", attachmentCount: 1 }
-        : { turnId: fixtureLatestTurnId, text: "Проверь экран Codex Mobile и сообщи, что видишь.", skillNames: [], attachmentCount: fixtureEditWithImages ? 2 : 0, editable: true };
+        : { turnId: fixtureLatestTurnId, text: "Проверь экран Codex Mobile и сообщи, что видишь.", skillNames: [], appIds: ["calendar"], attachmentCount: fixtureEditWithImages ? 2 : 0, editable: true };
     }
     if (job.op === "listEditableTurns") {
       if (sessionId !== firstSession) throw new Error("Сеанс не найден");
@@ -385,6 +385,7 @@ const agent = {
         const hasImages = fixtureEditWithImages && turnId === fixtureLatestTurnId;
         return {
           turnId, text: userEntries[index]?.text ?? "", skillNames: [],
+          appIds: index === userEntries.length - 1 ? ["calendar"] : [],
           attachmentCount: unavailable ? 1 : hasImages ? 2 : 0, editable: !unavailable,
           ...(unavailable ? { reason: "Запрос содержит вложение." } : {}),
         };
@@ -402,7 +403,10 @@ const agent = {
       const targetUserIndex = userIndices[turnIndex];
       if (targetUserIndex === undefined) throw new Error("Выбранный запрос не найден в истории");
       entries.splice(targetUserIndex);
-      entries.push({ role: "user", text: String(args.text ?? ""), timestamp: Date.now() });
+      const appIds = turnIndex === fixtureTurnIds.length - 1 ? ["calendar"] : [];
+      if (appIds.some((id) => id !== "calendar")) throw new Error("Fixture Codex App недоступно");
+      const appMention = appIds.includes("calendar") ? "$calendar-connector\n\n" : "";
+      entries.push({ role: "user", text: `${appMention}${String(args.text ?? "")}`, timestamp: Date.now() });
       entries.push({ role: "assistant", text: "Запрос повторно обработан из изолированной тестовой среды. Настоящий Codex не запускался.", timestamp: Date.now() });
       history.set(sessionId, entries);
       fixtureTurnIds = fixtureTurnIds.slice(0, turnIndex);

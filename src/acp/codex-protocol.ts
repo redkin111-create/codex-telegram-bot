@@ -229,6 +229,8 @@ export interface CodexMobileEditableTurn {
   turnId: string;
   text: string;
   skillNames: string[];
+  /** Opaque Codex App IDs; never expose native app:// paths to the browser. */
+  appIds?: string[];
   attachmentCount: number;
   editable: boolean;
   /** Server-only replay data. MiniAppAgent must omit these fields from browser responses. */
