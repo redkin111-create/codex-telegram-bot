@@ -102,6 +102,10 @@ const fixtureSkills = [
   { name: "disabled-helper", description: "Отключённый навык.", enabled: false, scope: "repo" as const, canToggle: true, invokable: false },
   { name: "managed-skill", description: "Управляется политикой.", enabled: true, scope: "admin" as const, canToggle: false, invokable: true },
 ];
+const fixtureMcpConfig = [
+  { name: "fixture-git", scope: "workspace" as const, enabled: true, transport: "stdio" as const },
+  { name: "fixture-search", scope: "global" as const, enabled: false, transport: "http" as const },
+];
 const fixtureTerminals = new Map<string, { sessionId: string; output: string; pendingInput: string; exited: boolean; exitCode: number | null; }>();
 const fixtureTerminalBySession = new Map<string, string>();
 const fixtureBackgroundProcesses = new Map<string, Array<{ itemId: string; processId: string }>>([
@@ -492,6 +496,17 @@ const agent = {
       if (!skill?.canToggle || typeof args.enabled !== "boolean") throw new Error("Навык недоступен для изменения");
       skill.enabled = args.enabled;
       return { name: skill.name, enabled: skill.enabled };
+    }
+    if (job.op === "listMcpConfig") return fixtureMcpConfig.map((server) => ({ ...server }));
+    if (job.op === "setMcpConfigEnabled") {
+      const server = fixtureMcpConfig.find((entry) => entry.name === args.name);
+      if (!server || typeof args.enabled !== "boolean") throw new Error("MCP-сервер недоступен для изменения");
+      server.enabled = args.enabled;
+      return { ...server, restartRequired: true };
+    }
+    if (job.op === "restartCodex") {
+      if ([...controlled.values()].some((runtime) => runtime.busy || runtime.queue.length > 0)) throw new Error("Сначала завершите активную работу и очистите очередь");
+      return { restarted: true };
     }
     if (job.op === "compactThread") {
       if (controlled.get(sessionId)?.busy) throw new Error("Нельзя сократить контекст, пока Codex выполняет задачу");

@@ -191,6 +191,59 @@ test("account API requires a paired device, Origin and CSRF and delegates only t
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
+test("MCP config and shared Codex restart operations require paired session ownership and CSRF", async () => {
+  const f = await startFixture();
+  try {
+    const body = (op: string, sessionId = allowedSession, extra: Record<string, unknown> = {}) => JSON.stringify({
+      op, args: { sessionId, ...extra },
+    });
+    assert.equal((await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, "content-type": "application/json" },
+      body: body("listMcpConfig"),
+    })).status, 401);
+
+    const login = await pair(f.origin, f.auth);
+    const headers = { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" };
+    assert.equal((await fetch(f.origin + "/api/operations", {
+      method: "POST", headers, body: body("listMcpConfig"),
+    })).status, 403);
+
+    const beforeForeign = f.calls.length;
+    const foreign = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { ...headers, "x-csrf-token": login.csrfToken },
+      body: body("listMcpConfig", foreignSession),
+    });
+    assert.equal(foreign.status, 403);
+    assert.equal(f.calls.length, beforeForeign, "foreign session requests must never reach the agent");
+
+    const read = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { ...headers, "x-csrf-token": login.csrfToken },
+      body: body("listMcpConfig"),
+    });
+    assert.equal(read.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "listMcpConfig");
+    assert.equal(f.calls.at(-1)?.userId, 101);
+
+    const forbiddenChange = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers, body: body("setMcpConfigEnabled", allowedSession, { name: "fixture", enabled: false }),
+    });
+    assert.equal(forbiddenChange.status, 403);
+    const changed = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { ...headers, "x-csrf-token": login.csrfToken },
+      body: body("setMcpConfigEnabled", allowedSession, { name: "fixture", enabled: false }),
+    });
+    assert.equal(changed.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "setMcpConfigEnabled");
+
+    const restart = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { ...headers, "x-csrf-token": login.csrfToken },
+      body: body("restartCodex"),
+    });
+    assert.equal(restart.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "restartCodex");
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
 test("mobile document uploads require CSRF and an owned session, then attach server-prepared text to one send", async () => {
   const f = await startFixture();
   try {

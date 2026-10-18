@@ -16,6 +16,7 @@ import { LiveSessionConflictError } from "../bot/session-runtime.js";
 import { TmaScreenshotIndex } from "./screenshots.js";
 import type { AppConfig } from "../config.js";
 import { isPathWithinRoot } from "../projects/manager.js";
+import { listMobileMcpConfig, restartMobileCodex, setMobileMcpConfigEnabled } from "../mobile/mcp-config.js";
 import { buildContentBlocks } from "../bot/prompt-content.js";
 import { createLogger } from "../logger.js";
 import { readConversationHistoryAsync } from "../sessions/history.js";
@@ -151,7 +152,7 @@ interface MobilePtyRecord {
   expiry?:NodeJS.Timeout;dataSubscription?:{dispose():void};exitSubscription?:{dispose():void};
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; stt?:Pick<SttService,"enabled"|"transcribe">; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "mcpOAuthLogin" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 const MOBILE_GLOBAL_OPERATIONS=new Set<MobileLocalOperation>(["listThreadSections","createThreadSection","renameThreadSection","deleteThreadSection"]);
 export class MiniAppAgent {
@@ -925,6 +926,22 @@ export class MiniAppAgent {
           limits,subagents,checkedAt:Date.now(),
           goal,goalAvailable,
         };
+      }
+      case "listMcpConfig":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        const selected=await this.thread(sessionId,chatId);
+        return listMobileMcpConfig(selected.cwd||"");
+      }
+      case "setMcpConfigEnabled":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        const selected=await this.thread(sessionId,chatId);
+        if(typeof args.enabled!=="boolean")throw new Error("Состояние MCP-сервера должно быть включено или выключено");
+        return setMobileMcpConfigEnabled(selected.cwd||"",argumentString(args,"name",128),args.enabled);
+      }
+      case "restartCodex":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        await this.thread(sessionId,chatId);
+        return restartMobileCodex(acp,registry);
       }
       case "mcpOAuthLogin":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");

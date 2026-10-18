@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Activity, Bot, ChevronDown, CircleHelp, Clock3, Download, ExternalLink, Pause, Play, Plug, Puzzle, RefreshCw, ShieldCheck, Sparkles, Target, Trash2, X } from "lucide-react";
 import { readCapabilities } from "../api.js";
 import { AccountsPanel } from "./accounts-panel.js";
+import { McpConfigPanel } from "./mcp-config-panel.js";
 import type { MobileCapabilities, MobileOperation } from "../types.js";
 import { Badge, Button, Card, Input, Textarea } from "./ui/primitives.js";
 
@@ -255,6 +256,7 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
               </li>)}</ul> : <p className="text-xs text-muted">В этом сеансе нет подключённых MCP-серверов.</p>}
             <p className="text-[11px] leading-relaxed text-muted">Показано состояние выбранного сеанса. Адреса, параметры инструментов и секреты авторизации не передаются в мобильный интерфейс.</p>
           </Card>
+          <McpConfigPanel sessionId={sessionId} canChange={capabilities.online} onOperation={onOperation} onRestarted={reload} />
           <Card className="space-y-3 p-4">
             <h3 className="flex items-center gap-2 text-sm font-semibold"><Puzzle size={16} className="text-accent" /> Плагины Codex</h3>
             {!capabilities.pluginCatalogAvailable ? <p className="text-xs leading-relaxed text-muted">Эта версия Codex не предоставляет каталог плагинов.</p> : capabilities.plugins.length ? <ul className="space-y-3">{capabilities.plugins.slice(0, 80).map((plugin) => <li key={`${plugin.marketplace}:${plugin.id}`} className="rounded-xl border border-border bg-[#111613] p-3">

@@ -703,6 +703,67 @@ test("mobile skill controls expose disabled skills without local paths and write
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile MCP config is session scoped and restart refuses shared runtime work",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-mcp-agent-"));
+  const codexHome=join(dir,"codex-home");
+  const project=join(dir,"project");
+  mkdirSync(codexHome);
+  mkdirSync(project);
+  mkdirSync(join(project,".codex"));
+  writeFileSync(join(project,".codex","config.toml"),`[mcp_servers.fixture]\ncommand = "fixture-server"\n`);
+  const previousHome=process.env.CODEX_HOME;
+  process.env.CODEX_HOME=codexHome;
+  const sessionId="31313131-3131-4131-8131-313131313131";
+  const foreignSessionId="32323232-3232-4232-8232-323232323232";
+  const threads=[
+    {id:sessionId,name:"Owned MCP",cwd:project,source:"cli",createdAt:1,updatedAt:2,recencyAt:2},
+    {id:foreignSessionId,name:"Foreign MCP",cwd:project,source:"cli",createdAt:1,updatedAt:1,recencyAt:1},
+  ];
+  const owners=new TelegramSessionRegistry(dir);
+  owners.recordMobile(sessionId,101,project,"Owned");
+  owners.recordMobile(foreignSessionId,202,project,"Foreign");
+  let pending=true;
+  let busy=false;
+  let restarts=0;
+  const acp=Object.assign(new EventEmitter(),{
+    isConnected:true,
+    hasInflightPrompt:()=>busy,
+    async restart(){restarts++;},
+    listProjects:async()=>[{id:"p1",name:"fixture",roots:[project]}],
+    listThreads:async()=>threads,
+    listAllThreads:async()=>threads,
+  }) as unknown as AcpClient;
+  const registry={
+    hasPendingWork:()=>pending,
+    runtimeForSession:()=>undefined,
+    ownerChatForSession:(id:string)=>id===sessionId?101:id===foreignSessionId?202:undefined,
+    controller:()=>({list:()=>[]}),get:()=>({sessionId}),
+  } as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101","202"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    const listed=await agent.executeMobile({op:"listMcpConfig" as never,userId:101,args:{sessionId}}) as Array<Record<string,unknown>>;
+    assert.deepEqual(listed,[{name:"fixture",scope:"workspace",enabled:true,transport:"stdio"}]);
+    assert.deepEqual(await agent.executeMobile({op:"setMcpConfigEnabled" as never,userId:101,args:{sessionId,name:"fixture",enabled:false}}),
+      {name:"fixture",scope:"workspace",enabled:false,transport:"stdio",restartRequired:true});
+    assert.doesNotMatch(JSON.stringify(listed),/fixture-server|config\.toml/);
+    await assert.rejects(agent.executeMobile({op:"setMcpConfigEnabled" as never,userId:202,args:{sessionId,name:"fixture",enabled:true}}),/Доступ к сеансу запрещён/);
+    await assert.rejects(agent.executeMobile({op:"restartCodex" as never,userId:101,args:{sessionId}}),/ожидающие запросы/);
+    assert.equal(restarts,0);
+    pending=false;
+    busy=true;
+    await assert.rejects(agent.executeMobile({op:"restartCodex" as never,userId:101,args:{sessionId}}),/Codex занят/);
+    assert.equal(restarts,0);
+    busy=false;
+    assert.deepEqual(await agent.executeMobile({op:"restartCodex" as never,userId:101,args:{sessionId}}),{restarted:true});
+    assert.equal(restarts,1);
+  }finally{
+    agent.stop();
+    if(previousHome===undefined)delete process.env.CODEX_HOME; else process.env.CODEX_HOME=previousHome;
+    rmSync(dir,{recursive:true,force:true});
+  }
+});
+
 test("mobile session archive, restore and rename reuse the owner's Codex catalogue",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-sessions-"));
   const activeId="30303030-3030-4030-8030-303030303030";
