@@ -43,6 +43,22 @@ test("active phone receives an owner-scoped approval and only an advertised choi
   assert.equal(f.published[0]?.payload.kind, "approval");
 });
 
+test("mobile command approval offers a separate session-scoped allow choice", async () => {
+  const f = fixture();
+  const broker = new MobileApprovalBroker(f.feed, f.registry, new Set(["101"]), undefined, 1000);
+  const commandRequest: RequestPermissionParams = {
+    sessionId,
+    toolCall: { toolCallId: "approval-command", title: "npm test", kind: "execute" },
+    options: [{ optionId: "accept", name: "Разрешить один раз" }, { optionId: "decline", name: "Отклонить" }],
+  };
+  const waiting = broker.handle(commandRequest);
+  const approval = broker.listFor(101, sessionId)[0]!;
+  assert.deepEqual(approval.options.map((option) => option.id), ["accept", "acceptForSession", "decline"]);
+  assert.equal(approval.options[1]?.label, "Разрешить для сеанса");
+  assert.equal(broker.resolve(101, sessionId, approval.id, "acceptForSession"), true);
+  assert.deepEqual(await waiting, { outcome: { outcome: "selected", optionId: "acceptForSession" } });
+});
+
 test("requests without an active phone viewer retain the existing Telegram fallback", async () => {
   const f = fixture(false);
   let fallbackCalls = 0;

@@ -38,7 +38,15 @@ export class MobileApprovalBroker {
     if (ownerId === undefined || !this.allowedOwners.has(String(ownerId)) || !this.feed.hasSubscribers(params.sessionId)) {
       return this.fallback ? this.fallback(params) : cancelled;
     }
-    const options = params.options.filter((option) =>
+    const offeredOptions = params.options.some((option) => option.optionId === "accept") &&
+      params.options.some((option) => option.optionId === "decline") && !params.permissions
+      ? [
+          ...params.options.filter((option) => option.optionId !== "decline"),
+          { optionId: "acceptForSession", name: "Разрешить для сеанса" },
+          ...params.options.filter((option) => option.optionId === "decline"),
+        ]
+      : params.options;
+    const options = offeredOptions.filter((option) =>
       typeof option.optionId === "string" && option.optionId.length <= 100 &&
       typeof option.name === "string" && option.name.length <= 160,
     ).map((option) => ({ id: option.optionId, label: clean(option.name, 160) }));

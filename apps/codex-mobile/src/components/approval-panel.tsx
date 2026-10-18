@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ShieldAlert, X } from "lucide-react";
 import type { MobileApproval } from "../types.js";
 import { Button, Card } from "./ui/primitives.js";
@@ -10,6 +10,9 @@ export function ApprovalPanel({ approval, onResolve, onClose }: {
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [sessionApproval, setSessionApproval] = useState<string>();
+
+  useEffect(() => setSessionApproval(undefined), [approval.id]);
 
   async function choose(optionId: string) {
     setBusy(true);
@@ -28,9 +31,19 @@ export function ApprovalPanel({ approval, onResolve, onClose }: {
       {approval.summary && <Card className="mt-4 max-h-48 overflow-auto whitespace-pre-wrap p-3 text-sm leading-relaxed text-muted">{approval.summary}</Card>}
       <p className="mt-3 text-xs text-muted">Тип действия: {approval.kind}. Codex продолжит только после выбранного решения.</p>
       {error && <p role="alert" className="mt-3 rounded-xl border border-[#733b39] bg-[#351f1e] p-3 text-sm text-[#ffc3bd]">{error}</p>}
+      {sessionApproval && <Card role="alert" className="mt-4 border-[#725d36] bg-[#302819] p-3">
+        <p className="text-sm leading-relaxed">Codex может разрешить похожие запросы без нового вопроса до конца этого сеанса.</p>
+        <div className="mt-3 flex justify-end gap-2">
+          <Button type="button" variant="ghost" className="min-h-10" disabled={busy} onClick={() => setSessionApproval(undefined)}>Назад</Button>
+          <Button type="button" className="min-h-10" disabled={busy} onClick={() => void choose(sessionApproval)}>Разрешить для сеанса</Button>
+        </div>
+      </Card>}
       <div className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-2">{approval.options.map((option) => {
         const reject = /deny|declin|reject|отклон|запрет/i.test(`${option.id} ${option.label}`);
-        return <Button key={option.id} variant={reject ? "danger" : "default"} className="min-h-12 whitespace-normal" disabled={busy} onClick={() => void choose(option.id)}>{option.label}</Button>;
+        return <Button key={option.id} variant={reject ? "danger" : "default"} className="min-h-12 whitespace-normal" disabled={busy} onClick={() => {
+          if (option.id === "acceptForSession") setSessionApproval(option.id);
+          else void choose(option.id);
+        }}>{option.label}</Button>;
       })}</div>
     </section>
   </div>;
