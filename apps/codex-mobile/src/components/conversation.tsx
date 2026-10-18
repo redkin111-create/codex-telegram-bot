@@ -1,12 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { GitFork, ImagePlus, LoaderCircle, Mic, Minimize2, Pencil, Play, Send, Sparkles, Square, Trash2, Wrench } from "lucide-react";
+import { GitFork, ImagePlus, LoaderCircle, Mic, Minimize2, Pencil, Play, Search, Send, Sparkles, Square, Trash2, Wrench, X } from "lucide-react";
 import "../../../../apps/mini-app/public/photo-input.js";
 import type { HistoryEntry, MobileActivity, MobileCapabilities, MobileEditableTurn, MobileLiveEvent, MobileQueue, MobileSession } from "../types.js";
 import { imageUrl } from "../api.js";
 import { SafeMarkdown } from "../markdown.js";
 import { isMobileSkillNameSafe, prependMobileSkill } from "../skill-prompt.js";
-import { Badge, Button, Textarea } from "./ui/primitives.js";
+import { Badge, Button, Input, Textarea } from "./ui/primitives.js";
 
 export interface PromptImage { name: string; mimeType: string; data: string; preview: string; }
 export type FollowUpMode = "queue" | "steer";
@@ -65,8 +65,17 @@ export function Conversation({
   const [editNotice, setEditNotice] = useState("");
   const [transcribing, setTranscribing] = useState(false);
   const [voiceError, setVoiceError] = useState("");
+  const [historySearchOpen, setHistorySearchOpen] = useState(false);
+  const [historySearch, setHistorySearch] = useState("");
+  const visibleHistory = useMemo(() => {
+    const query = historySearch.trim().toLowerCase();
+    if (!query) return history;
+    return history.filter((entry) => entry.text.toLowerCase().includes(query));
+  }, [history, historySearch]);
 
   useEffect(() => {
+    setHistorySearchOpen(false);
+    setHistorySearch("");
     setSkillPickerOpen(false);
     setAvailableSkills([]);
     setSkillPickerError("");
@@ -187,7 +196,8 @@ export function Conversation({
           {connected && session.busy && <Button variant="danger" className="min-h-9 px-3 text-xs" onClick={onCancel}><Square size={13} /> Остановить</Button>}
         </div>
       </div>
-      <div className="mt-2 flex justify-end">
+      <div className="mt-2 flex flex-wrap justify-end gap-2">
+        <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label="Найти в истории" aria-pressed={historySearchOpen} onClick={() => { if (historySearchOpen) setHistorySearch(""); setHistorySearchOpen((value) => !value); }}><Search size={14} />Поиск</Button>
         <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" onClick={onFork} disabled={forking || turnBusy || session.archived} aria-label="Создать ответвление сеанса">
           {forking ? <LoaderCircle size={14} className="animate-spin" /> : <GitFork size={14} />}
           {forking ? "Создаю…" : "Создать ответвление"}
@@ -204,14 +214,20 @@ export function Conversation({
       {toolEvents.length > 0 && <div className="mt-3 flex gap-2 overflow-x-auto pb-0.5" aria-label="Текущие события Codex">
         {toolEvents.map((event) => <span key={`${event.id}-${event.kind}`} className="flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-panel px-2.5 py-1 text-[11px] text-muted">{event.kind === "tool" ? <Wrench size={12} className="text-accent" /> : null}{event.label || event.status || "Событие"}</span>)}
       </div>}
+      {historySearchOpen && <div className="mx-auto mt-3 flex max-w-4xl items-center gap-2" role="search" aria-label="Поиск в загруженной истории">
+        <label className="relative min-w-0 flex-1"><Search size={15} className="pointer-events-none absolute left-3 top-3.5 text-muted" /><Input value={historySearch} onChange={(event) => setHistorySearch(event.target.value)} placeholder="Найти сообщение или вывод инструмента" aria-label="Поиск по загруженной истории" className="pl-9" /></label>
+        <span className="shrink-0 text-[11px] text-muted" role="status">{historySearch.trim() ? `Сообщений: ${visibleHistory.length}` : `История: ${history.length}`}</span>
+        <Button type="button" variant="ghost" className="min-h-10 px-2" aria-label="Закрыть поиск по истории" onClick={() => { setHistorySearch(""); setHistorySearchOpen(false); }}><X size={16} /></Button>
+      </div>}
       <p className="sr-only" role="status">{streamConnected ? "Поток Codex подключён" : "Поток Codex переподключается"}</p>
     </header>
 
     <div className="min-h-0 flex-1 overflow-y-auto px-3 py-5 sm:px-5 md:px-8">
       {loading && history.length === 0 && <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted"><LoaderCircle size={16} className="animate-spin" /> Загружаю историю…</div>}
       {!loading && history.length === 0 && <div className="mx-auto mt-10 max-w-md rounded-2xl border border-dashed border-border bg-panel/60 p-6 text-center"><p className="font-medium">История пока пустая</p><p className="mt-2 text-sm text-muted">Подключите сеанс и отправьте задачу.</p></div>}
+      {!loading && history.length > 0 && historySearch.trim() && visibleHistory.length === 0 && <div className="mx-auto mt-10 max-w-md rounded-2xl border border-dashed border-border bg-panel/60 p-6 text-center"><p className="font-medium">Совпадений нет</p><p className="mt-2 text-sm text-muted">Поиск проверяет только уже загруженную историю этого сеанса.</p><Button type="button" variant="outline" className="mt-4" onClick={() => setHistorySearch("")}>Очистить поиск</Button></div>}
       <div className="mx-auto flex max-w-4xl flex-col gap-4">
-        {history.map((entry, index) => entry.role === "tool" ? <details key={`${entry.timestamp ?? "t"}-${index}`} className="rounded-xl border border-border bg-[#151a16]">
+        {visibleHistory.map((entry, index) => entry.role === "tool" ? <details key={`${entry.timestamp ?? "t"}-${index}`} className="rounded-xl border border-border bg-[#151a16]">
           <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-xs font-medium text-[#bac7b6]"><Wrench size={14} className="text-accent" />{entry.tool || "Инструмент"}<span className="ml-auto text-[#737f74]">Показать вывод</span></summary>
           <pre className="max-h-80 overflow-auto border-t border-border p-3 font-mono text-xs leading-5 text-[#d3dbd1]">{entry.text}</pre>
         </details> : <article key={`${entry.timestamp ?? "m"}-${index}`} className={`max-w-[94%] rounded-2xl border px-4 py-3 ${entry.role === "user" ? "ml-auto border-[#46533d] bg-[#20291b]" : "mr-auto border-border bg-panel"}`}>
