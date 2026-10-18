@@ -32,9 +32,44 @@ const MAX_MOBILE_PTY_READ=64*1024;
 const MOBILE_PTY_IDLE_MS=30*60*1000;
 import { normalizeMobileIntegrations, normalizeMobileMcpServers, normalizePluginInstallResult } from "../mobile/integrations.js";
 import { gitRemoteTarget } from "../mobile/git-remotes.js";
+import { SttService } from "../app/stt.js";
 
 const log=createLogger("tma:agent");
 const MAX_IMG=3*1024*1024;
+const MAX_MOBILE_AUDIO=5*1024*1024;
+const MOBILE_AUDIO_TYPES:Record<string,{extension:string;kind:string}>={
+  "audio/webm":{extension:".webm",kind:"webm"},"audio/ogg":{extension:".ogg",kind:"ogg"},
+  "audio/mpeg":{extension:".mp3",kind:"mp3"},"audio/mp4":{extension:".mp4",kind:"mp4"},
+  "audio/wav":{extension:".wav",kind:"wav"},"audio/x-wav":{extension:".wav",kind:"wav"},
+  "audio/aac":{extension:".aac",kind:"aac"},"audio/3gpp":{extension:".3gp",kind:"3gpp"},
+};
+function asciiAt(bytes:Buffer,offset:number,text:string):boolean{
+  return bytes.length>=offset+text.length&&bytes.toString("ascii",offset,offset+text.length)===text;
+}
+function mobileAudioSignatureMatches(bytes:Buffer,kind:string):boolean{
+  switch(kind){
+    case "webm":return bytes.length>=4&&bytes[0]===0x1a&&bytes[1]===0x45&&bytes[2]===0xdf&&bytes[3]===0xa3;
+    case "ogg":return asciiAt(bytes,0,"OggS");
+    case "wav":return asciiAt(bytes,0,"RIFF")&&asciiAt(bytes,8,"WAVE");
+    case "mp3":return asciiAt(bytes,0,"ID3")||(bytes.length>=4&&bytes[0]===0xff!&&(bytes[1]!&0xe0)===0xe0);
+    case "mp4":return asciiAt(bytes,4,"ftyp");
+    case "3gpp":return asciiAt(bytes,4,"ftyp")&&bytes.toString("ascii",8,12).startsWith("3gp");
+    case "aac":return bytes.length>=2&&bytes[0]===0xff&&(bytes[1]!&0xf6)===0xf0;
+    default:return false;
+  }
+}
+function decodeMobileAudio(args:Record<string,unknown>):{bytes:Buffer;mimeType:string;filename:string}{
+  const mimeType=argumentString(args,"mimeType",80).toLowerCase();
+  const audioType=MOBILE_AUDIO_TYPES[mimeType];
+  if(!audioType)throw new Error("Неподдерживаемый формат аудио");
+  const encoded=argumentString(args,"data",Math.ceil(MAX_MOBILE_AUDIO/3)*4);
+  if(encoded.length%4!==0)throw new Error("Некорректные данные аудио");
+  const bytes=Buffer.from(encoded,"base64");
+  if(bytes.length===0||bytes.toString("base64")!==encoded)throw new Error("Некорректные данные аудио");
+  if(bytes.length>MAX_MOBILE_AUDIO)throw new Error("Аудио должно быть не больше 5 МБ");
+  if(!mobileAudioSignatureMatches(bytes,audioType.kind))throw new Error("Содержимое не похоже на аудио указанного формата");
+  return {bytes,mimeType,filename:"codex-mobile-audio"+audioType.extension};
+}
 function mobileReviewTarget(value:unknown):CodexReviewTarget{
   if(!value||typeof value!=="object"||Array.isArray(value))throw new Error("Укажите, что нужно проверить");
   const target=value as Record<string,unknown>;
@@ -94,11 +129,12 @@ interface MobilePtyRecord {
   output:string;outputStart:number;totalChars:number;exited:boolean;exitCode:number|null;closed:boolean;
   expiry?:NodeJS.Timeout;dataSubscription?:{dispose():void};exitSubscription?:{dispose():void};
 }
-export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "editAndRetry" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "mcpOAuthLogin" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; stt?:Pick<SttService,"enabled"|"transcribe">; mobilePtyFactory?:MobilePtyFactory; }
+export type MobileLocalOperation = "capabilities" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "editAndRetry" | "transcribeAudio" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "mcpOAuthLogin" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 export class MiniAppAgent {
   private readonly abort=new AbortController();
+  private readonly stt:Pick<SttService,"enabled"|"transcribe">;
   private readonly store:SessionStore;
   private readonly telegramSessions:TelegramSessionRegistry;
   private readonly promptJournal:DurablePromptJournal;
@@ -133,6 +169,7 @@ export class MiniAppAgent {
   private readonly mobilePtys=new Map<string,MobilePtyRecord>();
   private loopPromise:Promise<void>|undefined;
   constructor(private readonly deps:AgentDeps,gatewayUrl?:string,secret?:string){
+    this.stt=deps.stt??new SttService({apiUrl:deps.cfg.sttApiUrl,apiKey:deps.cfg.sttApiKey,model:deps.cfg.sttModel,language:deps.cfg.sttLanguage});
     if(Boolean(gatewayUrl)!==Boolean(secret))throw new Error("TMA gateway URL and token must be configured together");
     if(gatewayUrl&&secret){
       const url=new URL(gatewayUrl);
@@ -470,6 +507,20 @@ export class MiniAppAgent {
           if(this.sends.size>180)this.sends.delete(this.sends.keys().next().value!);
         }
         return pending;
+      }
+      case "transcribeAudio":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        if(!this.stt.enabled)throw new Error("Распознавание речи не настроено на этом компьютере");
+        const audio=decodeMobileAudio(args);
+        let transcript:string;
+        try{
+          transcript=await this.stt.transcribe(audio.bytes,audio.mimeType,audio.filename);
+        }catch{
+          throw new Error("Не удалось распознать аудио. Проверьте настройки и доступность STT-сервиса");
+        }
+        const text=transcript.trim();
+        if(text.length>16000)throw new Error("Распознанный текст слишком длинный");
+        return {text};
       }
       case "terminalExec":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");

@@ -225,6 +225,32 @@ test("Codex preference changes require an authorized session and device CSRF tok
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
+test("voice transcription requires an authorized owned session and device CSRF token", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const url = f.origin + "/api/operations";
+    const args = { sessionId: allowedSession, mimeType: "audio/webm", data: Buffer.from("fixture").toString("base64") };
+    const noCsrf = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" },
+      body: JSON.stringify({ op: "transcribeAudio", args }),
+    });
+    assert.equal(noCsrf.status, 403);
+    const foreign = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ op: "transcribeAudio", args: { ...args, sessionId: foreignSession } }),
+    });
+    assert.equal(foreign.status, 403);
+    const accepted = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ op: "transcribeAudio", args }),
+    });
+    assert.equal(accepted.status, 200);
+    assert.equal((await accepted.json() as { op: string }).op, "transcribeAudio");
+    assert.equal(f.calls.filter((call) => call.op === "transcribeAudio").length, 1);
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
 test("skill changes require the paired device, same Origin, CSRF and an owned session", async () => {
   const f = await startFixture();
   try {

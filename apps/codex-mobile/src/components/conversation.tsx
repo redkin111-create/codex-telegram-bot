@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { GitFork, ImagePlus, LoaderCircle, Minimize2, Pencil, Play, Send, Sparkles, Square, Trash2, Wrench } from "lucide-react";
+import { GitFork, ImagePlus, LoaderCircle, Mic, Minimize2, Pencil, Play, Send, Sparkles, Square, Trash2, Wrench } from "lucide-react";
 import "../../../../apps/mini-app/public/photo-input.js";
 import type { HistoryEntry, MobileActivity, MobileCapabilities, MobileEditableTurn, MobileLiveEvent, MobileQueue, MobileSession } from "../types.js";
 import { imageUrl } from "../api.js";
@@ -14,7 +14,7 @@ export type FollowUpMode = "queue" | "steer";
 export function Conversation({
   session, history, activity, events, queue, connected, connecting, loading, streamConnected,
   error, includeTools, onToggleTools, onConnect, onCancel, onFork, forking, onCompact, compacting, onSend, onQueueRemove, onQueueResume, onQueueOpen, onLoadSkills,
-  onLoadLatestEditableTurn, onEditAndRetry,
+  onLoadLatestEditableTurn, onEditAndRetry, onTranscribeAudio,
 }: {
   session?: MobileSession;
   history: HistoryEntry[];
@@ -41,6 +41,7 @@ export function Conversation({
   onLoadSkills: () => Promise<MobileCapabilities["skills"]>;
   onLoadLatestEditableTurn: () => Promise<MobileEditableTurn>;
   onEditAndRetry: (turnId: string, text: string) => Promise<void>;
+  onTranscribeAudio: (file: File) => Promise<string>;
 }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<PromptImage[]>([]);
@@ -62,6 +63,8 @@ export function Conversation({
   const [editText, setEditText] = useState("");
   const [editError, setEditError] = useState("");
   const [editNotice, setEditNotice] = useState("");
+  const [transcribing, setTranscribing] = useState(false);
+  const [voiceError, setVoiceError] = useState("");
 
   useEffect(() => {
     setSkillPickerOpen(false);
@@ -136,6 +139,19 @@ export function Conversation({
       setImages((current) => [...current, ...prepared]);
     } catch (cause) { setImageError(cause instanceof Error ? cause.message : "Не удалось подготовить изображение"); }
     finally { setPreparing(false); }
+  }
+
+  async function transcribeVoice(file?: File) {
+    if (!file) return;
+    setTranscribing(true);
+    setVoiceError("");
+    try {
+      const transcript = (await onTranscribeAudio(file)).trim();
+      if (!transcript) throw new Error("Речь не распознана. Попробуйте другое аудио.");
+      setText((current) => current.trim() ? `${current}\n${transcript}` : transcript);
+    } catch (cause) {
+      setVoiceError(cause instanceof Error ? cause.message : "Не удалось распознать речь");
+    } finally { setTranscribing(false); }
   }
 
   async function submit() {
@@ -214,6 +230,8 @@ export function Conversation({
 
     {error && <p className="mx-3 mb-2 rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd] sm:mx-5 md:mx-8" role="alert">{error}</p>}
     {imageError && <p className="mx-3 mb-2 rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd] sm:mx-5 md:mx-8" role="alert">{imageError}</p>}
+    {voiceError && <p className="mx-3 mb-2 rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd] sm:mx-5 md:mx-8" role="alert">{voiceError}</p>}
+    {transcribing && <p className="mx-3 mb-2 flex items-center gap-2 rounded-xl border border-border bg-panel px-3 py-2 text-xs text-muted sm:mx-5 md:mx-8" role="status"><LoaderCircle size={14} className="animate-spin" />Распознаю речь. Текст появится в черновике.</p>}
     {compactNotice && <p className="mx-3 mb-2 rounded-xl border border-[#46533d] bg-[#20291b] px-3 py-2 text-sm text-[#d5f49c] sm:mx-5 md:mx-8" role="status">{compactNotice}</p>}
     {editNotice && <p className="mx-3 mb-2 rounded-xl border border-[#46533d] bg-[#20291b] px-3 py-2 text-sm text-[#d5f49c] sm:mx-5 md:mx-8" role="status">{editNotice}</p>}
 
@@ -238,14 +256,20 @@ export function Conversation({
           <ImagePlus size={19} />
           <input type="file" className="sr-only" accept="image/jpeg,image/png,image/webp" multiple disabled={preparing || images.length >= 3} onChange={(event) => { void attach(event.target.files); event.target.value = ""; }} />
         </label>
+        <label className={`flex min-h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-border bg-[#1b211c] text-muted ${connected && !transcribing ? "cursor-pointer hover:text-accent" : "cursor-not-allowed opacity-45"}`} aria-label="Распознать речь из аудио">
+          {transcribing ? <LoaderCircle size={18} className="animate-spin" /> : <Mic size={18} />}
+          <span className="sr-only">Выбрать аудио для распознавания</span>
+          <input type="file" className="sr-only" accept="audio/*" capture="user" disabled={!connected || transcribing} onChange={(event) => { void transcribeVoice(event.target.files?.[0]); event.target.value = ""; }} />
+        </label>
         <Button type="button" variant="outline" className="min-h-11 w-11 shrink-0 px-0" aria-label="Выбрать навык Codex" disabled={!connected} onClick={() => void toggleSkillPicker()}><Sparkles size={18} /></Button>
         <div className="min-w-0 flex-1"><Textarea value={text} onChange={(event) => setText(event.target.value)} onKeyDown={submitOnEnter} placeholder={!connected ? "Подключите сеанс, чтобы отправить задачу" : turnBusy && followUpMode === "steer" ? "Направление для текущей задачи…" : turnBusy ? "Следующая задача в очереди…" : "Задача для Codex…"} disabled={!connected} rows={2} className="min-h-[48px] max-h-40 resize-none py-3" aria-label="Сообщение Codex" /></div>
-        <Button type="submit" className="min-h-12 w-12 shrink-0 px-0" disabled={!connected || (!text.trim() && images.length === 0) || preparing} aria-label={followUpMode === "steer" && turnBusy ? "Направить текущую задачу" : "Отправить задачу"}>{preparing ? <LoaderCircle className="animate-spin" size={18} /> : <Send size={18} />}</Button>
+        <Button type="submit" className="min-h-12 w-12 shrink-0 px-0" disabled={!connected || (!text.trim() && images.length === 0) || preparing || transcribing} aria-label={followUpMode === "steer" && turnBusy ? "Направить текущую задачу" : "Отправить задачу"}>{preparing || transcribing ? <LoaderCircle className="animate-spin" size={18} /> : <Send size={18} />}</Button>
       </div>
       <div className="mx-auto mt-2 flex max-w-4xl items-center justify-between text-[10px] text-[#758077]">
         <span>{connected ? "Enter отправляет · Shift+Enter переносит строку" : "История доступна без подключения"}</span>
         <div className="flex items-center gap-2"><button type="button" className="min-h-8 rounded-lg px-2 text-xs text-muted hover:bg-elevated" onClick={() => { setQueueOpen((value) => !value); onQueueOpen(); }}>Очередь {queue.items.length}</button><button type="button" className="min-h-8 rounded-lg px-2 text-xs text-muted hover:bg-elevated" aria-pressed={includeTools} onClick={onToggleTools}>{includeTools ? "Скрыть инструменты" : "Показать инструменты"}</button>{queue.busy && <span className="flex items-center gap-1"><LoaderCircle size={11} className="animate-spin" />Работает</span>}</div>
       </div>
+      {connected && <p className="mx-auto mt-1 max-w-4xl text-[10px] leading-4 text-[#758077]">Если STT настроен на ПК, аудио отправится в этот сервис. Распознанный текст попадёт в черновик и не отправится автоматически.</p>}
     </form>
     {openImage && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90 p-3 sm:p-8" role="dialog" aria-modal="true" aria-label={openImage.name} onMouseDown={(event) => { if (event.target === event.currentTarget) setOpenImage(undefined); }}>
       <Button variant="outline" className="absolute right-4 top-4 z-10 min-h-11 px-4" aria-label="Закрыть скриншот" onClick={() => setOpenImage(undefined)}>Закрыть</Button>

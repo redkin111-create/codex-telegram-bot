@@ -107,6 +107,22 @@ export function runOperation<T = unknown>(op: MobileOperation, args: Record<stri
   });
 }
 
+const MAX_AUDIO_BYTES = 5 * 1024 * 1024;
+const AUDIO_MIMES = new Set(["audio/webm", "audio/ogg", "audio/mpeg", "audio/mp4", "audio/wav", "audio/x-wav", "audio/aac", "audio/3gpp"]);
+
+export async function transcribeAudio(sessionId: string, audio: File, csrfToken: string) {
+  if (!AUDIO_MIMES.has(audio.type.toLowerCase())) throw new MobileApiError("Выберите аудиофайл поддерживаемого формата", 400);
+  if (audio.size === 0 || audio.size > MAX_AUDIO_BYTES) throw new MobileApiError("Аудио должно быть не пустым и не больше 5 МБ", 413);
+  const bytes = new Uint8Array(await audio.arrayBuffer());
+  const parts: string[] = [];
+  // Keep conversion chunks aligned to 3 bytes so only the final base64 part is padded.
+  for (let offset = 0; offset < bytes.length; offset += 24_576) {
+    parts.push(btoa(String.fromCharCode(...bytes.subarray(offset, offset + 24_576))));
+  }
+  const data = parts.join("");
+  return runOperation<{ text: string }>("transcribeAudio", { sessionId, mimeType: audio.type, data }, csrfToken);
+}
+
 export function readDevices() {
   return jsonRequest<{ devices: MobileDevice[] }>("/api/devices");
 }

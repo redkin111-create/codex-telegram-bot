@@ -7,9 +7,12 @@ import { createServer, type Server } from "node:http";
 import { MobileAuthStore } from "../../src/mobile/auth.js";
 import { createMobileServer } from "../../src/mobile/server.js";
 import { MobileApprovalBroker } from "../../src/mobile/approvals.js";
+import { MiniAppAgent, type MobileLocalJob } from "../../src/tma/agent.js";
 import type { LiveEvent, TmaLiveFeed } from "../../src/tma/live.js";
 import type { TmaJob } from "../../src/tma/protocol.js";
 import type { RuntimeRegistry } from "../../src/bot/registry.js";
+import type { AcpClient } from "../../src/acp/client.js";
+import type { AppConfig } from "../../src/config.js";
 
 const ownerId = 101;
 const firstSession = "11111111-1111-4111-8111-111111111111";
@@ -99,11 +102,35 @@ let fixtureBackgroundTerminalFailure = false;
 let fixtureLatestTurnId = "11111111-1111-4111-8111-111111111111";
 let fixtureEditUnavailable = false;
 let fixtureEditFailure = false;
+let fixtureTranscriptionFailure = false;
 const fixtureFiles = new Map<string, string>([
   ["README.md", "# Fixture project\n\nRead-only history is followed by mobile file access.\n"],
   ["src/main.ts", "export function greet() {\n  return \"Hello from fixture\";\n}\n"],
   ["assets/preview.png", "fixture raster preview"],
 ]);
+
+const voiceAcp = {
+  isConnected: true,
+  async listProjects() { return []; },
+  async listThreads() { return sessions.map((session) => ({ id: session.id, name: session.title, cwd: session.cwd, source: session.source, createdAt: 1, updatedAt: session.updatedAt, recencyAt: session.updatedAt })); },
+  async listAllThreads() { return sessions.map((session) => ({ id: session.id, name: session.title, cwd: session.cwd, source: session.source, createdAt: 1, updatedAt: session.updatedAt, recencyAt: session.updatedAt })); },
+} as unknown as AcpClient;
+const voiceConfig = {
+  allowedUsers: new Set([String(ownerId)]), sessionsDir: dataDir, dataDir,
+  workspace: projectOne, projectRoots: [projectOne], sttModel: "fixture",
+} as AppConfig;
+const voiceAgent = new MiniAppAgent({
+  cfg: voiceConfig,
+  acp: voiceAcp,
+  registry: { runtimeForSession: () => undefined } as unknown as RuntimeRegistry,
+  stt: {
+    enabled: true,
+    async transcribe() {
+      if (fixtureTranscriptionFailure) { fixtureTranscriptionFailure = false; throw new Error("upstream-fixture-private-detail"); }
+      return "Проверь состояние проекта перед отправкой";
+    },
+  },
+});
 
 const agent = {
   async canReadSession(sessionId: string, id: number) {
@@ -200,6 +227,7 @@ const agent = {
   async executeMobile(job: { op: string; userId: number; args: Record<string, unknown> }): Promise<unknown> {
     const args = job.args;
     const sessionId = String(args.sessionId ?? "");
+    if (job.op === "transcribeAudio") return voiceAgent.executeMobile(job as unknown as MobileLocalJob);
     if (job.op === "latestEditableTurn") {
       if (sessionId !== firstSession) throw new Error("Сеанс не найден");
       return fixtureEditUnavailable
@@ -626,12 +654,19 @@ process.stdin.on("data", (chunk: string) => {
       } else if (command.command === "turnEditError") {
         fixtureEditFailure = true;
         process.stdout.write("Fixture turn edit failure enabled.\n");
+      } else if (command.command === "transcriptionError") {
+        fixtureTranscriptionFailure = true;
+        process.stdout.write("Fixture transcription failure enabled.\n");
+      } else if (command.command === "transcriptionReset") {
+        fixtureTranscriptionFailure = false;
+        process.stdout.write("Fixture transcription failure disabled.\n");
       }
     } catch { process.stdout.write("Fixture control command was ignored.\n"); }
   }
 });
 
 async function shutdown() {
+  voiceAgent.stop();
   browserBootstrap.closeAllConnections();
   await new Promise<void>((resolveClose) => browserBootstrap.close(() => resolveClose()));
   server.closeAllConnections();

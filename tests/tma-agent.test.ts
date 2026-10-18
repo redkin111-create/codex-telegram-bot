@@ -140,6 +140,79 @@ test("mobile edit and retry only reverts the latest owned idle text turn and sub
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile voice transcription accepts bounded audio only for an owned session",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-voice-"));
+  const sessionId="78787878-7878-4787-8787-787878787878";
+  const foreignId="79797979-7979-4797-8797-797979797979";
+  const threads=[
+    {id:sessionId,name:"Owned voice fixture",cwd:dir,source:"cli",createdAt:1,updatedAt:2,recencyAt:2},
+    {id:foreignId,name:"Foreign voice fixture",cwd:dir,source:"cli",createdAt:1,updatedAt:1,recencyAt:1},
+  ];
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[],
+    listThreads:async()=>threads,
+    listAllThreads:async()=>threads,
+    availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],
+    currentModelId:"default",currentModeId:"code",
+  }) as unknown as AcpClient;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101","202"])} as AppConfig;
+  const owners=new TelegramSessionRegistry(dir);
+  owners.recordMobile(sessionId,101,dir,"Owned");
+  owners.recordMobile(foreignId,202,dir,"Foreign");
+  const calls:Array<{bytes:Buffer;mimeType:string;filename:string}>=[];
+  const stt={enabled:true,async transcribe(bytes:Buffer,mimeType:string,filename:string){calls.push({bytes,mimeType,filename});return "  Проверь код  ";}};
+  const agent=new MiniAppAgent({cfg,acp,registry:{runtimeForSession:()=>undefined} as unknown as RuntimeRegistry,stt:stt as never});
+  const audio=Buffer.from("RIFF\u0004\u0000\u0000\u0000WAVE");
+  const args={sessionId,mimeType:"audio/wav",data:audio.toString("base64")};
+  try{
+    const result=await agent.executeMobile({op:"transcribeAudio" as never,userId:101,args}) as {text:string};
+    assert.equal(result.text,"Проверь код");
+    assert.equal(calls.length,1);
+    assert.deepEqual(calls[0],{bytes:audio,mimeType:"audio/wav",filename:"codex-mobile-audio.wav"});
+    await assert.rejects(agent.executeMobile({op:"transcribeAudio" as never,userId:202,args}),/Доступ к сеансу запрещён/);
+    await assert.rejects(agent.executeMobile({op:"transcribeAudio" as never,userId:101,args:{...args,mimeType:"text/html"}}),/формат аудио/i);
+    await assert.rejects(agent.executeMobile({op:"transcribeAudio" as never,userId:101,args:{...args,data:"%%%"}}),/аудио/i);
+    await assert.rejects(agent.executeMobile({op:"transcribeAudio" as never,userId:101,args:{...args,data:Buffer.from("not-a-wave").toString("base64")}}),/не похоже на аудио/i);
+    await assert.rejects(agent.executeMobile({op:"transcribeAudio" as never,userId:101,args:{...args,data:Buffer.alloc(5*1024*1024+1).toString("base64")}}),/5 МБ/i);
+    assert.equal(calls.length,1,"invalid requests must never reach speech recognition");
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("mobile voice transcription stays disabled until the existing speech endpoint is configured",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-voice-disabled-"));
+  const sessionId="76767676-7676-4676-8676-767676767676";
+  const thread={id:sessionId,name:"Owned voice fixture",cwd:dir,source:"cli",createdAt:1,updatedAt:1,recencyAt:1};
+  const acp=Object.assign(new EventEmitter(),{listProjects:async()=>[],listThreads:async()=>[thread],listAllThreads:async()=>[thread]}) as unknown as AcpClient;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101"])} as AppConfig;
+  const owners=new TelegramSessionRegistry(dir);
+  owners.recordMobile(sessionId,101,dir,"Owned");
+  let called=false;
+  const stt={enabled:false,async transcribe(){called=true;return "unexpected";}};
+  const agent=new MiniAppAgent({cfg,acp,registry:{runtimeForSession:()=>undefined} as unknown as RuntimeRegistry,stt:stt as never});
+  try{
+    await assert.rejects(agent.executeMobile({op:"transcribeAudio" as never,userId:101,args:{sessionId,mimeType:"audio/webm",data:Buffer.from("fixture").toString("base64")}}),/распознавание речи не настроено/i);
+    assert.equal(called,false);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("mobile voice transcription hides upstream errors from the paired device",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-voice-error-"));
+  const sessionId="75757575-7575-4575-8575-757575757575";
+  const thread={id:sessionId,name:"Owned voice fixture",cwd:dir,source:"cli",createdAt:1,updatedAt:1,recencyAt:1};
+  const acp=Object.assign(new EventEmitter(),{listProjects:async()=>[],listThreads:async()=>[thread],listAllThreads:async()=>[thread]}) as unknown as AcpClient;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101"])} as AppConfig;
+  const owners=new TelegramSessionRegistry(dir);
+  owners.recordMobile(sessionId,101,dir,"Owned");
+  const stt={enabled:true,async transcribe(){throw new Error("STT HTTP 500: provider-internal-secret");}};
+  const agent=new MiniAppAgent({cfg,acp,registry:{runtimeForSession:()=>undefined} as unknown as RuntimeRegistry,stt:stt as never});
+  try{
+    await assert.rejects(
+      agent.executeMobile({op:"transcribeAudio" as never,userId:101,args:{sessionId,mimeType:"audio/wav",data:Buffer.from("RIFF\u0004\u0000\u0000\u0000WAVE").toString("base64")}}),
+      (error:unknown)=>error instanceof Error&&/не удалось распознать аудио/i.test(error.message)&&!error.message.includes("provider-internal-secret"),
+    );
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile native search finds older sessions without exposing another owner's session",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-search-"));
   const ownedId="91919191-9191-4191-8191-919191919191";

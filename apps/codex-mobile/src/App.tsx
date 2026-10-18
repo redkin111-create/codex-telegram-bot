@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { FolderOpen, GitBranch, LoaderCircle, Menu, RefreshCw, Shield, ShieldAlert, SlidersHorizontal, Terminal } from "lucide-react";
 import {
   asLiveEvent, logout, MobileApiError, openEventStream, parseSseBlock, readActivity, readApprovals,
-  readCapabilities, readHistory, readSession, readSnapshot, resolveApproval, runOperation,
+  readCapabilities, readHistory, readSession, readSnapshot, resolveApproval, runOperation, transcribeAudio as transcribeAudioRequest,
 } from "./api.js";
 import { ApprovalPanel } from "./components/approval-panel.js";
 import { Conversation, type FollowUpMode, type PromptImage } from "./components/conversation.js";
@@ -454,6 +454,12 @@ export default function App() {
     return operation<MobileEditableTurn>("latestEditableTurn", { sessionId: selectedId });
   }
 
+  async function transcribeVoice(file: File): Promise<string> {
+    if (!selectedId) throw new Error("Сначала выберите сеанс Codex");
+    const result = await transcribeAudioRequest(selectedId, file, csrf);
+    return result.text;
+  }
+
   async function editAndRetry(turnId: string, text: string) {
     const targetSession = selectedId;
     if (!targetSession) throw new Error("Сначала выберите сеанс Codex");
@@ -552,7 +558,7 @@ export default function App() {
         onConnect={() => void connectSession()} onCancel={() => void cancel()} onFork={() => void forkSession()} forking={forking}
         onCompact={compactSession} compacting={compacting} onSend={send}
         onLoadSkills={loadMobileSkills}
-        onLoadLatestEditableTurn={loadLatestEditableTurn} onEditAndRetry={editAndRetry}
+        onLoadLatestEditableTurn={loadLatestEditableTurn} onEditAndRetry={editAndRetry} onTranscribeAudio={transcribeVoice}
         onQueueRemove={(id) => void removeQueued(id)} onQueueResume={() => void resumeQueue()}
         onQueueOpen={readQueue} />
     </div>
