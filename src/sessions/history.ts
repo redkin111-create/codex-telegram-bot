@@ -181,6 +181,96 @@ export async function readConversationHistoryAsync(
   }
 }
 
+export interface ConversationHistorySearch {
+  entries: HistoryEntry[];
+  total: number;
+  skippedLargeRecords: number;
+}
+
+const MAX_SEARCH_RECORD_BYTES = 16 * 1024 * 1024;
+const MAX_SEARCH_RESULT_CHARS = 8_000;
+
+/** Search the complete rollout without retaining it in memory. Results are the
+ * most recent matches; one malformed or unusually large record cannot grow
+ * the search buffer without bound. */
+export async function searchConversationHistoryAsync(
+  jsonlPath: string,
+  query: string,
+  includeToolOutputs = false,
+  maxResults = 100,
+): Promise<ConversationHistorySearch> {
+  const needle = query.trim().toLowerCase();
+  if (needle.length < 2 || needle.length > 100) throw new Error("Поисковый запрос должен содержать от 2 до 100 символов");
+  if (!Number.isSafeInteger(maxResults) || maxResults < 1 || maxResults > 200) throw new Error("Неверный размер страницы поиска");
+  const size = jsonlSize(jsonlPath);
+  if (!size) return { entries: [], total: 0, skippedLargeRecords: 0 };
+
+  const input = createReadStream(jsonlPath, { start: 0, end: size - 1, highWaterMark: 64 * 1024 });
+  const matches: HistoryEntry[] = [];
+  const toolNames = new Map<string, string>();
+  let total = 0;
+  let skippedLargeRecords = 0;
+  let pending = Buffer.alloc(0);
+  let discardingLargeRecord = false;
+
+  const inspectLine = (bytes: Buffer) => {
+    if (bytes.length > MAX_SEARCH_RECORD_BYTES) { skippedLargeRecords++; return; }
+    if (bytes.at(-1) === 0x0d) bytes = bytes.subarray(0, -1);
+    const line = bytes.toString("utf8");
+    if (!line.includes("response_item")) return;
+    const toolOutput = includeToolOutputs ? parseToolOutputLine(line, toolNames) : undefined;
+    if (toolNames.size > 2_000) {
+      const oldest = toolNames.keys().next().value;
+      if (oldest) toolNames.delete(oldest);
+    }
+    if (!includeToolOutputs && !/"role"\s*:/.test(line)) return;
+    const entry = toolOutput ?? parseEventLine(line);
+    if (!entry || (entry.role !== "user" && entry.role !== "assistant" && !(includeToolOutputs && entry.role === "tool"))) return;
+    if (!entry.text.toLowerCase().includes(needle)) return;
+    total++;
+    const text = entry.text.length <= MAX_SEARCH_RESULT_CHARS
+      ? entry.text
+      : searchExcerpt(entry.text, needle, MAX_SEARCH_RESULT_CHARS);
+    matches.push({ ...entry, text });
+    if (matches.length > maxResults) matches.shift();
+  };
+
+  try {
+    for await (const chunk of input) {
+      const data = pending.length ? Buffer.concat([pending, chunk as Buffer]) : chunk as Buffer;
+      let start = 0;
+      let newline: number;
+      while ((newline = data.indexOf(0x0a, start)) !== -1) {
+        const line = data.subarray(start, newline);
+        if (discardingLargeRecord) discardingLargeRecord = false;
+        else inspectLine(line);
+        start = newline + 1;
+      }
+      const tail = data.subarray(start);
+      if (discardingLargeRecord) {
+        pending = Buffer.alloc(0);
+      } else if (tail.length > MAX_SEARCH_RECORD_BYTES) {
+        skippedLargeRecords++;
+        discardingLargeRecord = true;
+        pending = Buffer.alloc(0);
+      } else {
+        pending = Buffer.from(tail);
+      }
+    }
+    if (pending.length && !discardingLargeRecord) inspectLine(pending);
+    return { entries: matches, total, skippedLargeRecords };
+  } finally {
+    input.destroy();
+  }
+}
+
+function searchExcerpt(text: string, needle: string, limit: number): string {
+  const index = text.toLowerCase().indexOf(needle);
+  const start = Math.max(0, Math.min(index - Math.floor(limit / 3), text.length - limit));
+  const end = Math.min(text.length, start + limit);
+  return `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}\n[показан фрагмент совпавшего сообщения]`;
+}
+
 function parseToolOutputLine(line: string, toolNames: Map<string, string>): HistoryEntry | undefined {
   let event: RolloutLine;
   try { event = JSON.parse(line) as RolloutLine; } catch { return undefined; }

@@ -13,7 +13,7 @@ import { Pairing } from "./components/pairing.js";
 import { SettingsPanel } from "./components/settings-panel.js";
 import { Workspace } from "./components/workspace.js";
 import type {
-  HistoryEntry, MobileActivity, MobileApproval, MobileAttachment, MobileDevice, MobileEditableTurns, MobileLiveEvent, MobileQueue, MobileRealtimeVoices, MobileSession, MobileSnapshot,
+  HistoryEntry, MobileActivity, MobileApproval, MobileAttachment, MobileDevice, MobileEditableTurns, MobileHistorySearch, MobileLiveEvent, MobileQueue, MobileRealtimeVoices, MobileSession, MobileSnapshot,
   MobileOperation,
 } from "./types.js";
 import { Button } from "./components/ui/primitives.js";
@@ -276,7 +276,7 @@ export default function App() {
       if (op === "create" || op === "forkThread" || op === "archiveThread" || op === "unarchiveThread" || op === "renameThread" || op === "deleteThread" || op === "createWorktree") {
         setSessionPages({});
       }
-      if (!op.startsWith("terminal") && op !== "listMoreThreads" && op !== "searchThreads") void refreshSnapshot();
+      if (!op.startsWith("terminal") && op !== "listMoreThreads" && op !== "searchThreads" && op !== "searchHistory") void refreshSnapshot();
       return result;
     } catch (cause) { handleApiError(cause); throw cause; }
   }, [csrf, handleApiError, refreshSnapshot]);
@@ -644,6 +644,7 @@ export default function App() {
         onCreateSideChat={() => void createSideChat()} sideChatting={sideChatting} onReturnToParent={() => void returnToParent()}
         onCompact={compactSession} compacting={compacting} onSend={send}
         onLoadSkills={loadMobileSkills}
+        onSearchHistory={(query) => operation<MobileHistorySearch>("searchHistory", { sessionId: selectedId, query, includeTools })}
         onLoadEditableTurns={loadEditableTurns} onEditAndRetry={editAndRetry} onTranscribeAudio={transcribeVoice} onLoadRealtimeVoices={loadRealtimeVoices}
         onStartRealtime={startRealtime} onStopRealtime={stopRealtime}
         onUploadAttachment={(sessionId, file) => uploadAttachment(sessionId, file, csrf)}

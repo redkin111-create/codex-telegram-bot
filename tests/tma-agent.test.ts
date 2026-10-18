@@ -376,6 +376,46 @@ test("mobile native search finds older sessions without exposing another owner's
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile full-history search reads old conversation entries and enforces thread ownership",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-history-search-"));
+  const ownedId="93939393-9393-4393-8393-939393939394";
+  const foreignId="94949494-9494-4494-8494-949494949495";
+  const sessionRoot=join(dir,"sessions");
+  const rolloutDir=join(sessionRoot,"2026","10","18");
+  mkdirSync(rolloutDir,{recursive:true});
+  const logPath=join(rolloutDir,`rollout-2026-10-18T00-00-00-${ownedId}.jsonl`);
+  const makeMessage=(role:"user"|"assistant",text:string,index:number)=>JSON.stringify({
+    type:"response_item",timestamp:new Date(index+1).toISOString(),
+    payload:{type:"message",role,content:[{type:role==="user"?"input_text":"output_text",text}]},
+  });
+  writeFileSync(logPath,[makeMessage("user","Ancient phrase from the first day",0),...Array.from({length:60},(_,index)=>makeMessage(index%2?"assistant":"user",`Recent item ${index}`,index+1))].join("\n")+"\n");
+  const threads=[
+    {id:ownedId,name:"Owned history",cwd:dir,source:"appServer",createdAt:1,updatedAt:2,recencyAt:2},
+    {id:foreignId,name:"Foreign history",cwd:dir,source:"appServer",createdAt:1,updatedAt:1,recencyAt:1},
+  ];
+  const acp=Object.assign(new EventEmitter(),{
+    async listProjects(){return [{id:"history-project",name:"history",roots:[dir]}];},
+    async listThreads(){return threads;},
+    async listAllThreads(){return threads;},
+  }) as unknown as AcpClient;
+  const cfg={sessionsDir:sessionRoot,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101","202"])} as AppConfig;
+  const owners=new TelegramSessionRegistry(dir);
+  owners.record(ownedId,101,dir,"owned");
+  owners.record(foreignId,202,dir,"private");
+  const agent=new MiniAppAgent({cfg,acp,registry:{runtimeForSession:()=>undefined} as unknown as RuntimeRegistry});
+  try{
+    const result=await agent.executeMobile({op:"searchHistory",userId:101,args:{sessionId:ownedId,query:"ancient phrase"}}) as {
+      entries:Array<{role:string;text:string}>;total:number;skippedLargeRecords:number;
+    };
+    assert.equal(result.total,1);
+    assert.equal(result.entries[0]?.role,"user");
+    assert.equal(result.entries[0]?.text,"Ancient phrase from the first day");
+    assert.equal(result.skippedLargeRecords,0);
+    await assert.rejects(agent.executeMobile({op:"searchHistory",userId:101,args:{sessionId:foreignId,query:"private"}}),/Доступ к переписке запрещён/);
+    await assert.rejects(agent.executeMobile({op:"searchHistory",userId:101,args:{sessionId:ownedId,query:"x"}}),/не меньше двух символов/);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile session pages continue past the snapshot cap within the selected project and hide foreign threads",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-session-pages-"));
   const project=join(dir,"workspace"),otherProject=join(dir,"other");

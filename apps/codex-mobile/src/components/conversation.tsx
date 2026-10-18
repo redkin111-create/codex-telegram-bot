@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent } from "react";
+import type { FormEvent, KeyboardEvent } from "react";
 import { FileText, GitFork, ImagePlus, LoaderCircle, MessageSquare, Mic, Minimize2, Paperclip, Pencil, Play, Search, Send, Sparkles, Square, Trash2, Wrench, X } from "lucide-react";
 import "../../../../apps/mini-app/public/photo-input.js";
-import type { HistoryEntry, MobileActivity, MobileAttachment, MobileCapabilities, MobileEditableTurn, MobileEditableTurns, MobileLiveEvent, MobileQueue, MobileRealtimeVoices, MobileSession } from "../types.js";
+import type { HistoryEntry, MobileActivity, MobileAttachment, MobileCapabilities, MobileEditableTurn, MobileEditableTurns, MobileHistorySearch, MobileLiveEvent, MobileQueue, MobileRealtimeVoices, MobileSession } from "../types.js";
 import { imageUrl } from "../api.js";
 import { splitCodeReviewComments } from "../lib/review-comments.js";
 import { SafeMarkdown } from "../markdown.js";
@@ -16,7 +16,7 @@ export type FollowUpMode = "queue" | "steer";
 export function Conversation({
   session, history, activity, events, queue, connected, connecting, loading, streamConnected,
   error, includeTools, onToggleTools, onConnect, onCancel, onFork, forking, onCreateSideChat, sideChatting, onReturnToParent, onCompact, compacting, onSend, onQueueRemove, onQueueResume, onQueueOpen, onLoadSkills,
-  onLoadEditableTurns, onEditAndRetry, onTranscribeAudio, onLoadRealtimeVoices, onStartRealtime, onStopRealtime, onUploadAttachment, onRemoveAttachment, onOpenReviewLocation,
+  onLoadEditableTurns, onEditAndRetry, onTranscribeAudio, onLoadRealtimeVoices, onStartRealtime, onStopRealtime, onUploadAttachment, onRemoveAttachment, onOpenReviewLocation, onSearchHistory,
 }: {
   session?: MobileSession;
   history: HistoryEntry[];
@@ -53,6 +53,7 @@ export function Conversation({
   onUploadAttachment: (sessionId: string, file: File) => Promise<MobileAttachment>;
   onRemoveAttachment: (sessionId: string, id: string) => Promise<{ removed: boolean }>;
   onOpenReviewLocation: (location: { path: string; line?: number }) => void;
+  onSearchHistory: (query: string) => Promise<MobileHistorySearch>;
 }) {
   const activeSessionId = useRef(session?.id);
   activeSessionId.current = session?.id;
@@ -86,16 +87,28 @@ export function Conversation({
   const [voiceError, setVoiceError] = useState("");
   const [historySearchOpen, setHistorySearchOpen] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
+  const [fullHistoryQuery, setFullHistoryQuery] = useState("");
+  const [fullHistoryResults, setFullHistoryResults] = useState<MobileHistorySearch>();
+  const [fullHistoryLoading, setFullHistoryLoading] = useState(false);
+  const [fullHistoryError, setFullHistoryError] = useState("");
+  const fullHistoryRequest = useRef(0);
+  const usesFullHistory = Boolean(fullHistoryResults && fullHistoryQuery === historySearch.trim());
   const visibleHistory = useMemo(() => {
+    if (usesFullHistory) return fullHistoryResults?.entries ?? [];
     const query = historySearch.trim().toLowerCase();
     if (!query) return history;
     return history.filter((entry) => entry.text.toLowerCase().includes(query));
-  }, [history, historySearch]);
+  }, [history, historySearch, usesFullHistory, fullHistoryResults]);
 
   useEffect(() => {
     editLoadRequest.current++;
     setHistorySearchOpen(false);
     setHistorySearch("");
+    fullHistoryRequest.current++;
+    setFullHistoryQuery("");
+    setFullHistoryResults(undefined);
+    setFullHistoryLoading(false);
+    setFullHistoryError("");
     setSkillPickerOpen(false);
     setAvailableSkills([]);
     setSkillPickerError("");
@@ -110,6 +123,38 @@ export function Conversation({
     setAttachments([]);
     setAttachmentError("");
   }, [session?.id]);
+
+  async function searchFullHistory(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const query = historySearch.trim();
+    if (query.length < 2 || fullHistoryLoading) return;
+    const request = ++fullHistoryRequest.current;
+    const targetSessionId = activeSessionId.current;
+    setFullHistoryLoading(true);
+    setFullHistoryError("");
+    setFullHistoryResults(undefined);
+    setFullHistoryQuery("");
+    try {
+      const result = await onSearchHistory(query);
+      if (request !== fullHistoryRequest.current || activeSessionId.current !== targetSessionId) return;
+      setFullHistoryResults(result);
+      setFullHistoryQuery(query);
+    } catch (cause) {
+      if (request === fullHistoryRequest.current && activeSessionId.current === targetSessionId) {
+        setFullHistoryError(cause instanceof Error ? cause.message : "Не удалось проверить всю историю");
+      }
+    } finally {
+      if (request === fullHistoryRequest.current && activeSessionId.current === targetSessionId) setFullHistoryLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    fullHistoryRequest.current++;
+    setFullHistoryQuery("");
+    setFullHistoryResults(undefined);
+    setFullHistoryLoading(false);
+    setFullHistoryError("");
+  }, [includeTools]);
 
   async function openEditDialog() {
     const targetSessionId = activeSessionId.current;
@@ -279,7 +324,16 @@ export function Conversation({
         </div>
       </div>
       <div className="mt-2 flex flex-wrap justify-end gap-2">
-        <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label="Найти в истории" aria-pressed={historySearchOpen} onClick={() => { if (historySearchOpen) setHistorySearch(""); setHistorySearchOpen((value) => !value); }}><Search size={14} />Поиск</Button>
+        <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label="Найти в истории" aria-pressed={historySearchOpen} onClick={() => {
+          if (historySearchOpen) {
+            setHistorySearch("");
+            fullHistoryRequest.current++;
+            setFullHistoryResults(undefined);
+            setFullHistoryQuery("");
+            setFullHistoryError("");
+          }
+          setHistorySearchOpen((value) => !value);
+        }}><Search size={14} />Поиск</Button>
         {session.ephemeral && session.parentThreadId ? <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" onClick={onReturnToParent} aria-label="Вернуться к исходному сеансу"><GitFork size={14} />К исходному сеансу</Button> : !session.archived && <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" onClick={onCreateSideChat} disabled={sideChatting} aria-label="Спросить в side chat">
           {sideChatting ? <LoaderCircle size={14} className="animate-spin" /> : <MessageSquare size={14} />}
           {sideChatting ? "Открываю…" : "Спросить в side chat"}
@@ -311,18 +365,27 @@ export function Conversation({
           </li>)}
         </ol>
       </section>}
-      {historySearchOpen && <div className="mx-auto mt-3 flex max-w-4xl items-center gap-2" role="search" aria-label="Поиск в загруженной истории">
-        <label className="relative min-w-0 flex-1"><Search size={15} className="pointer-events-none absolute left-3 top-3.5 text-muted" /><Input value={historySearch} onChange={(event) => setHistorySearch(event.target.value)} placeholder="Найти сообщение или вывод инструмента" aria-label="Поиск по загруженной истории" className="pl-9" /></label>
-        <span className="shrink-0 text-[11px] text-muted" role="status">{historySearch.trim() ? `Сообщений: ${visibleHistory.length}` : `История: ${history.length}`}</span>
-        <Button type="button" variant="ghost" className="min-h-10 px-2" aria-label="Закрыть поиск по истории" onClick={() => { setHistorySearch(""); setHistorySearchOpen(false); }}><X size={16} /></Button>
+      {historySearchOpen && <div className="mx-auto mt-3 w-full max-w-4xl" role="search" aria-label="Поиск по всей истории сеанса">
+        <form className="flex items-center gap-2" onSubmit={(event) => void searchFullHistory(event)}>
+          <label className="relative min-w-0 flex-1"><Search size={15} className="pointer-events-none absolute left-3 top-3.5 text-muted" /><Input value={historySearch} onChange={(event) => { setHistorySearch(event.target.value); setFullHistoryError(""); }} placeholder="Найти текст во всём сеансе" aria-label="Поиск по всей истории сеанса" className="pl-9" /></label>
+          <Button type="submit" variant="outline" className="min-h-10 shrink-0 px-3 text-xs" aria-label="Найти во всей истории" disabled={historySearch.trim().length < 2 || fullHistoryLoading}>
+            {fullHistoryLoading ? <LoaderCircle size={14} className="animate-spin" /> : <Search size={14} />}{fullHistoryLoading ? "Ищу…" : "Искать всё"}
+          </Button>
+          <Button type="button" variant="ghost" className="min-h-10 px-2" aria-label="Закрыть поиск по истории" onClick={() => { setHistorySearch(""); setHistorySearchOpen(false); fullHistoryRequest.current++; setFullHistoryResults(undefined); setFullHistoryQuery(""); setFullHistoryError(""); }}><X size={16} /></Button>
+        </form>
+        <p className="mt-1 text-[11px] text-muted" role="status" aria-live="polite">
+          {fullHistoryError ? fullHistoryError : usesFullHistory
+            ? `По всему сеансу найдено: ${fullHistoryResults?.total ?? 0}${(fullHistoryResults?.total ?? 0) > (fullHistoryResults?.entries.length ?? 0) ? ` · показаны последние ${fullHistoryResults?.entries.length}` : ""}${fullHistoryResults?.skippedLargeRecords ? ` · пропущено крупных записей: ${fullHistoryResults.skippedLargeRecords}` : ""}`
+            : historySearch.trim() ? `Совпадений в загруженной части: ${visibleHistory.length}` : `Загружено сообщений: ${history.length}`}
+        </p>
       </div>}
       <p className="sr-only" role="status">{streamConnected ? "Поток Codex подключён" : "Поток Codex переподключается"}</p>
     </header>
 
     <div className="min-h-0 flex-1 overflow-y-auto px-3 py-5 sm:px-5 md:px-8">
       {loading && history.length === 0 && <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted"><LoaderCircle size={16} className="animate-spin" /> Загружаю историю…</div>}
-      {!loading && history.length === 0 && <div className="mx-auto mt-10 max-w-md rounded-2xl border border-dashed border-border bg-panel/60 p-6 text-center"><p className="font-medium">История пока пустая</p><p className="mt-2 text-sm text-muted">Подключите сеанс и отправьте задачу.</p></div>}
-      {!loading && history.length > 0 && historySearch.trim() && visibleHistory.length === 0 && <div className="mx-auto mt-10 max-w-md rounded-2xl border border-dashed border-border bg-panel/60 p-6 text-center"><p className="font-medium">Совпадений нет</p><p className="mt-2 text-sm text-muted">Поиск проверяет только уже загруженную историю этого сеанса.</p><Button type="button" variant="outline" className="mt-4" onClick={() => setHistorySearch("")}>Очистить поиск</Button></div>}
+      {!loading && history.length === 0 && !historySearch.trim() && <div className="mx-auto mt-10 max-w-md rounded-2xl border border-dashed border-border bg-panel/60 p-6 text-center"><p className="font-medium">История пока пустая</p><p className="mt-2 text-sm text-muted">Подключите сеанс и отправьте задачу.</p></div>}
+      {!loading && historySearch.trim() && visibleHistory.length === 0 && <div className="mx-auto mt-10 max-w-md rounded-2xl border border-dashed border-border bg-panel/60 p-6 text-center"><p className="font-medium">{usesFullHistory ? "Совпадений во всём сеансе нет" : "В загруженной части совпадений нет"}</p><p className="mt-2 text-sm text-muted">{usesFullHistory ? "Измените запрос, чтобы искать другой текст." : "Нажмите «Искать всё», чтобы проверить старые сообщения."}</p><Button type="button" variant="outline" className="mt-4" onClick={() => { setHistorySearch(""); setFullHistoryResults(undefined); setFullHistoryQuery(""); }}>Очистить поиск</Button></div>}
       <div className="mx-auto flex max-w-4xl flex-col gap-4">
         {visibleHistory.map((entry, index) => entry.role === "tool" ? <details key={`${entry.timestamp ?? "t"}-${index}`} className="rounded-xl border border-border bg-[#151a16]">
           <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-xs font-medium text-[#bac7b6]"><Wrench size={14} className="text-accent" />{entry.tool || "Инструмент"}<span className="ml-auto text-[#737f74]">Показать вывод</span></summary>

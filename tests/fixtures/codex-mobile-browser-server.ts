@@ -264,6 +264,13 @@ const agent = {
   async executeMobile(job: { op: string; userId: number; args: Record<string, unknown> }): Promise<unknown> {
     const args = job.args;
     const sessionId = String(args.sessionId ?? "");
+    if (job.op === "searchHistory") {
+      if (job.userId !== ownerId || !sessions.some((session) => session.id === sessionId)) throw new Error("Доступ к сеансу запрещён");
+      const query = typeof args.query === "string" ? args.query.trim().toLowerCase() : "";
+      const oldEntry = { role: "assistant" as const, text: "Найдено в старой части истории: полный поиск работает", timestamp: Date.now() - 86_400_000 };
+      const entries = oldEntry.text.toLowerCase().includes(query) ? [oldEntry] : [];
+      return { entries, total: entries.length, skippedLargeRecords: 0 };
+    }
     if (job.op === "listThreadSections") return fixtureSections.map((section) => ({ ...section }));
     if (job.op === "createThreadSection") {
       const name = String(args.name ?? "").trim();

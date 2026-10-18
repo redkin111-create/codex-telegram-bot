@@ -20,7 +20,7 @@ import { isPathWithinRoot } from "../projects/manager.js";
 import { listMobileMcpConfig, restartMobileCodex, setMobileMcpConfigEnabled } from "../mobile/mcp-config.js";
 import { buildContentBlocks } from "../bot/prompt-content.js";
 import { createLogger } from "../logger.js";
-import { readConversationHistoryAsync } from "../sessions/history.js";
+import { readConversationHistoryAsync, searchConversationHistoryAsync } from "../sessions/history.js";
 import { SessionStore } from "../sessions/store.js";
 import { TelegramSessionRegistry } from "../sessions/telegram-registry.js";
 import { argumentString, isTmaJob, type TmaJob, type TmaResult } from "./protocol.js";
@@ -160,7 +160,7 @@ interface MobileMcpResourceRef {
   ownerId:number;sessionId:string;serverName:string;uri?:string;uriTemplate?:string;expiresAt:number;
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; stt?:Pick<SttService,"enabled"|"transcribe">; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "listRealtimeVoices" | "startRealtime" | "stopRealtime" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "createSideChat" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "downloadFile" | "writeFile" | "createFile" | "createDirectory" | "renameProjectEntry" | "deleteProjectEntry" | "gitStatus" | "gitDiff" | "gitConflictStages" | "gitResolveConflictStage" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "searchHistory" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "listRealtimeVoices" | "startRealtime" | "stopRealtime" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "createSideChat" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "downloadFile" | "writeFile" | "createFile" | "createDirectory" | "renameProjectEntry" | "deleteProjectEntry" | "gitStatus" | "gitDiff" | "gitConflictStages" | "gitResolveConflictStage" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 const MOBILE_GLOBAL_OPERATIONS=new Set<MobileLocalOperation>(["listThreadSections","createThreadSection","renameThreadSection","deleteThreadSection"]);
 export class MiniAppAgent {
@@ -197,6 +197,7 @@ export class MiniAppAgent {
   }>();
   /** Never launch duplicate deep scans for the same JSONL revision. */
   private readonly historyInflight = new Map<string, Promise<unknown>>();
+  private readonly historySearchCache = new Map<string, { size: number; mtimeMs: number; result: unknown }>();
   private readonly mobilePtys=new Map<string,MobilePtyRecord>();
   private readonly mobileMcpResources=new Map<string,MobileMcpResourceRef>();
   private loopPromise:Promise<void>|undefined;
@@ -526,6 +527,24 @@ export class MiniAppAgent {
         });
         const nextOffset=offset+page.length;
         return {sessions,...(nextOffset<visible.length?{nextOffset}:{})};
+      }
+      case "searchHistory":{
+        await this.thread(sessionId,chatId);
+        const query=argumentString(args,"query",100).trim();
+        if(query.length<2)throw new Error("Поисковый запрос должен содержать не меньше двух символов");
+        const includeTools=args.includeTools===true;
+        const path=this.store.jsonlPath(sessionId);
+        const stat=statSyncSafe(path);
+        const cacheKey=chatId+":"+sessionId+":"+(includeTools?"tools":"chat")+":"+query.toLowerCase();
+        const cached=this.historySearchCache.get(cacheKey);
+        if(cached&&cached.size===stat.size&&cached.mtimeMs===stat.mtimeMs)return cached.result;
+        const result=await searchConversationHistoryAsync(path,query,includeTools,100);
+        const after=statSyncSafe(path);
+        if(after.size===stat.size&&after.mtimeMs===stat.mtimeMs){
+          this.historySearchCache.set(cacheKey,{...stat,result});
+          if(this.historySearchCache.size>10)this.historySearchCache.delete(this.historySearchCache.keys().next().value!);
+        }
+        return result;
       }
       case "latestEditableTurn":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
