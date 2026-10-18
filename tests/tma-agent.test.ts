@@ -556,6 +556,52 @@ test("mobile Git view reads bounded branch status and safe staged and unstaged d
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile Git lists fetched remote branches and tracks only a listed remote ref",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-remote-branch-"));
+  const project=join(dir,"repo"),source=join(dir,"source"),remote=join(dir,"origin.git");
+  for(const path of [project,source,remote])mkdirSync(path,{recursive:true});
+  const git=(cwd:string,...args:string[])=>execFileSync("git",["-C",cwd,...args],{stdio:"ignore",windowsHide:true});
+  git(remote,"init","--bare","-q");
+  git(source,"init","-b","main","-q");
+  git(source,"config","user.name","Mobile Fixture");
+  git(source,"config","user.email","mobile-fixture@example.invalid");
+  writeFileSync(join(source,"README.md"),"remote branch fixture\n");
+  git(source,"add","README.md");
+  git(source,"commit","-m","remote branch fixture");
+  git(source,"switch","-c","feature/phone");
+  git(source,"push",remote,"feature/phone");
+  git(project,"init","-b","main","-q");
+  git(project,"config","user.name","Mobile Fixture");
+  git(project,"config","user.email","mobile-fixture@example.invalid");
+  writeFileSync(join(project,"README.md"),"local branch fixture\n");
+  git(project,"add","README.md");
+  git(project,"commit","-m","local branch fixture");
+  git(project,"remote","add","origin",remote);
+  git(project,"fetch","origin");
+  const sessionId="31313131-3131-4131-8131-313131313131";
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"repo",roots:[project]}],
+    listThreads:async()=>[{id:sessionId,name:"Remote branch fixture",cwd:project,source:"cli",recencyAt:2}],
+    availableModels:[],
+  }) as unknown as AcpClient;
+  const runtime={sessionId,isBusy:false};
+  const registry={controller:()=>({list:()=>[]}),get:()=>runtime,runtimeForSession:()=>runtime} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
+    const status=await agent.executeMobile({op:"gitStatus",userId:101,args:{sessionId}}) as {remoteBranches:string[]};
+    assert.deepEqual(status.remoteBranches,["origin/feature/phone"]);
+    const tracked=await agent.executeMobile({op:"gitTrackRemoteBranch" as never,userId:101,args:{sessionId,remoteBranch:"origin/feature/phone"}}) as {
+      branch:string;upstream:string;
+    };
+    assert.equal(tracked.branch,"feature/phone");
+    assert.equal(tracked.upstream,"origin/feature/phone");
+    assert.equal(execFileSync("git",["-C",project,"branch","--show-current"],{encoding:"utf8",windowsHide:true}).trim(),"feature/phone");
+    await assert.rejects(agent.executeMobile({op:"gitTrackRemoteBranch" as never,userId:101,args:{sessionId,remoteBranch:"origin/not-fetched"}}),/[Уу]далённая ветка|remote branch/i);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile worktree creation builds an isolated Git checkout and starts a thread in the shared ACP runtime",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-worktree-"));
   const project=join(dir,"repo");

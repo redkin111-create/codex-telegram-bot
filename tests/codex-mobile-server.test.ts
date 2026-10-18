@@ -523,6 +523,21 @@ test("Git status and diffs are exposed only for the paired owner's session", asy
     });
     assert.equal(switchAllowed.status, 200);
     assert.equal(f.calls.at(-1)?.op, "gitSwitchBranch");
+    const trackPayload = JSON.stringify({ op: "gitTrackRemoteBranch", args: { sessionId: allowedSession, remoteBranch: "origin/feature/mobile" } });
+    const trackNoCsrf = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: trackPayload,
+    });
+    assert.equal(trackNoCsrf.status, 403);
+    const trackForeign = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ op: "gitTrackRemoteBranch", args: { sessionId: foreignSession, remoteBranch: "origin/feature/mobile" } }),
+    });
+    assert.equal(trackForeign.status, 403);
+    const trackAllowed = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: trackPayload,
+    });
+    assert.equal(trackAllowed.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "gitTrackRemoteBranch");
     const fileDiff = await fetch(f.origin + `/api/git/diff?sessionId=${allowedSession}&path=src%2Fmain.ts&previousPath=src%2Fold-main.ts`, {
       headers: { origin: f.origin, cookie: login.sessionCookie },
     });

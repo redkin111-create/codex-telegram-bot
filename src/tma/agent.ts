@@ -45,7 +45,7 @@ const sleep=(ms:number,signal:AbortSignal)=>new Promise<void>(resolve=>{
 });
 
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; }
-export type MobileLocalOperation = "capabilities" | "searchThreads" | "terminalExec" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch";
+export type MobileLocalOperation = "capabilities" | "searchThreads" | "terminalExec" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "steer" | "forkThread" | "compactThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 export class MiniAppAgent {
   private readonly abort=new AbortController();
@@ -704,7 +704,8 @@ export class MiniAppAgent {
       case "gitUnstage":
       case "gitCommit":
       case "gitCreateBranch":
-      case "gitSwitchBranch":{
+      case "gitSwitchBranch":
+      case "gitTrackRemoteBranch":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
         this.requireIdleMobileRuntime(sessionId,chatId);
         const {root,name}=this.mobileRoot(sessionId,chatId);
@@ -722,6 +723,19 @@ export class MiniAppAgent {
           this.gitMutation(gitRoot,["commit","-m",message]);
           const commit=this.gitOutput(gitRoot,["rev-parse","--short","HEAD"],1024).trim();
           return {project:name,commit,message,branch:this.mobileGitStatus(sessionId,chatId).branch};
+        }
+        if(job.op==="gitTrackRemoteBranch"){
+          const remoteBranch=argumentString(args,"remoteBranch",200).trim();
+          const status=this.mobileGitStatus(sessionId,chatId);
+          if(!status.remoteBranches.includes(remoteBranch))throw new Error("Удалённая ветка не найдена среди уже загруженных ссылок");
+          const remotes=this.gitOutput(gitRoot,["remote"],32*1024).split(/\r?\n/).map(value=>value.trim()).filter(Boolean);
+          const remote=remotes.filter(value=>remoteBranch.startsWith(value+"/")).sort((a,b)=>b.length-a.length)[0];
+          if(!remote)throw new Error("Не удалось определить удалённый репозиторий ветки");
+          const branch=remoteBranch.slice(remote.length+1);
+          this.gitMutation(gitRoot,["check-ref-format","--branch",branch]);
+          if(this.gitRefExists(gitRoot,"refs/heads/"+branch))throw new Error("Локальная ветка с таким именем уже существует");
+          this.gitMutation(gitRoot,["switch","--track","--no-guess","--create",branch,"refs/remotes/"+remoteBranch]);
+          return {project:name,branch,upstream:remoteBranch};
         }
         const branch=argumentString(args,"name",120).trim();
         if(!branch||/[\u0000-\u001f\u007f]/.test(branch))throw new Error("Укажите допустимое имя ветки");
@@ -869,6 +883,19 @@ export class MiniAppAgent {
       return true;
     }catch{return false;}
   }
+  private gitRefExists(root:string,ref:string):boolean{
+    try{
+      execFileSync("git",["-C",root,"-c","core.fsmonitor=false","show-ref","--verify","--quiet",ref],{
+        timeout:5000,maxBuffer:4096,windowsHide:true,stdio:"ignore",
+      });
+      return true;
+    }catch(error){
+      const failure=error as NodeJS.ErrnoException & {status?:number};
+      if(failure.status===1)return false;
+      if(failure.code==="ENOENT")throw new Error("Git не установлен или не найден");
+      throw new Error("Не удалось проверить ветку Git");
+    }
+  }
   private mobileGitPath(root:string,rawPath:string):string{
     if(isAbsolute(rawPath)||/^[a-z]:/i.test(rawPath)||rawPath.startsWith("\\\\"))throw new Error("Ожидался относительный путь внутри проекта");
     const parts=rawPath.split(/[\\/]+/).filter(Boolean);
@@ -899,7 +926,9 @@ export class MiniAppAgent {
       });
     }
     const branches=this.gitOutput(gitRoot,["branch","--format=%(refname:short)"],128*1024).split(/\r?\n/).map(value=>value.trim()).filter(Boolean).slice(0,250);
-    return {project:name,branch,branches,clean:changes.length===0,changes,checkedAt:Date.now()};
+    const remoteBranches=this.gitOutput(gitRoot,["branch","--remotes","--format=%(refname:short)"],128*1024).split(/\r?\n/)
+      .map(value=>value.trim()).filter(value=>value&&!value.endsWith("/HEAD")).slice(0,250);
+    return {project:name,branch,branches,remoteBranches,clean:changes.length===0,changes,checkedAt:Date.now()};
   }
   private mobileGitDiff(sessionId:string,userId:number,args:Record<string,unknown>={}){
     const {root,name}=this.mobileRoot(sessionId,userId);

@@ -23,6 +23,7 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
   const [commitMessage, setCommitMessage] = useState("");
   const [branchName, setBranchName] = useState("");
   const [branchTarget, setBranchTarget] = useState("");
+  const [remoteBranchTarget, setRemoteBranchTarget] = useState("");
   const [worktreeBranchName, setWorktreeBranchName] = useState("");
   const [worktreeDialogOpen, setWorktreeDialogOpen] = useState(false);
 
@@ -33,6 +34,7 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
       const [nextStatus, nextDiff] = await Promise.all([readGitStatus(sessionId), readGitDiff(sessionId, diffScope?.path, diffScope?.previousPath)]);
       setStatus(nextStatus);
       setBranchTarget((current) => nextStatus.branches.includes(current) ? current : nextStatus.branch);
+      setRemoteBranchTarget((current) => nextStatus.remoteBranches.includes(current) ? current : nextStatus.remoteBranches[0] ?? "");
       setDiff(nextDiff);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось прочитать Git"); }
     finally { setLoading(false); }
@@ -58,7 +60,7 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
     setSuccess("");
     try {
       const result = await onOperation(op, { sessionId, ...args });
-      if ((op === "gitCreateBranch" || op === "gitSwitchBranch") && typeof result === "object" && result !== null && "branch" in result && typeof result.branch === "string") setBranchTarget(result.branch);
+      if ((op === "gitCreateBranch" || op === "gitSwitchBranch" || op === "gitTrackRemoteBranch") && typeof result === "object" && result !== null && "branch" in result && typeof result.branch === "string") setBranchTarget(result.branch);
       setSuccess(message);
       if (op === "gitCommit") setCommitMessage("");
       if (op === "gitCreateBranch") setBranchName("");
@@ -116,6 +118,15 @@ export function GitPanel({ sessionId, connected, onClose, onOperation, onWorktre
               {status.branches.map((branch) => <option key={branch} value={branch}>{branch}{branch === status.branch ? " · текущая" : ""}</option>)}
             </select>
             <Button type="submit" variant="outline" className="min-h-10 shrink-0" disabled={!connected || !branchTarget || branchTarget === status.branch || Boolean(busyAction)}><GitBranch size={16} />{busyAction === "gitSwitchBranch" ? "Переключаю" : "Переключить"}</Button>
+          </form>}
+          {status.remoteBranches.length > 0 && <form className="mt-3 space-y-2" onSubmit={(event) => { event.preventDefault(); void mutate("gitTrackRemoteBranch", { remoteBranch: remoteBranchTarget }, "Удалённая ветка подключена"); }}>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <select aria-label="Удалённая ветка" className="min-h-10 min-w-0 flex-1 rounded-xl border border-border bg-background px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" value={remoteBranchTarget} onChange={(event) => setRemoteBranchTarget(event.target.value)}>
+                {status.remoteBranches.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+              </select>
+              <Button type="submit" variant="outline" className="min-h-10 shrink-0" disabled={!connected || !remoteBranchTarget || Boolean(busyAction)}><GitBranch size={16} />{busyAction === "gitTrackRemoteBranch" ? "Подключаю" : "Создать локальную ветку"}</Button>
+            </div>
+            <p className="text-[11px] leading-relaxed text-muted">Показаны уже загруженные на ноутбук ссылки. Телефон не выполняет fetch и не отправляет коммиты.</p>
           </form>}
           <div className="mt-5 flex flex-wrap gap-2">{diffScope && <Button variant="ghost" className="min-h-10 px-3" onClick={() => void loadDiff()}>Все файлы</Button>}<Button variant={view === "unstaged" ? "outline" : "ghost"} className="min-h-10 px-3" onClick={() => setView("unstaged")}>Рабочая папка</Button><Button variant={view === "staged" ? "outline" : "ghost"} className="min-h-10 px-3" onClick={() => setView("staged")}>Индекс</Button></div>
           <p className="mt-2 break-all text-[11px] text-muted">{diffScope ? `Diff: ${diffScope.previousPath ? `${diffScope.previousPath} → ` : ""}${diffScope.path}` : "Diff всех файлов"}</p>

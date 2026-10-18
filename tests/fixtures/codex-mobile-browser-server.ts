@@ -338,7 +338,7 @@ const agent = {
       return { path, sha256: createHash("sha256").update(fixtureFiles.get(path)!).digest("hex"), savedAt: Date.now() };
     }
     if (job.op === "gitStatus") return {
-      project: "codex-mobile", branch: fixtureBranch, branches: [...new Set([fixtureBranch, "main", "release/candidate"])], clean: false,
+      project: "codex-mobile", branch: fixtureBranch, branches: [...new Set([fixtureBranch, "main", "release/candidate"])], remoteBranches: ["origin/mobile/feature"], clean: false,
       changes: [
         ...(!fixtureStaged.has("src/main.ts") ? [{ code: "M", indexStatus: " ", worktreeStatus: "M", path: "src/main.ts" }] : []),
         ...(!fixtureNotesCommitted ? (!fixtureStaged.has("notes/review.md") ? [{ code: "??", indexStatus: "?", worktreeStatus: "?", path: "notes/review.md" }] : [{ code: "A", indexStatus: "A", worktreeStatus: " ", path: "notes/review.md" }]) : []),
@@ -390,6 +390,11 @@ const agent = {
       if (![fixtureBranch, "main", "release/candidate"].includes(branch)) throw new Error("Не удалось найти ветку в этом проекте");
       fixtureBranch = branch;
       return { branch: fixtureBranch };
+    }
+    if (job.op === "gitTrackRemoteBranch") {
+      if (args.remoteBranch !== "origin/mobile/feature") throw new Error("Удалённая ветка не найдена среди уже загруженных ссылок");
+      fixtureBranch = "mobile/feature";
+      return { branch: fixtureBranch, upstream: String(args.remoteBranch) };
     }
     if (job.op === "setModel") fixtureSettings.model = String(args.modelId);
     else if (job.op === "setMode") fixtureSettings.mode = String(args.modeId);
