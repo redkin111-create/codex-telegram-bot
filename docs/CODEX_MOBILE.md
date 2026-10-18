@@ -42,7 +42,7 @@ full Desktop replacement while any row below has open work.
 
 | Desktop area | Current mobile coverage | Remaining for parity |
 | --- | --- | --- |
-| Projects, sessions, history, live status and screenshots | Browse projects and sessions, read history, tool output and authorized screenshots; search the full selected-session rollout for message and optional tool-output matches, retaining the latest 100 results; reconnect the event stream; rename, archive, restore and fork sessions; permanently delete only an owned archived session through Codex app-server after a mobile confirmation, while blocking controlled sessions, active turns, queues and live project terminals and preserving the session when Codex refuses; native Codex search reaches older active or archived sessions with cursor paging and owner filtering; unfiltered active/archive lists continue in 100-session pages scoped to the selected project and owner; create, rename, delete and filter custom thread sections; move sessions into or out of sections; pin and unpin with Codex's built-in Pinned section through native `thread/section/move`; create an owner-scoped ephemeral side chat while a parent task runs, send a separate prompt and return to its parent; show it only while the shared Codex process is live and disable archive/pin/rename actions; stream the current turn plan, explanation and step status from Codex | Other live task details and remaining Desktop session actions |
+| Projects, sessions, history, live status and screenshots | Browse projects and sessions, read history, tool output and authorized screenshots; search the selected-session rollout and optional tool output in 100-result pages with a file-revision cursor (records over 16 MiB are reported as skipped); reconnect the event stream; rename, archive, restore and fork sessions; permanently delete only an owned archived session through Codex app-server after a mobile confirmation, while blocking controlled sessions, active turns, queues and live project terminals and preserving the session when Codex refuses; native Codex search reaches older active or archived sessions with cursor paging and owner filtering; unfiltered active/archive lists continue in 100-session pages scoped to the selected project and owner; create, rename, delete and filter custom thread sections; move sessions into or out of sections; pin and unpin with Codex's built-in Pinned section through native `thread/section/move`; create an owner-scoped ephemeral side chat while a parent task runs, send a separate prompt and return to its parent; show it only while the shared Codex process is live and disable archive/pin/rename actions; stream the current turn plan, explanation and step status from Codex | Other live task details and remaining Desktop session actions |
 | Prompting and queue | Send text/images and text/code/PDF/ZIP attachments (10 MiB per file, five files per prompt; PDF/ZIP signatures checked; text capped at 200,000 characters); remove pending uploads; stop, queue, resume and remove queued prompts; steer a confirmed active turn; edit/retry any of the 20 most recent idle text-only user turns through Codex's `thread/revert` and the shared runtime, preserving selected skills and rejecting a changed latest-turn snapshot; record or select audio and transcribe it through the already configured STT endpoint, placing the result in the draft without sending it | Editing requests that contain attachments and remaining turn controls; a history edit does not roll back files or commands |
 | Approvals | Owner-scoped phone cards for the active session; allow/deny choices are checked server-side; no phone response falls back to Telegram after 45 seconds | More approval cases and parity checks for supported Codex builds |
 | Files and edits | Browse the authorized session folder in pages of 250 entries, create text files and folders, rename files/folders within their current directory, delete files or folders after exact-name phone confirmation (up to 10,000 nested entries; symbolic links are removed without following them), read UTF-8 text, edit/save up to 512 KB with stale-file detection, download regular files up to 10 MiB as inert attachments with owner/path checks; safely preview PNG/JPEG/WebP/GIF up to 3 MiB after path, owner and file-signature checks; hides common secret folders/files, skips symlinks and blocks writes while the connected Codex session is busy; read unified diffs with line numbers and distinct added/removed lines; start Codex's native inline reviewer against uncommitted changes, a base branch, a commit or custom instructions, with a phone confirmation; render standard Codex `::code-comment{...}` findings as safe cards with priority, file, line range and Markdown body; open the reported file's current Git diff and highlight a matching changed/context line | Recursive folder deletion above 10,000 entries; downloads over 10 MiB; binary files cannot be previewed or edited in-app; findings outside the current staged/unstaged diff cannot be jumped to; adding/replying to inline comments (the app-server exposes no comment operation); Desktop-equivalent file-change navigation |
@@ -81,9 +81,11 @@ Requests with non-text input are rejected for editing rather than silently
 losing attachments.
 
 Full-history search scans the selected owned rollout as a stream, so old
-messages do not need to be loaded into the chat first. It returns the newest
-100 matches and includes tool output only when tool output is enabled. A single
-JSONL record larger than 16 MiB is skipped and reported in the search status.
+messages do not need to be loaded into the chat first. It returns matches in
+pages of 100 and uses a revision token to reject older-page requests if the
+rollout changed after the first page. Tool output is included only when enabled.
+A single JSONL record larger than 16 MiB is skipped and reported in the search
+status.
 
 ## Verification checkpoint (2026-10-18)
 
@@ -107,9 +109,9 @@ JSONL record larger than 16 MiB is skipped and reported in the search status.
   existing local branch, per-file diff, rename diff and return to all files were
   exercised against fake data.
 - Browser skill with Pixel 7 emulation at 412×915: search for `полный поиск`;
-  confirm the older fixture match appears even though it is absent from the
-  loaded transcript, then search for a missing phrase and verify the full
-  history empty state. The fixture used no Codex Desktop data.
+  confirm the first 100 of 101 older fixture matches appear, load the older
+  page and verify match `#000` appears, then search for a missing phrase and
+  verify the full-history empty state. The fixture used no Codex Desktop data.
 - Browser skill with Pixel 7 emulation at 412×915: create a fixture folder,
   create a nested file, rename the folder, verify a wrong confirmation name keeps
   deletion disabled, then enter its exact name and delete the folder. The

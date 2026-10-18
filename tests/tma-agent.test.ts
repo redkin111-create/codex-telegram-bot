@@ -388,7 +388,7 @@ test("mobile full-history search reads old conversation entries and enforces thr
     type:"response_item",timestamp:new Date(index+1).toISOString(),
     payload:{type:"message",role,content:[{type:role==="user"?"input_text":"output_text",text}]},
   });
-  writeFileSync(logPath,[makeMessage("user","Ancient phrase from the first day",0),...Array.from({length:60},(_,index)=>makeMessage(index%2?"assistant":"user",`Recent item ${index}`,index+1))].join("\n")+"\n");
+  writeFileSync(logPath,[makeMessage("user","Ancient phrase from the first day",0),...Array.from({length:125},(_,index)=>makeMessage("assistant",`Ancient phrase repeat ${index}`,index+1)),...Array.from({length:60},(_,index)=>makeMessage(index%2?"assistant":"user",`Recent item ${index}`,index+126))].join("\n")+"\n");
   const threads=[
     {id:ownedId,name:"Owned history",cwd:dir,source:"appServer",createdAt:1,updatedAt:2,recencyAt:2},
     {id:foreignId,name:"Foreign history",cwd:dir,source:"appServer",createdAt:1,updatedAt:1,recencyAt:1},
@@ -405,12 +405,21 @@ test("mobile full-history search reads old conversation entries and enforces thr
   const agent=new MiniAppAgent({cfg,acp,registry:{runtimeForSession:()=>undefined} as unknown as RuntimeRegistry});
   try{
     const result=await agent.executeMobile({op:"searchHistory",userId:101,args:{sessionId:ownedId,query:"ancient phrase"}}) as {
-      entries:Array<{role:string;text:string}>;total:number;skippedLargeRecords:number;
+      entries:Array<{role:string;text:string}>;total:number;skippedLargeRecords:number;startOffset:number;nextOffset?:number;revision:string;
     };
-    assert.equal(result.total,1);
-    assert.equal(result.entries[0]?.role,"user");
-    assert.equal(result.entries[0]?.text,"Ancient phrase from the first day");
+    assert.equal(result.total,126);
+    assert.equal(result.entries.length,100);
+    assert.equal(result.startOffset,26);
+    assert.equal(result.nextOffset,26);
     assert.equal(result.skippedLargeRecords,0);
+    const older=await agent.executeMobile({op:"searchHistory",userId:101,args:{sessionId:ownedId,query:"ancient phrase",beforeOffset:result.nextOffset,revision:result.revision}}) as typeof result;
+    assert.equal(older.entries.length,26);
+    assert.equal(older.startOffset,0);
+    assert.equal(older.nextOffset,undefined);
+    assert.equal(older.entries[0]?.role,"user");
+    assert.equal(older.entries[0]?.text,"Ancient phrase from the first day");
+    writeFileSync(logPath,readFileSync(logPath,"utf8")+makeMessage("assistant","Ancient phrase added later",999)+"\n");
+    await assert.rejects(agent.executeMobile({op:"searchHistory",userId:101,args:{sessionId:ownedId,query:"ancient phrase",beforeOffset:result.nextOffset,revision:result.revision}}),/история Codex изменилась/i);
     await assert.rejects(agent.executeMobile({op:"searchHistory",userId:101,args:{sessionId:foreignId,query:"private"}}),/Доступ к переписке запрещён/);
     await assert.rejects(agent.executeMobile({op:"searchHistory",userId:101,args:{sessionId:ownedId,query:"x"}}),/не меньше двух символов/);
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}

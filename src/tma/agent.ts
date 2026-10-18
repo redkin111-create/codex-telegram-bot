@@ -533,18 +533,25 @@ export class MiniAppAgent {
         const query=argumentString(args,"query",100).trim();
         if(query.length<2)throw new Error("Поисковый запрос должен содержать не меньше двух символов");
         const includeTools=args.includeTools===true;
+        const beforeOffset=args.beforeOffset;
+        const requestedRevision=args.revision;
+        if((beforeOffset===undefined)!==(requestedRevision===undefined))throw new Error("Неверная страница поиска по истории");
+        if(beforeOffset!==undefined&&(!Number.isSafeInteger(beforeOffset)||Number(beforeOffset)<0))throw new Error("Неверная страница поиска по истории");
+        if(requestedRevision!==undefined&&(typeof requestedRevision!=="string"||!/^[a-f0-9]{16}$/.test(requestedRevision)))throw new Error("Неверная страница поиска по истории");
         const path=this.store.jsonlPath(sessionId);
         const stat=statSyncSafe(path);
-        const cacheKey=chatId+":"+sessionId+":"+(includeTools?"tools":"chat")+":"+query.toLowerCase();
+        const revision=createHash("sha256").update(JSON.stringify([sessionId,query.toLowerCase(),includeTools,stat.size,stat.mtimeMs])).digest("hex").slice(0,16);
+        if(requestedRevision!==undefined&&requestedRevision!==revision)throw new Error("История Codex изменилась. Повторите поиск.");
+        const cacheKey=chatId+":"+sessionId+":"+(includeTools?"tools":"chat")+":"+query.toLowerCase()+":"+revision+":"+(beforeOffset??"latest");
         const cached=this.historySearchCache.get(cacheKey);
         if(cached&&cached.size===stat.size&&cached.mtimeMs===stat.mtimeMs)return cached.result;
-        const result=await searchConversationHistoryAsync(path,query,includeTools,100);
+        const result=await searchConversationHistoryAsync(path,query,includeTools,100,beforeOffset as number|undefined);
         const after=statSyncSafe(path);
-        if(after.size===stat.size&&after.mtimeMs===stat.mtimeMs){
-          this.historySearchCache.set(cacheKey,{...stat,result});
-          if(this.historySearchCache.size>10)this.historySearchCache.delete(this.historySearchCache.keys().next().value!);
-        }
-        return result;
+        if(after.size!==stat.size||after.mtimeMs!==stat.mtimeMs)throw new Error("История Codex изменилась. Повторите поиск.");
+        const response={...result,revision};
+        this.historySearchCache.set(cacheKey,{...stat,result:response});
+        if(this.historySearchCache.size>10)this.historySearchCache.delete(this.historySearchCache.keys().next().value!);
+        return response;
       }
       case "latestEditableTurn":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");

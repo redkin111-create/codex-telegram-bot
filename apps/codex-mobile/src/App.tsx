@@ -644,7 +644,7 @@ export default function App() {
         onCreateSideChat={() => void createSideChat()} sideChatting={sideChatting} onReturnToParent={() => void returnToParent()}
         onCompact={compactSession} compacting={compacting} onSend={send}
         onLoadSkills={loadMobileSkills}
-        onSearchHistory={(query) => operation<MobileHistorySearch>("searchHistory", { sessionId: selectedId, query, includeTools })}
+        onSearchHistory={(query, beforeOffset, revision) => operation<MobileHistorySearch>("searchHistory", { sessionId: selectedId, query, includeTools, ...(beforeOffset === undefined ? {} : { beforeOffset, revision }) })}
         onLoadEditableTurns={loadEditableTurns} onEditAndRetry={editAndRetry} onTranscribeAudio={transcribeVoice} onLoadRealtimeVoices={loadRealtimeVoices}
         onStartRealtime={startRealtime} onStopRealtime={stopRealtime}
         onUploadAttachment={(sessionId, file) => uploadAttachment(sessionId, file, csrf)}

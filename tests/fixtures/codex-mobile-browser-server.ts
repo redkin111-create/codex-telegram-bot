@@ -267,9 +267,12 @@ const agent = {
     if (job.op === "searchHistory") {
       if (job.userId !== ownerId || !sessions.some((session) => session.id === sessionId)) throw new Error("Доступ к сеансу запрещён");
       const query = typeof args.query === "string" ? args.query.trim().toLowerCase() : "";
-      const oldEntry = { role: "assistant" as const, text: "Найдено в старой части истории: полный поиск работает", timestamp: Date.now() - 86_400_000 };
-      const entries = oldEntry.text.toLowerCase().includes(query) ? [oldEntry] : [];
-      return { entries, total: entries.length, skippedLargeRecords: 0 };
+      const matches = Array.from({ length: 101 }, (_, index) => ({ role: "assistant" as const, text: `Найдено в старой части истории: полный поиск fixture #${String(index).padStart(3, "0")}`, timestamp: Date.now() - 86_400_000 + index }));
+      const allMatches = matches[0]!.text.toLowerCase().includes(query) ? matches : [];
+      const beforeOffset = typeof args.beforeOffset === "number" ? args.beforeOffset : undefined;
+      const entries = beforeOffset === 1 ? allMatches.slice(0, 1) : allMatches.slice(-100);
+      const startOffset = beforeOffset === 1 ? 0 : Math.max(allMatches.length - entries.length, 0);
+      return { entries, total: allMatches.length, skippedLargeRecords: 0, startOffset, ...(startOffset > 0 ? { nextOffset: startOffset } : {}), revision: "0123456789abcdef" };
     }
     if (job.op === "listThreadSections") return fixtureSections.map((section) => ({ ...section }));
     if (job.op === "createThreadSection") {

@@ -185,25 +185,33 @@ export interface ConversationHistorySearch {
   entries: HistoryEntry[];
   total: number;
   skippedLargeRecords: number;
+  startOffset: number;
+  nextOffset?: number;
 }
 
 const MAX_SEARCH_RECORD_BYTES = 16 * 1024 * 1024;
 const MAX_SEARCH_RESULT_CHARS = 8_000;
 
-/** Search the complete rollout without retaining it in memory. Results are the
- * most recent matches; one malformed or unusually large record cannot grow
- * the search buffer without bound. */
+/** Search the complete rollout without retaining it in memory. The first page
+ * contains the most recent matches; beforeOffset pages older matches. One
+ * malformed or unusually large record cannot grow the search buffer without
+ * bound. */
 export async function searchConversationHistoryAsync(
   jsonlPath: string,
   query: string,
   includeToolOutputs = false,
   maxResults = 100,
+  beforeOffset?: number,
 ): Promise<ConversationHistorySearch> {
   const needle = query.trim().toLowerCase();
   if (needle.length < 2 || needle.length > 100) throw new Error("Поисковый запрос должен содержать от 2 до 100 символов");
   if (!Number.isSafeInteger(maxResults) || maxResults < 1 || maxResults > 200) throw new Error("Неверный размер страницы поиска");
+  if (beforeOffset !== undefined && (!Number.isSafeInteger(beforeOffset) || beforeOffset < 0)) throw new Error("Неверное смещение страницы поиска");
   const size = jsonlSize(jsonlPath);
-  if (!size) return { entries: [], total: 0, skippedLargeRecords: 0 };
+  if (!size) {
+    if (beforeOffset) throw new Error("История Codex изменилась. Повторите поиск.");
+    return { entries: [], total: 0, skippedLargeRecords: 0, startOffset: 0 };
+  }
 
   const input = createReadStream(jsonlPath, { start: 0, end: size - 1, highWaterMark: 64 * 1024 });
   const matches: HistoryEntry[] = [];
@@ -212,6 +220,7 @@ export async function searchConversationHistoryAsync(
   let skippedLargeRecords = 0;
   let pending = Buffer.alloc(0);
   let discardingLargeRecord = false;
+  const pageStart = beforeOffset === undefined ? 0 : Math.max(beforeOffset - maxResults, 0);
 
   const inspectLine = (bytes: Buffer) => {
     if (bytes.length > MAX_SEARCH_RECORD_BYTES) { skippedLargeRecords++; return; }
@@ -227,12 +236,16 @@ export async function searchConversationHistoryAsync(
     const entry = toolOutput ?? parseEventLine(line);
     if (!entry || (entry.role !== "user" && entry.role !== "assistant" && !(includeToolOutputs && entry.role === "tool"))) return;
     if (!entry.text.toLowerCase().includes(needle)) return;
-    total++;
+    const matchOffset = total++;
     const text = entry.text.length <= MAX_SEARCH_RESULT_CHARS
       ? entry.text
       : searchExcerpt(entry.text, needle, MAX_SEARCH_RESULT_CHARS);
-    matches.push({ ...entry, text });
-    if (matches.length > maxResults) matches.shift();
+    if (beforeOffset === undefined) {
+      matches.push({ ...entry, text });
+      if (matches.length > maxResults) matches.shift();
+    } else if (matchOffset >= pageStart && matchOffset < beforeOffset) {
+      matches.push({ ...entry, text });
+    }
   };
 
   try {
@@ -258,7 +271,15 @@ export async function searchConversationHistoryAsync(
       }
     }
     if (pending.length && !discardingLargeRecord) inspectLine(pending);
-    return { entries: matches, total, skippedLargeRecords };
+    if (beforeOffset !== undefined && beforeOffset > total) throw new Error("История Codex изменилась. Повторите поиск.");
+    const startOffset = beforeOffset === undefined ? Math.max(total - matches.length, 0) : pageStart;
+    return {
+      entries: matches,
+      total,
+      skippedLargeRecords,
+      startOffset,
+      ...(startOffset > 0 ? { nextOffset: startOffset } : {}),
+    };
   } finally {
     input.destroy();
   }

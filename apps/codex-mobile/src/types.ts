@@ -93,6 +93,9 @@ export interface MobileHistorySearch {
   entries: HistoryEntry[];
   total: number;
   skippedLargeRecords: number;
+  startOffset: number;
+  nextOffset?: number;
+  revision: string;
 }
 
 export interface MobileActivity {

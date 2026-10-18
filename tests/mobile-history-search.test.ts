@@ -27,7 +27,7 @@ test("full history search finds messages older than the conversation window", as
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test("full history search includes tool output only when requested and bounds recent matches", async () => {
+test("full history search includes tool output only when requested and pages all matches", async () => {
   const dir = await mkdtemp(join(tmpdir(), "codex-history-search-tools-"));
   const path = join(dir, "rollout.jsonl");
   const lines = [
@@ -41,11 +41,25 @@ test("full history search includes tool output only when requested and bounds re
     const withTools = await searchConversationHistoryAsync(path, "private needle", true);
     assert.equal(withTools.total, 1);
     assert.equal(withTools.entries[0]?.role, "tool");
-    const bounded = await searchConversationHistoryAsync(path, "needle", false, 20);
-    assert.equal(bounded.total, 205);
-    assert.equal(bounded.entries.length, 20);
-    assert.equal(bounded.entries[0]?.text, "Needle result 185");
-    assert.equal(bounded.entries.at(-1)?.text, "Needle result 204");
+    const latest = await searchConversationHistoryAsync(path, "needle", false, 100);
+    assert.equal(latest.total, 205);
+    assert.equal(latest.entries.length, 100);
+    assert.equal(latest.entries[0]?.text, "Needle result 105");
+    assert.equal(latest.entries.at(-1)?.text, "Needle result 204");
+    assert.equal(latest.startOffset, 105);
+    assert.equal(latest.nextOffset, 105);
+    const middle = await searchConversationHistoryAsync(path, "needle", false, 100, latest.nextOffset);
+    assert.equal(middle.entries[0]?.text, "Needle result 5");
+    assert.equal(middle.entries.at(-1)?.text, "Needle result 104");
+    assert.equal(middle.startOffset, 5);
+    assert.equal(middle.nextOffset, 5);
+    const oldest = await searchConversationHistoryAsync(path, "needle", false, 100, middle.nextOffset);
+    assert.equal(oldest.entries.length, 5);
+    assert.equal(oldest.entries[0]?.text, "Needle result 0");
+    assert.equal(oldest.entries.at(-1)?.text, "Needle result 4");
+    assert.equal(oldest.startOffset, 0);
+    assert.equal(oldest.nextOffset, undefined);
+    await assert.rejects(searchConversationHistoryAsync(path, "needle", false, 100, 206), /история Codex изменилась/i);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

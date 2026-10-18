@@ -53,7 +53,7 @@ export function Conversation({
   onUploadAttachment: (sessionId: string, file: File) => Promise<MobileAttachment>;
   onRemoveAttachment: (sessionId: string, id: string) => Promise<{ removed: boolean }>;
   onOpenReviewLocation: (location: { path: string; line?: number }) => void;
-  onSearchHistory: (query: string) => Promise<MobileHistorySearch>;
+  onSearchHistory: (query: string, beforeOffset?: number, revision?: string) => Promise<MobileHistorySearch>;
 }) {
   const activeSessionId = useRef(session?.id);
   activeSessionId.current = session?.id;
@@ -142,6 +142,30 @@ export function Conversation({
     } catch (cause) {
       if (request === fullHistoryRequest.current && activeSessionId.current === targetSessionId) {
         setFullHistoryError(cause instanceof Error ? cause.message : "Не удалось проверить всю историю");
+      }
+    } finally {
+      if (request === fullHistoryRequest.current && activeSessionId.current === targetSessionId) setFullHistoryLoading(false);
+    }
+  }
+
+  async function loadOlderHistoryMatches() {
+    const current = fullHistoryResults;
+    const query = fullHistoryQuery;
+    if (!current?.nextOffset || fullHistoryLoading || !query) return;
+    const request = fullHistoryRequest.current;
+    const targetSessionId = activeSessionId.current;
+    setFullHistoryLoading(true);
+    setFullHistoryError("");
+    try {
+      const older = await onSearchHistory(query, current.nextOffset, current.revision);
+      if (request !== fullHistoryRequest.current || activeSessionId.current !== targetSessionId || historySearch.trim() !== query) return;
+      setFullHistoryResults((latest) => {
+        if (!latest || latest.revision !== current.revision || latest.nextOffset !== current.nextOffset) return latest;
+        return { ...older, entries: [...older.entries, ...latest.entries] };
+      });
+    } catch (cause) {
+      if (request === fullHistoryRequest.current && activeSessionId.current === targetSessionId) {
+        setFullHistoryError(cause instanceof Error ? cause.message : "Не удалось загрузить старые совпадения");
       }
     } finally {
       if (request === fullHistoryRequest.current && activeSessionId.current === targetSessionId) setFullHistoryLoading(false);
@@ -367,7 +391,7 @@ export function Conversation({
       </section>}
       {historySearchOpen && <div className="mx-auto mt-3 w-full max-w-4xl" role="search" aria-label="Поиск по всей истории сеанса">
         <form className="flex items-center gap-2" onSubmit={(event) => void searchFullHistory(event)}>
-          <label className="relative min-w-0 flex-1"><Search size={15} className="pointer-events-none absolute left-3 top-3.5 text-muted" /><Input value={historySearch} onChange={(event) => { setHistorySearch(event.target.value); setFullHistoryError(""); }} placeholder="Найти текст во всём сеансе" aria-label="Поиск по всей истории сеанса" className="pl-9" /></label>
+          <label className="relative min-w-0 flex-1"><Search size={15} className="pointer-events-none absolute left-3 top-3.5 text-muted" /><Input value={historySearch} onChange={(event) => { fullHistoryRequest.current++; setFullHistoryLoading(false); setFullHistoryResults(undefined); setFullHistoryQuery(""); setHistorySearch(event.target.value); setFullHistoryError(""); }} placeholder="Найти текст во всём сеансе" aria-label="Поиск по всей истории сеанса" className="pl-9" /></label>
           <Button type="submit" variant="outline" className="min-h-10 shrink-0 px-3 text-xs" aria-label="Найти во всей истории" disabled={historySearch.trim().length < 2 || fullHistoryLoading}>
             {fullHistoryLoading ? <LoaderCircle size={14} className="animate-spin" /> : <Search size={14} />}{fullHistoryLoading ? "Ищу…" : "Искать всё"}
           </Button>
@@ -375,9 +399,13 @@ export function Conversation({
         </form>
         <p className="mt-1 text-[11px] text-muted" role="status" aria-live="polite">
           {fullHistoryError ? fullHistoryError : usesFullHistory
-            ? `По всему сеансу найдено: ${fullHistoryResults?.total ?? 0}${(fullHistoryResults?.total ?? 0) > (fullHistoryResults?.entries.length ?? 0) ? ` · показаны последние ${fullHistoryResults?.entries.length}` : ""}${fullHistoryResults?.skippedLargeRecords ? ` · пропущено крупных записей: ${fullHistoryResults.skippedLargeRecords}` : ""}`
+            ? `По всему сеансу найдено: ${fullHistoryResults?.total ?? 0} · загружено: ${fullHistoryResults?.entries.length ?? 0}${fullHistoryResults?.skippedLargeRecords ? ` · пропущено крупных записей: ${fullHistoryResults.skippedLargeRecords}` : ""}`
             : historySearch.trim() ? `Совпадений в загруженной части: ${visibleHistory.length}` : `Загружено сообщений: ${history.length}`}
         </p>
+        {usesFullHistory && fullHistoryResults?.nextOffset !== undefined && <Button type="button" variant="outline" className="mt-2 min-h-10 px-3 text-xs" onClick={() => void loadOlderHistoryMatches()} disabled={fullHistoryLoading}>
+          {fullHistoryLoading ? <LoaderCircle size={14} className="animate-spin" /> : <Search size={14} />}
+          {fullHistoryLoading ? "Загружаю…" : `Показать старые совпадения (ещё ${fullHistoryResults.nextOffset})`}
+        </Button>}
       </div>}
       <p className="sr-only" role="status">{streamConnected ? "Поток Codex подключён" : "Поток Codex переподключается"}</p>
     </header>
