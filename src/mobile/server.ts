@@ -152,6 +152,16 @@ function allowedOrigin(req: IncomingMessage, server: Server, configured: Set<str
   return !!address && typeof address !== "string" && raw === `http://127.0.0.1:${address.port}`;
 }
 
+function loopbackOrigin(req: IncomingMessage): boolean {
+  const raw = req.headers.origin;
+  if (typeof raw !== "string") return false;
+  try {
+    const origin = new URL(raw);
+    const hostname = origin.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return origin.origin === raw && ["127.0.0.1", "localhost", "::1"].includes(hostname);
+  } catch { return false; }
+}
+
 function sessionDevice(req: IncomingMessage, auth: MobileAuthStore) {
   return auth.authenticate(cookie(req, SESSION_COOKIE));
 }
@@ -616,6 +626,10 @@ export function createMobileServer(options: MobileServerOptions): Server {
       const args = { ...(body.args as Record<string, unknown>) };
       if (typeof args.sessionId === "string" && !await options.agent.canReadSession(args.sessionId, device.ownerId)) {
         json(res, 403, { error: "Доступ к сеансу запрещён" }); return;
+      }
+      if (body.op === "mcpOAuthLogin" && !loopbackOrigin(req)) {
+        json(res, 409, { error: "Вход в MCP через OAuth пока можно завершить только в браузере на ноутбуке: callback Codex не может безопасно вернуться на телефон" });
+        return;
       }
       let promptAttachments: MobilePromptAttachment[] = [];
       let attachmentIds: string[] = [];

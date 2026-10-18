@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { createServer } from "node:http";
 import test from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -123,7 +124,7 @@ async function startFixture(extensions: Record<string, unknown> = {}) {
   };
   Object.assign(options, extensions);
   const server = createMobileServer(options);
-  server.listen(0, "127.0.0.1");
+  server.listen(options.port, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
   assert.ok(address && typeof address !== "string");
@@ -811,6 +812,34 @@ test("MCP OAuth requests require the paired device, same Origin, CSRF and an own
     const accepted = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body() });
     assert.equal(accepted.status, 200);
     assert.equal(f.calls.at(-1)?.op, "mcpOAuthLogin");
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("MCP OAuth is refused for an allowed remote Origin because its callback only reaches the laptop", async () => {
+  const reservation = createServer();
+  reservation.listen(0, "127.0.0.1");
+  await once(reservation, "listening");
+  const address = reservation.address();
+  assert.ok(address && typeof address !== "string");
+  const port = address.port;
+  reservation.close();
+  await once(reservation, "close");
+
+  const remoteOrigin = `http://phone.localhost:${port}`;
+  const f = await startFixture({ port, allowedOrigins: [remoteOrigin] });
+  try {
+    const login = await pair(f.origin, f.auth);
+    const response = await fetch(f.origin + "/api/operations", {
+      method: "POST",
+      headers: {
+        origin: remoteOrigin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ op: "mcpOAuthLogin", args: { sessionId: allowedSession, name: "fixture-mcp" } }),
+    });
+    assert.equal(response.status, 409);
+    assert.match((await response.json() as { error: string }).error, /телефон|ноутбук/i);
+    assert.equal(f.calls.filter((call) => call.op === "mcpOAuthLogin").length, 0);
   } finally { await cleanup(f.server, f.dataDir); }
 });
 

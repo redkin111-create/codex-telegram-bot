@@ -72,6 +72,21 @@ class FixtureFeed {
 }
 
 const instanceDir = await mkdtemp(join(tmpdir(), "codex-mobile-browser-"));
+const fixtureHost = process.env.CODEX_MOBILE_FIXTURE_HOST ?? "127.0.0.1";
+if (fixtureHost !== "127.0.0.1" && fixtureHost !== "phone.localhost") {
+  throw new Error("Browser fixture host must be a loopback address");
+}
+async function reserveLoopbackPort(): Promise<number> {
+  const probe = createServer();
+  probe.listen(0, "127.0.0.1");
+  await once(probe, "listening");
+  const address = probe.address();
+  if (!address || typeof address === "string") throw new Error("Не удалось выбрать порт тестового HTTP сервера");
+  const port = address.port;
+  probe.close();
+  await once(probe, "close");
+  return port;
+}
 const dataDir = join(instanceDir, "data");
 const auth = new MobileAuthStore(dataDir, { allowedOwners: new Set([String(ownerId)]) });
 const feed = new FixtureFeed();
@@ -1014,12 +1029,15 @@ const mobileAccounts = {
     return { snapshot: await this.snapshot(userId), message: "Тестовый аккаунт обновлён" };
   },
 };
+const requestedPort = fixtureHost === "phone.localhost" ? await reserveLoopbackPort() : 0;
+const mobileOrigin = `http://${fixtureHost}:`;
 const server: Server = createMobileServer({
   auth, agent, accounts: mobileAccounts as never, feed: feed as unknown as TmaLiveFeed, approvals: mobileApprovals,
   elicitations: mobileElicitations, dataDir,
-  staticRoot: resolve("apps/codex-mobile/dist"), port: 0,
+  staticRoot: resolve("apps/codex-mobile/dist"), port: requestedPort,
+  ...(fixtureHost === "phone.localhost" ? { allowedOrigins: [`${mobileOrigin}${requestedPort}`] } : {}),
 });
-server.listen(0, "127.0.0.1");
+server.listen(requestedPort, "127.0.0.1");
 await once(server, "listening");
 const address = server.address();
 if (!address || typeof address === "string") throw new Error("Не удалось открыть тестовый HTTP сервер");
@@ -1034,7 +1052,7 @@ if (!browserLogin || browserLogin.status !== "approved") throw new Error("Не �
 const browserBootstrap: Server = createServer((_req, res) => {
   res.statusCode = 302;
   res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Location", "http://127.0.0.1:" + port + "/");
+  res.setHeader("Location", `${mobileOrigin}${port}/`);
   res.setHeader("Set-Cookie", [
     `__Host-codex-mobile-session=${browserLogin.cookieValue}; Path=/; Secure; HttpOnly; SameSite=Strict`,
     `__Host-codex-mobile-csrf=${browserLogin.csrfToken}; Path=/; Secure; SameSite=Strict`,
@@ -1046,8 +1064,8 @@ await once(browserBootstrap, "listening");
 const bootstrapAddress = browserBootstrap.address();
 if (!bootstrapAddress || typeof bootstrapAddress === "string") throw new Error("Не удалось открыть тестовый bootstrap");
 process.stdout.write(JSON.stringify({
-  origin: "http://127.0.0.1:" + port,
-  bootstrapOrigin: "http://127.0.0.1:" + bootstrapAddress.port,
+  origin: mobileOrigin + port,
+  bootstrapOrigin: mobileOrigin + bootstrapAddress.port,
   port,
   instanceDir,
   dataDir,
