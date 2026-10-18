@@ -964,11 +964,12 @@ process.stdin.on("data", (chunk: string) => {
   for (const line of lines) {
     try {
       const command = JSON.parse(line) as { command?: string };
-      if (command.command === "approval") {
+      if (command.command === "approval" || command.command === "approvalNoSession") {
         void mobileApprovals.handle({
           sessionId: firstSession,
           toolCall: { title: "git status", kind: "execute" },
           options: [{ optionId: "accept", name: "Разрешить один раз" }, { optionId: "decline", name: "Отклонить" }],
+          ...(command.command === "approval" ? { mobileOptions: [{ optionId: "codex-mobile-session-allow", name: "Разрешить для сеанса" }] } : {}),
           reason: "Нужен доступ для выполнения команды проверки.",
         }).then((result) => process.stdout.write(JSON.stringify({ fixtureApprovalResult: result }) + "\n"));
       } else if (command.command === "backgroundTerminalsError") {

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { Api } from "grammy";
 import type { AcpClient } from "../src/acp/client.js";
 import type { SessionUpdate, RequestPermissionParams } from "../src/acp/types.js";
-import { decidePermissionsApproval, describeRequestedPermissions } from "../src/acp/approvals.js";
+import { decideApproval, decidePermissionsApproval, describeRequestedPermissions } from "../src/acp/approvals.js";
 import { loadConfig, type AppConfig } from "../src/config.js";
 import { showHistory } from "../src/bot/handlers/history.js";
 import { PermissionService } from "../src/bot/permission-service.js";
@@ -247,6 +247,43 @@ test("Codex permission approval grants only the requested profile for the curren
   assert.equal(prompt?.reason, "Создать отчёт");
   assert.equal(prompt?.options[0]?.name, "Разрешить один раз");
   assert.deepEqual(response, { permissions: requested, scope: "turn", strictAutoReview: false });
+});
+
+test("session-scoped mobile approval follows Codex availability without changing Telegram choices", async () => {
+  const captured: RequestPermissionParams[] = [];
+  const decide = (method: string, params: Record<string, unknown>, optionId: string) => decideApproval(
+    method, params, false, async (request) => {
+      captured.push(request);
+      return { outcome: { outcome: "selected", optionId } };
+    },
+  );
+
+  const advertised = await decide("item/commandExecution/requestApproval", {
+    threadId: "thread-1", itemId: "item-1", command: "git push",
+    availableDecisions: ["accept", "acceptForSession", "decline"],
+  }, "codex-mobile-session-allow");
+  assert.equal(advertised, "acceptForSession");
+  assert.deepEqual(captured[0]?.options.map((option) => option.optionId), ["accept", "decline"]);
+  assert.deepEqual(captured[0]?.mobileOptions?.map((option) => option.optionId), ["codex-mobile-session-allow"]);
+
+  const unavailable = await decide("item/commandExecution/requestApproval", {
+    threadId: "thread-1", itemId: "item-2", command: "npm test",
+    availableDecisions: ["accept", "cancel"], networkApprovalContext: { host: "example.com" },
+  }, "accept");
+  assert.equal(unavailable, "accept");
+  assert.equal(captured[1]?.mobileOptions, undefined, "an explicit server choice list wins over legacy hints");
+
+  const legacyNetwork = await decide("item/commandExecution/requestApproval", {
+    threadId: "thread-1", itemId: "item-3", command: "npm install",
+    networkApprovalContext: { host: "registry.example.com" },
+  }, "codex-mobile-session-allow");
+  assert.equal(legacyNetwork, "acceptForSession");
+
+  const legacyFile = await decide("item/fileChange/requestApproval", {
+    threadId: "thread-1", itemId: "item-4", grantRoot: "C:\\fixture\\project",
+    changes: [{ path: "src/main.ts" }],
+  }, "codex-mobile-session-allow");
+  assert.equal(legacyFile, "acceptForSession");
 });
 
 test("Codex permission approval denies on reject, missing handler, and unknown scope", async () => {

@@ -50,13 +50,28 @@ test("mobile command approval offers a separate session-scoped allow choice", as
     sessionId,
     toolCall: { toolCallId: "approval-command", title: "npm test", kind: "execute" },
     options: [{ optionId: "accept", name: "Разрешить один раз" }, { optionId: "decline", name: "Отклонить" }],
+    mobileOptions: [{ optionId: "codex-mobile-session-allow", name: "Разрешить для сеанса" }],
   };
   const waiting = broker.handle(commandRequest);
   const approval = broker.listFor(101, sessionId)[0]!;
-  assert.deepEqual(approval.options.map((option) => option.id), ["accept", "acceptForSession", "decline"]);
+  assert.deepEqual(approval.options.map((option) => option.id), ["accept", "codex-mobile-session-allow", "decline"]);
   assert.equal(approval.options[1]?.label, "Разрешить для сеанса");
-  assert.equal(broker.resolve(101, sessionId, approval.id, "acceptForSession"), true);
-  assert.deepEqual(await waiting, { outcome: { outcome: "selected", optionId: "acceptForSession" } });
+  assert.equal(broker.resolve(101, sessionId, approval.id, "codex-mobile-session-allow"), true);
+  assert.deepEqual(await waiting, { outcome: { outcome: "selected", optionId: "codex-mobile-session-allow" } });
+});
+
+test("mobile approval broker never invents a session grant missing from Codex choices", async () => {
+  const f = fixture();
+  const broker = new MobileApprovalBroker(f.feed, f.registry, new Set(["101"]), undefined, 1000);
+  const waiting = broker.handle({
+    sessionId,
+    toolCall: { title: "npm test", kind: "execute" },
+    options: [{ optionId: "accept", name: "Разрешить один раз" }, { optionId: "decline", name: "Отклонить" }],
+  });
+  const approval = broker.listFor(101, sessionId)[0]!;
+  assert.deepEqual(approval.options.map((option) => option.id), ["accept", "decline"]);
+  assert.equal(broker.resolve(101, sessionId, approval.id, "decline"), true);
+  assert.deepEqual(await waiting, { outcome: { outcome: "selected", optionId: "decline" } });
 });
 
 test("requests without an active phone viewer retain the existing Telegram fallback", async () => {

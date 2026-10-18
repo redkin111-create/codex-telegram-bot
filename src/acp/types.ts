@@ -103,6 +103,8 @@ export interface RequestPermissionParams {
   sessionId: string;
   toolCall?: { toolCallId?: string; title?: string; kind?: string; rawInput?: Record<string, unknown> };
   options: Array<{ optionId: string; name: string; kind?: string }>;
+  /** Extra choices shown only by the mobile approval UI. */
+  mobileOptions?: Array<{ optionId: string; name: string; kind?: string }>;
   /** Exact Codex permission profile for item/permissions/requestApproval. */
   permissions?: Record<string, unknown>;
   reason?: string;

@@ -133,6 +133,9 @@ export async function decideApproval(
   }
   const isFile = method.includes("fileChange");
   const cmd = Array.isArray(params.command) ? (params.command as string[]).join(" ") : String(params.command ?? "");
+  const mobileOptions = canOfferSessionScopedChoice(method, params)
+    ? [{ optionId: "codex-mobile-session-allow", name: "Разрешить для сеанса" }]
+    : undefined;
   const req: RequestPermissionParams = {
     sessionId: String(params.threadId ?? ""),
     toolCall: {
@@ -145,13 +148,23 @@ export async function decideApproval(
       { optionId: "accept", name: "Allow once", kind: "allow_once" },
       { optionId: "decline", name: "Deny", kind: "reject_once" },
     ],
+    ...(mobileOptions ? { mobileOptions } : {}),
   };
   try {
     const outcome = await handler(req);
-    return outcome.outcome.outcome === "selected" ? outcome.outcome.optionId : "cancel";
+    if (outcome.outcome.outcome !== "selected") return "cancel";
+    return outcome.outcome.optionId === "codex-mobile-session-allow" ? "acceptForSession" : outcome.outcome.optionId;
   } catch {
     return "decline";
   }
+}
+
+function canOfferSessionScopedChoice(method: string, params: Record<string, unknown>): boolean {
+  const available = params.availableDecisions;
+  if (Array.isArray(available)) return available.some((decision) => decision === "acceptForSession");
+  if (available !== undefined && available !== null) return false;
+  if (method.includes("fileChange")) return typeof params.grantRoot === "string" && params.grantRoot.trim().length > 0;
+  return method.includes("commandExecution") && asRecord(params.networkApprovalContext) !== undefined;
 }
 
 function firstChangePath(params: Record<string, unknown>): string {
