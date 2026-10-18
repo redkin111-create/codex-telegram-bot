@@ -23,6 +23,14 @@ const olderArchivedFixtureSession = "77777777-7777-4777-8777-777777777777";
 const projectOne = "C:\\fixture\\codex-mobile";
 const projectTwo = "C:\\fixture\\other-project";
 const screenshotPath = "C:\\fixture\\codex-mobile\\screenshots\\sample.png";
+const fixtureScreenshots = [
+  { path: screenshotPath, name: "sample.png", mtimeMs: 1, size: 68 },
+  ...Array.from({ length: 29 }, (_, index) => {
+    const n = index + 2;
+    const name = `capture-${String(n).padStart(2, "0")}.png`;
+    return { path: `C:\\fixture\\codex-mobile\\screenshots\\${name}`, name, mtimeMs: n, size: 68 };
+  }),
+];
 const fixturePinnedSection = { id: "01984de2-8f74-7c91-a3b2-5c5e937cf318", name: "Закреплённые", builtIn: true };
 const fixtureSectionsAvailable = process.env.CODEX_MOBILE_FIXTURE_SECTIONS_UNAVAILABLE !== "1";
 const fixtureCompactionUnconfirmed = process.env.CODEX_MOBILE_FIXTURE_COMPACTION_UNCONFIRMED === "1";
@@ -113,6 +121,7 @@ let fixtureMcpAuthorized = false;
 const fixtureCapabilitiesFailOnCall = Number.parseInt(process.env.CODEX_MOBILE_FIXTURE_CAPABILITIES_FAIL_ON_CALL ?? "0", 10);
 let fixtureCapabilitiesCalls = 0;
 const fixtureSkills = [
+  { name: "browser-skill", description: "Тестовый навык управления браузером. Эта запись не подключает и не запускает реальный браузерный сценарий.", enabled: true, scope: "user" as const, canToggle: true, invokable: true },
   { name: "fixture-review", description: "Навык для проверки. <script>alert(1)</script> остаётся текстом.", enabled: true, scope: "user" as const, canToggle: true, invokable: true },
   { name: "disabled-helper", description: "Отключённый навык.", enabled: false, scope: "repo" as const, canToggle: true, invokable: false },
   { name: "managed-skill", description: "Управляется политикой.", enabled: true, scope: "admin" as const, canToggle: false, invokable: true },
@@ -198,11 +207,11 @@ const agent = {
     const sessionId = typeof args.sessionId === "string" ? args.sessionId : "";
     if (job.op === "history") {
       const entries = history.get(sessionId) ?? [];
-      return { entries: entries.filter((entry) => args.includeTools === true || entry.role !== "tool"), images: sessionId === firstSession ? [{ path: screenshotPath, name: "sample.png", mtimeMs: 1, size: 68 }] : [], project: projectOne };
+      return { entries: entries.filter((entry) => args.includeTools === true || entry.role !== "tool"), images: sessionId === firstSession ? fixtureScreenshots : [], project: projectOne };
     }
     if (job.op === "activity") {
       return { busy: controlled.get(sessionId)?.busy ?? false, queue: controlled.get(sessionId)?.queue.length ?? 0,
-        images: sessionId === firstSession ? [{ path: screenshotPath, name: "sample.png", mtimeMs: 1, size: 68 }] : [] };
+        images: sessionId === firstSession ? fixtureScreenshots : [] };
     }
     if (job.op === "image") {
       return { mime: "image/png", name: "Тестовый скриншот Codex.png",

@@ -91,3 +91,24 @@ test("incremental index returns successive screenshots without requiring final a
     }
   }finally{rmSync(dir,{recursive:true,force:true});}
 });
+
+test("screenshot index returns every tracked image when a session has more than one screenful",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"tma-many-screens-"));
+  try{
+    const cwd=join(dir,"toy");
+    mkdirSync(cwd);
+    const file=join(dir,"rollout.jsonl");
+    const lines:string[]=[];
+    for(let n=1;n<=30;n++){
+      const path=join(cwd,`capture-${String(n).padStart(2,"0")}.png`);
+      writeFileSync(path,screenshot);
+      lines.push(record(path));
+    }
+    writeFileSync(file,lines.join(""));
+    const index=new TmaScreenshotIndex();
+    const images=await index.scan(sid,file,cwd);
+    assert.equal(images.length,30);
+    assert.equal(images[0]?.name,"capture-01.png");
+    assert.equal(images.at(-1)?.name,"capture-30.png");
+  }finally{rmSync(dir,{recursive:true,force:true});}
+});

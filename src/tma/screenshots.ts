@@ -20,7 +20,7 @@ type Cursor={path:string;cwd:string;offset:number;partial:string;references:stri
 const MAX_SCAN=8*1024*1024;
 const MAX_LINE=4*1024*1024;
 const MAX_REFERENCES=64;
-const MAX_IMAGES=24;
+const MAX_IMAGES=MAX_REFERENCES;
 const MAX_BYTES=3*1024*1024;
 const EXTENSIONS=new Set([".png",".jpg",".jpeg",".webp",".gif"]);
 
