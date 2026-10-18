@@ -92,6 +92,8 @@ let fixtureNotesCommitted = false;
 let fixtureRenameStaged = true;
 let fixturePluginInstalled = false;
 let fixtureMcpAuthorized = false;
+const fixtureCapabilitiesFailOnCall = Number.parseInt(process.env.CODEX_MOBILE_FIXTURE_CAPABILITIES_FAIL_ON_CALL ?? "0", 10);
+let fixtureCapabilitiesCalls = 0;
 const fixtureSkills = [
   { name: "fixture-review", description: "Навык для проверки. <script>alert(1)</script> остаётся текстом.", enabled: true, scope: "user" as const, canToggle: true, invokable: true },
   { name: "disabled-helper", description: "Отключённый навык.", enabled: false, scope: "repo" as const, canToggle: true, invokable: false },
@@ -485,7 +487,12 @@ const agent = {
       fixtureMcpAuthorized = true;
       return { authorizationUrl: "https://login.example.invalid/oauth/fixture" };
     }
-    if (job.op === "capabilities") return {
+    if (job.op === "capabilities") {
+      fixtureCapabilitiesCalls++;
+      if (fixtureCapabilitiesFailOnCall > 0 && fixtureCapabilitiesCalls === fixtureCapabilitiesFailOnCall) {
+        throw new Error("Тестовая ошибка Codex: обновление настроек недоступно");
+      }
+      return {
       online: true, ...fixtureSettings,
       models: [{ id: "fixture", name: "Fixture Model" }, { id: "fixture-fast", name: "Fixture Fast" }],
       modes: [{ id: "code", name: "Code" }, { id: "plan", name: "Plan" }],
@@ -512,7 +519,8 @@ const agent = {
       limits: [{ id: "fixture", name: "Тестовый период", primary: { usedPercent: 28, windowDurationMins: 300, resetsAt: Math.floor(Date.now() / 1000) + 3600 } }],
       subagents: [{ id: "fixture-agent", name: "Fixture Agent", status: "running" }],
       goal: fixtureGoals.get(sessionId), goalAvailable: true, checkedAt: Date.now(),
-    };
+      };
+    }
     if (job.op === "files") {
       const path = String(args.path ?? "");
       const prefix = path ? `${path}/` : "";

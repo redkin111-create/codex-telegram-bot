@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, Bot, ChevronDown, CircleHelp, Clock3, Download, ExternalLink, Pause, Play, Plug, Puzzle, ShieldCheck, Sparkles, Target, Trash2, X } from "lucide-react";
+import { Activity, Bot, ChevronDown, CircleHelp, Clock3, Download, ExternalLink, Pause, Play, Plug, Puzzle, RefreshCw, ShieldCheck, Sparkles, Target, Trash2, X } from "lucide-react";
 import { readCapabilities } from "../api.js";
 import type { MobileCapabilities, MobileOperation } from "../types.js";
 import { Badge, Button, Card, Input, Textarea } from "./ui/primitives.js";
@@ -62,6 +62,7 @@ export function SettingsPanel({ sessionId, connected, onClose, onOperation }: {
 
   async function reload() {
     setLoading(true);
+    setError("");
     try {
       const next = await readCapabilities(sessionId);
       setCapabilities(next);
@@ -196,7 +197,8 @@ export function SettingsPanel({ sessionId, connected, onClose, onOperation }: {
     <section role="dialog" aria-modal="true" aria-labelledby="mobile-settings-title" className="safe-area-top safe-area-bottom flex h-full max-h-[100svh] w-full max-w-xl flex-col border-l border-border bg-background shadow-soft">
       <header className="flex shrink-0 items-center justify-between border-b border-border px-4 py-4 sm:px-6">
         <div><p className="text-[10px] font-bold uppercase tracking-[.2em] text-[#a7c278]">Codex</p><h2 id="mobile-settings-title" className="mt-1 text-lg font-semibold">Настройки и возможности</h2></div>
-        <Button variant="ghost" className="min-h-10 px-2" aria-label="Закрыть настройки" onClick={onClose}><X size={19} /></Button>
+        <div className="flex items-center gap-1"><Button type="button" variant="ghost" className="min-h-10 px-2" aria-label="Обновить данные Codex" disabled={loading || saving} onClick={() => void reload()}><RefreshCw size={16} className={loading ? "animate-spin" : ""} /></Button>
+          <Button variant="ghost" className="min-h-10 px-2" aria-label="Закрыть настройки" onClick={onClose}><X size={19} /></Button></div>
       </header>
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5 sm:px-6">
         {error && <p role="alert" className="rounded-xl border border-[#733b39] bg-[#351f1e] p-3 text-sm text-[#ffc3bd]">{error}</p>}
