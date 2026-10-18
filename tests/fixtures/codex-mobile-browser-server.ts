@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer, type Server } from "node:http";
+import { deflateSync } from "node:zlib";
 import { MobileAuthStore } from "../../src/mobile/auth.js";
 import type { MobilePromptAttachment } from "../../src/mobile/attachments.js";
 import { createMobileServer } from "../../src/mobile/server.js";
@@ -23,12 +24,67 @@ const olderArchivedFixtureSession = "77777777-7777-4777-8777-777777777777";
 const projectOne = "C:\\fixture\\codex-mobile";
 const projectTwo = "C:\\fixture\\other-project";
 const screenshotPath = "C:\\fixture\\codex-mobile\\screenshots\\sample.png";
+function pngCrc32(buffer: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit++) crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const name = Buffer.from(type, "ascii");
+  const payload = Buffer.concat([name, data]);
+  const length = Buffer.alloc(4);
+  const checksum = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  checksum.writeUInt32BE(pngCrc32(payload));
+  return Buffer.concat([length, payload, checksum]);
+}
+
+function makeFixtureScreenshot(): Buffer {
+  const width = 320;
+  const height = 180;
+  const stride = width * 4 + 1;
+  const pixels = Buffer.alloc(height * stride);
+  for (let y = 0; y < height; y++) {
+    const row = y * stride;
+    pixels[row] = 0;
+    for (let x = 0; x < width; x++) {
+      const pixel = row + 1 + x * 4;
+      const inHeader = y < 28;
+      const inLeftPanel = x < 214;
+      const dx = x - 118;
+      const dy = y - 108;
+      const inCircle = dx * dx + dy * dy < 32 * 32;
+      const color = inHeader ? [18, 25, 21] : inCircle ? [215, 166, 75] : inLeftPanel ? [55, 91, 67] : [51, 61, 55];
+      pixels[pixel] = color[0]!;
+      pixels[pixel + 1] = color[1]!;
+      pixels[pixel + 2] = color[2]!;
+      pixels[pixel + 3] = 255;
+    }
+  }
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 6;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk("IHDR", header),
+    pngChunk("IDAT", deflateSync(pixels)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+const fixtureScreenshotData = makeFixtureScreenshot();
 const fixtureScreenshots = [
-  { path: screenshotPath, name: "sample.png", mtimeMs: 1, size: 68 },
+  { path: screenshotPath, name: "sample.png", mtimeMs: 1, size: fixtureScreenshotData.byteLength },
   ...Array.from({ length: 399 }, (_, index) => {
     const n = index + 2;
     const name = `capture-${String(n).padStart(3, "0")}.png`;
-    return { path: `C:\\fixture\\codex-mobile\\screenshots\\${name}`, name, mtimeMs: n, size: 68 };
+    return { path: `C:\\fixture\\codex-mobile\\screenshots\\${name}`, name, mtimeMs: n, size: fixtureScreenshotData.byteLength };
   }),
 ];
 const recentFixtureScreenshots = fixtureScreenshots.slice(-256);
@@ -249,7 +305,7 @@ const agent = {
     }
     if (job.op === "image") {
       return { mime: "image/png", name: "Тестовый скриншот Codex.png",
-        data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/x6kAAAAASUVORK5CYII=" };
+        data: fixtureScreenshotData.toString("base64") };
     }
     if (job.op === "create") {
       const id = randomUUID();
