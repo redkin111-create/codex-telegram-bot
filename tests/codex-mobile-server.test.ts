@@ -574,7 +574,7 @@ test("editable-turn reads and edit-and-retry are paired, session-scoped and CSRF
   try {
     const login = await pair(f.origin, f.auth);
     const url = f.origin + "/api/operations";
-    const read = (sessionId = allowedSession) => JSON.stringify({ op: "latestEditableTurn", args: { sessionId } });
+    const read = (sessionId = allowedSession) => JSON.stringify({ op: "listEditableTurns", args: { sessionId } });
     const mutation = (sessionId = allowedSession) => JSON.stringify({ op: "editAndRetry", args: {
       sessionId, turnId: "11111111-1111-4111-8111-111111111111", text: "Заменённый запрос", requestId: "mobile-edit-request-0001",
     } });
@@ -589,7 +589,7 @@ test("editable-turn reads and edit-and-retry are paired, session-scoped and CSRF
       method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: read(),
     });
     assert.equal(allowedRead.status, 200);
-    assert.equal((await allowedRead.json() as { op: string }).op, "latestEditableTurn");
+    assert.equal((await allowedRead.json() as { op: string }).op, "listEditableTurns");
 
     const anonymousMutation = await fetch(url, { method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: mutation() });
     assert.equal(anonymousMutation.status, 401);

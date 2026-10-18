@@ -77,6 +77,8 @@ const archivedSessions: FixtureSession[] = [
 ];
 const history = new Map<string, Array<{ role: "user" | "assistant" | "tool"; text: string; tool?: string; timestamp: number }>>([
   [firstSession, [
+    { role: "user", text: "Старый запрос: добавь функцию приветствия.", timestamp: Date.now() - 90_000 },
+    { role: "assistant", text: "В тестовом проекте появилась функция приветствия.", timestamp: Date.now() - 85_000 },
     { role: "user", text: "Проверь экран Codex Mobile и сообщи, что видишь.", timestamp: Date.now() - 70_000 },
     { role: "assistant", text: "## Проверка готова\n\n- История загружена\n- **Безопасная разметка**\n\n[небезопасная ссылка](javascript:alert(1)) <img src=x onerror=alert(1)>", timestamp: Date.now() - 60_000 },
     { role: "tool", tool: "read_file", text: "Секретный вывод инструмента для теста.\nВ браузере показывается только по запросу.", timestamp: Date.now() - 55_000 },
@@ -107,7 +109,8 @@ const fixtureBackgroundProcesses = new Map<string, Array<{ itemId: string; proce
 ]);
 let fixtureBackgroundTerminalFailure = false;
 let fixtureLatestTurnId = "11111111-1111-4111-8111-111111111111";
-let fixtureEditUnavailable = false;
+let fixtureTurnIds = ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", fixtureLatestTurnId];
+let fixtureEditUnavailable = process.env.CODEX_MOBILE_FIXTURE_EDIT_UNAVAILABLE === "1";
 let fixtureEditFailure = false;
 let fixtureTranscriptionFailure = false;
 let fixtureDeleteFailure = false;
@@ -210,6 +213,8 @@ const agent = {
       entries.push({ role: "user", text: message || "Проверка фото", timestamp: Date.now() });
       entries.push({ role: "assistant", text: "Задание принято из тестовой среды. Настоящий Codex не запускался.", timestamp: Date.now() });
       history.set(sessionId, entries);
+      fixtureLatestTurnId = randomUUID();
+      fixtureTurnIds.push(fixtureLatestTurnId);
       runtime.busy = true;
       controlled.set(sessionId, runtime);
       feed.status(sessionId, "working", "Codex работает (тест)");
@@ -280,19 +285,36 @@ const agent = {
         ? { editable: false, reason: "В запросе есть вложение, которое нельзя безопасно восстановить.", attachmentCount: 1 }
         : { turnId: fixtureLatestTurnId, text: "Проверь экран Codex Mobile и сообщи, что видишь.", skillNames: [], attachmentCount: 0, editable: true };
     }
+    if (job.op === "listEditableTurns") {
+      if (sessionId !== firstSession) throw new Error("Сеанс не найден");
+      const userEntries = (history.get(sessionId) ?? []).filter((entry) => entry.role === "user");
+      const turns = fixtureTurnIds.slice(0, userEntries.length).map((turnId, index) => {
+        const unavailable = fixtureEditUnavailable && turnId === fixtureLatestTurnId;
+        return {
+          turnId, text: userEntries[index]?.text ?? "", skillNames: [],
+          attachmentCount: unavailable ? 1 : 0, editable: !unavailable,
+          ...(unavailable ? { reason: "Запрос содержит вложение." } : {}),
+        };
+      }).reverse();
+      return { latestTurnId: fixtureLatestTurnId, turns };
+    }
     if (job.op === "editAndRetry") {
       if (fixtureEditFailure) { fixtureEditFailure = false; throw new Error("Тестовая ошибка Codex при повторной отправке"); }
-      if (sessionId !== firstSession || args.turnId !== fixtureLatestTurnId) throw new Error("Последний запрос Codex изменился");
-      if (fixtureEditUnavailable) throw new Error("Последний запрос нельзя безопасно редактировать с телефона");
+      if (sessionId !== firstSession || args.expectedLatestTurnId !== fixtureLatestTurnId) throw new Error("История Codex изменилась. Обновите список запросов перед редактированием");
+      const turnIndex = fixtureTurnIds.indexOf(String(args.turnId ?? ""));
+      if (turnIndex < 0) throw new Error("Выбранный запрос больше не найден");
+      if (fixtureEditUnavailable && args.turnId === fixtureLatestTurnId) throw new Error("Выбранный запрос содержит вложение и не может быть безопасно восстановлен");
       const entries = history.get(sessionId) ?? [];
-      let lastUserIndex = -1;
-      for (let index = entries.length - 1; index >= 0; index--) if (entries[index]?.role === "user") { lastUserIndex = index; break; }
-      if (lastUserIndex < 0) throw new Error("Последний запрос не найден");
-      entries.splice(lastUserIndex);
+      const userIndices = entries.flatMap((entry, index) => entry.role === "user" ? [index] : []);
+      const targetUserIndex = userIndices[turnIndex];
+      if (targetUserIndex === undefined) throw new Error("Выбранный запрос не найден в истории");
+      entries.splice(targetUserIndex);
       entries.push({ role: "user", text: String(args.text ?? ""), timestamp: Date.now() });
       entries.push({ role: "assistant", text: "Запрос повторно обработан из изолированной тестовой среды. Настоящий Codex не запускался.", timestamp: Date.now() });
       history.set(sessionId, entries);
+      fixtureTurnIds = fixtureTurnIds.slice(0, turnIndex);
       fixtureLatestTurnId = randomUUID();
+      fixtureTurnIds.push(fixtureLatestTurnId);
       return { result: "end_turn" };
     }
     if (job.op === "searchThreads") {

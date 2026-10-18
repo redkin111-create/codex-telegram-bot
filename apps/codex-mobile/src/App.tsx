@@ -13,7 +13,7 @@ import { Pairing } from "./components/pairing.js";
 import { SettingsPanel } from "./components/settings-panel.js";
 import { Workspace } from "./components/workspace.js";
 import type {
-  HistoryEntry, MobileActivity, MobileApproval, MobileAttachment, MobileDevice, MobileEditableTurn, MobileLiveEvent, MobileQueue, MobileSession, MobileSnapshot,
+  HistoryEntry, MobileActivity, MobileApproval, MobileAttachment, MobileDevice, MobileEditableTurns, MobileLiveEvent, MobileQueue, MobileSession, MobileSnapshot,
   MobileOperation,
 } from "./types.js";
 import { Button } from "./components/ui/primitives.js";
@@ -484,9 +484,9 @@ export default function App() {
     setTimeout(() => { void refreshSnapshot(); }, 500);
   }
 
-  async function loadLatestEditableTurn(): Promise<MobileEditableTurn> {
+  async function loadEditableTurns(): Promise<MobileEditableTurns> {
     if (!selectedId) throw new Error("Сначала выберите сеанс Codex");
-    return operation<MobileEditableTurn>("latestEditableTurn", { sessionId: selectedId });
+    return operation<MobileEditableTurns>("listEditableTurns", { sessionId: selectedId });
   }
 
   async function transcribeVoice(file: File): Promise<string> {
@@ -495,10 +495,10 @@ export default function App() {
     return result.text;
   }
 
-  async function editAndRetry(turnId: string, text: string) {
+  async function editAndRetry(turnId: string, text: string, expectedLatestTurnId: string) {
     const targetSession = selectedId;
     if (!targetSession) throw new Error("Сначала выберите сеанс Codex");
-    await operation("editAndRetry", { sessionId: targetSession, turnId, text, requestId: crypto.randomUUID() });
+    await operation("editAndRetry", { sessionId: targetSession, turnId, expectedLatestTurnId, text, requestId: crypto.randomUUID() });
     pendingSend.current = undefined;
     const [nextHistory, nextActivity] = await Promise.all([readHistory(targetSession, includeTools), readActivity(targetSession)]);
     if (selectedIdRef.current === targetSession) {
@@ -595,7 +595,7 @@ export default function App() {
         onConnect={() => void connectSession()} onCancel={() => void cancel()} onFork={() => void forkSession()} forking={forking}
         onCompact={compactSession} compacting={compacting} onSend={send}
         onLoadSkills={loadMobileSkills}
-        onLoadLatestEditableTurn={loadLatestEditableTurn} onEditAndRetry={editAndRetry} onTranscribeAudio={transcribeVoice}
+        onLoadEditableTurns={loadEditableTurns} onEditAndRetry={editAndRetry} onTranscribeAudio={transcribeVoice}
         onUploadAttachment={(sessionId, file) => uploadAttachment(sessionId, file, csrf)}
         onRemoveAttachment={(sessionId, id) => removeAttachment(sessionId, id, csrf)}
         onQueueRemove={(id) => void removeQueued(id)} onQueueResume={() => void resumeQueue()}

@@ -151,7 +151,7 @@ interface MobilePtyRecord {
   expiry?:NodeJS.Timeout;dataSubscription?:{dispose():void};exitSubscription?:{dispose():void};
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; stt?:Pick<SttService,"enabled"|"transcribe">; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "editAndRetry" | "transcribeAudio" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "mcpOAuthLogin" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "mcpOAuthLogin" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 const MOBILE_GLOBAL_OPERATIONS=new Set<MobileLocalOperation>(["listThreadSections","createThreadSection","renameThreadSection","deleteThreadSection"]);
 export class MiniAppAgent {
@@ -523,13 +523,24 @@ export class MiniAppAgent {
         const turn=await acp.readMobileLatestEditableTurn(sessionId);
         return turn??{editable:false,reason:"Последний запрос Codex не найден"};
       }
+      case "listEditableTurns":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        await this.thread(sessionId,chatId);
+        if(await this.isArchivedThread(sessionId,chatId))throw new Error("Сначала восстановите сеанс из архива");
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        if(typeof acp.readMobileEditableTurns!=="function")throw new Error("Эта версия Codex не поддерживает просмотр запросов для редактирования");
+        const turns=await acp.readMobileEditableTurns(sessionId);
+        return {latestTurnId:turns[0]?.turnId,turns};
+      }
       case "editAndRetry":{
         const turnId=argumentString(args,"turnId",128);
+        const expectedLatestTurnId=argumentString(args,"expectedLatestTurnId",128);
         const message=argumentString(args,"text",16000).trim();
         if(!message)throw new Error("Введите текст запроса для повтора");
+        if(!expectedLatestTurnId)throw new Error("Обновите список запросов перед редактированием");
         const requestId=argumentString(args,"requestId",80);
         if(!/^[a-zA-Z0-9_-]{12,80}$/.test(requestId))throw new Error("Неверный идентификатор запроса");
-        const fingerprint=tmaPromptFingerprint("edit-and-retry:"+turnId+":"+message,[]);
+        const fingerprint=tmaPromptFingerprint("edit-and-retry:"+turnId+":"+expectedLatestTurnId+":"+message,[]);
         const key=chatId+":"+sessionId+":"+requestId;
         const existing=this.sends.get(key);
         if(existing){
@@ -548,10 +559,12 @@ export class MiniAppAgent {
             if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
             if(!runtime)throw new Error("Сначала подключите этот сеанс Codex");
             if(runtime.isBusy||runtime.queueLength>0||(typeof acp.hasActiveTurn==="function"&&acp.hasActiveTurn(sessionId)))throw new Error("Дождитесь завершения текущей задачи и очереди перед редактированием");
-            if(typeof acp.readMobileLatestEditableTurn!=="function"||typeof acp.revertMobileThread!=="function")throw new Error("Эта версия Codex не поддерживает редактирование последнего запроса");
-            const latest=await acp.readMobileLatestEditableTurn(sessionId);
-            if(!latest||latest.turnId!==turnId)throw new Error("Последний запрос Codex изменился. Обновите его перед редактированием");
-            if(!latest.editable)throw new Error("Последний запрос нельзя безопасно редактировать с телефона");
+            if(typeof acp.readMobileEditableTurns!=="function"||typeof acp.revertMobileThread!=="function")throw new Error("Эта версия Codex не поддерживает редактирование запросов");
+            const turns=await acp.readMobileEditableTurns(sessionId);
+            if(turns[0]?.turnId!==expectedLatestTurnId)throw new Error("История Codex изменилась. Обновите список запросов перед редактированием");
+            const selected=turns.find(turn=>turn.turnId===turnId);
+            if(!selected)throw new Error("Выбранный запрос больше не найден. Обновите список запросов перед редактированием");
+            if(!selected.editable)throw new Error("Выбранный запрос нельзя безопасно редактировать с телефона");
             const controller=registry.controller(chatId);
             if(controller.foreground().sessionId!==sessionId)await controller.switchTo(sessionId);
             const current=registry.runtimeForSession(chatId,sessionId);
@@ -559,11 +572,11 @@ export class MiniAppAgent {
             this.promptJournal.reserve(key,fingerprint);
             reserved=true;
             dispatched=true;
-            await acp.revertMobileThread!(sessionId,turnId);
+            await acp.revertMobileThread!(sessionId,turnId,expectedLatestTurnId);
             this.historyCache.delete(sessionId+":chat");
             this.historyCache.delete(sessionId+":tools");
             const input=textPrompt(message);
-            input.skillNames=latest.skillNames;
+            input.skillNames=selected.skillNames;
             const result=await registry.submitPrompt(chatId,input);
             const answer={result:result.kind==="submitted"?result.outcome:result.kind};
             this.promptJournal.complete(key,answer);

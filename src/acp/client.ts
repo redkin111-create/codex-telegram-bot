@@ -74,6 +74,36 @@ import type {
 
 const log = createLogger("codex:client");
 
+function parseMobileEditableTurn(value: unknown): CodexMobileEditableTurn | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.id !== "string" || !/^[a-z0-9_-]{8,128}$/i.test(record.id) || !Array.isArray(record.items)) return undefined;
+  const userMessages = record.items.filter((item) => item && typeof item === "object" &&
+    (item as Record<string, unknown>).type === "userMessage") as Array<Record<string, unknown>>;
+  if (userMessages.length !== 1 || !Array.isArray(userMessages[0]!.content)) return undefined;
+  const skillNames: string[] = [];
+  const text: string[] = [];
+  let attachmentCount = 0;
+  let hasUnsupportedContent = false;
+  for (const value of userMessages[0]!.content) {
+    if (!value || typeof value !== "object") { hasUnsupportedContent = true; continue; }
+    const item = value as Record<string, unknown>;
+    if (item.type === "text" && typeof item.text === "string") text.push(item.text);
+    else if (item.type === "skill" && typeof item.name === "string" && /^[a-z0-9][a-z0-9._-]{0,79}$/i.test(item.name)) skillNames.push(item.name);
+    else { attachmentCount++; hasUnsupportedContent = true; }
+  }
+  const joinedText = text.join("\n").trim();
+  const status = typeof record.status === "string" ? record.status : "";
+  const terminalTurn = status === "completed" || status === "interrupted" || status === "failed";
+  return {
+    turnId: record.id,
+    text: joinedText,
+    skillNames: [...new Set(skillNames)],
+    attachmentCount,
+    editable: Boolean(joinedText) && !hasUnsupportedContent && terminalTurn,
+  };
+}
+
 /** Per-thread metadata (context usage %, effort, credits) surfaced to the UI. */
 export interface SessionMetadata {
   contextUsagePercentage?: number;
@@ -342,44 +372,35 @@ export class AcpClient extends EventEmitter {
       threadId, limit: 1, sortDirection: "desc", itemsView: "full",
     }) as { data?: unknown };
     if (!Array.isArray(response?.data)) throw new AcpError("Codex вернул неверный список запросов");
-    const turn = response.data[0];
-    if (!turn || typeof turn !== "object") return undefined;
-    const record = turn as Record<string, unknown>;
-    if (typeof record.id !== "string" || !/^[a-z0-9_-]{8,128}$/i.test(record.id) || !Array.isArray(record.items)) return undefined;
-    const userMessages = record.items.filter((item) => item && typeof item === "object" &&
-      (item as Record<string, unknown>).type === "userMessage") as Array<Record<string, unknown>>;
-    if (userMessages.length !== 1 || !Array.isArray(userMessages[0]!.content)) return undefined;
-    const skillNames: string[] = [];
-    const text: string[] = [];
-    let attachmentCount = 0;
-    let hasUnsupportedContent = false;
-    for (const value of userMessages[0]!.content) {
-      if (!value || typeof value !== "object") { hasUnsupportedContent = true; continue; }
-      const item = value as Record<string, unknown>;
-      if (item.type === "text" && typeof item.text === "string") text.push(item.text);
-      else if (item.type === "skill" && typeof item.name === "string" && /^[a-z0-9][a-z0-9._-]{0,79}$/i.test(item.name)) skillNames.push(item.name);
-      else { attachmentCount++; hasUnsupportedContent = true; }
-    }
-    const joinedText = text.join("\n").trim();
-    const status = typeof record.status === "string" ? record.status : "";
-    const terminalTurn = status === "completed" || status === "interrupted" || status === "failed";
-    return {
-      turnId: record.id,
-      text: joinedText,
-      skillNames: [...new Set(skillNames)],
-      attachmentCount,
-      editable: Boolean(joinedText) && !hasUnsupportedContent && terminalTurn,
-    };
+    return parseMobileEditableTurn(response.data[0]);
   }
 
-  /** Revalidate the latest turn and then use Codex's current history-revert API. */
-  async revertMobileThread(threadId: string, beforeTurnId: string): Promise<void> {
+  /** Read a bounded list of recent user turns, newest first, for safe mobile editing. */
+  async readMobileEditableTurns(threadId: string): Promise<CodexMobileEditableTurn[]> {
+    if (!/^[a-z0-9_-]{8,128}$/i.test(threadId)) throw new Error("Неверный сеанс Codex для редактирования запроса");
+    const response = await this.request("thread/turns/list", {
+      threadId, limit: 20, sortDirection: "desc", itemsView: "full",
+    }) as { data?: unknown };
+    if (!Array.isArray(response?.data)) throw new AcpError("Codex вернул неверный список запросов");
+    return response.data.flatMap((turn) => {
+      const parsed = parseMobileEditableTurn(turn);
+      return parsed ? [parsed] : [];
+    });
+  }
+
+  /** Revalidate the selected turn and latest-turn snapshot before changing history. */
+  async revertMobileThread(threadId: string, beforeTurnId: string, expectedLatestTurnId?: string): Promise<void> {
     if (!/^[a-z0-9_-]{8,128}$/i.test(threadId) || !/^[a-z0-9_-]{8,128}$/i.test(beforeTurnId)) {
       throw new Error("Неверный запрос для редактирования истории Codex");
     }
-    const latest = await this.readMobileLatestEditableTurn(threadId);
-    if (!latest || latest.turnId !== beforeTurnId) throw new AcpError("История Codex изменилась. Обновите последний запрос перед редактированием");
-    if (!latest.editable) throw new AcpError("Последний запрос нельзя безопасно редактировать с телефона");
+    const turns = await this.readMobileEditableTurns(threadId);
+    const latestTurnId = turns[0]?.turnId;
+    if (!latestTurnId || (expectedLatestTurnId && latestTurnId !== expectedLatestTurnId)) {
+      throw new AcpError("История Codex изменилась. Обновите список запросов перед редактированием");
+    }
+    const selected = turns.find((turn) => turn.turnId === beforeTurnId);
+    if (!selected) throw new AcpError("Выбранный запрос больше не найден. Обновите список запросов перед редактированием");
+    if (!selected.editable) throw new AcpError("Выбранный запрос нельзя безопасно редактировать с телефона");
     const result = await this.request("thread/revert", { threadId, beforeTurnId }) as {
       thread?: { id?: unknown };
     };

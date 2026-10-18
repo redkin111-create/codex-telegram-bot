@@ -74,6 +74,7 @@ test("mobile edit and retry only reverts the latest owned idle text turn and sub
     {id:foreignId,name:"Foreign fixture",cwd:dir,source:"appServer",createdAt:1,updatedAt:1,recencyAt:1},
   ];
   let latestTurn={turnId:"12345678-1234-4234-8234-123456789abc",text:"$fixture-review old prompt",skillNames:["fixture-review"],attachmentCount:0,editable:true};
+  const olderTurn={turnId:"87654321-4321-4234-8234-123456789abc",text:"older request",skillNames:[],attachmentCount:0,editable:true};
   let busy=false;
   let activeTurn=false;
   const reverts:Array<{threadId:string;turnId:string}>=[];
@@ -85,6 +86,7 @@ test("mobile edit and retry only reverts the latest owned idle text turn and sub
     listAllThreads:async(params?:{archived?:boolean})=>params?.archived?[]:threads,
     hasActiveTurn:(id:string)=>id===sessionId&&activeTurn,
     async readMobileLatestEditableTurn(threadId:string){assert.equal(threadId,sessionId);return {...latestTurn};},
+    async readMobileEditableTurns(threadId:string){assert.equal(threadId,sessionId);return [{...latestTurn},{...olderTurn}];},
     async revertMobileThread(threadId:string,turnId:string){reverts.push({threadId,turnId});latestTurn={turnId:"abcdef01-2345-4234-8234-123456789abc",text:"edited prompt",skillNames:[],attachmentCount:0,editable:true};},
     availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],
     currentModelId:"default",currentModeId:"code",accountState:async()=>({}),
@@ -103,15 +105,18 @@ test("mobile edit and retry only reverts the latest owned idle text turn and sub
   owners.recordMobile(foreignId,202,dir,"Fixture");
   const agent=new MiniAppAgent({cfg,acp,registry});
   const turnId="12345678-1234-4234-8234-123456789abc";
-  const args={sessionId,turnId,text:"$fixture-review updated prompt",requestId:"mobile-edit-123456"};
+  const args={sessionId,turnId,expectedLatestTurnId:turnId,text:"$fixture-review updated prompt",requestId:"mobile-edit-123456"};
   try{
     await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
     const last=await agent.executeMobile({op:"latestEditableTurn",userId:101,args:{sessionId}}) as {editable:boolean;turnId:string};
     assert.equal(last.editable,true);
     assert.equal(last.turnId,turnId);
+    const recent=await agent.executeMobile({op:"listEditableTurns",userId:101,args:{sessionId}}) as {latestTurnId:string;turns:Array<{turnId:string}>};
+    assert.equal(recent.latestTurnId,turnId);
+    assert.deepEqual(recent.turns.map(turn=>turn.turnId),[turnId,olderTurn.turnId]);
     await assert.rejects(agent.executeMobile({op:"editAndRetry",userId:202,args}),/Доступ к сеансу запрещён/);
     latestTurn={...latestTurn,turnId:"fedcba98-7654-4321-8765-abcdefabcdef"};
-    await assert.rejects(agent.executeMobile({op:"editAndRetry",userId:101,args}),/изменился/i);
+    await assert.rejects(agent.executeMobile({op:"editAndRetry",userId:101,args}),/изменил/i);
     assert.deepEqual(reverts,[]);
     latestTurn={...latestTurn,turnId};
     busy=true;
@@ -128,6 +133,11 @@ test("mobile edit and retry only reverts the latest owned idle text turn and sub
     assert.deepEqual(duplicate,result);
     assert.deepEqual(reverts,[{threadId:sessionId,turnId}]);
     assert.deepEqual(submitted,[{userId:101,text:"$fixture-review updated prompt",skillNames:["fixture-review"]}]);
+    const olderArgs={...args,turnId:olderTurn.turnId,expectedLatestTurnId:latestTurn.turnId,requestId:"mobile-edit-older-1234",text:"revised older request"};
+    const olderResult=await agent.executeMobile({op:"editAndRetry",userId:101,args:olderArgs}) as {result:unknown};
+    assert.deepEqual(olderResult.result,{stopReason:"end_turn"});
+    assert.deepEqual(reverts.at(-1),{threadId:sessionId,turnId:olderTurn.turnId});
+    assert.deepEqual(submitted.at(-1),{userId:101,text:"revised older request",skillNames:[]});
     const mismatchedAgent=new MiniAppAgent({cfg,acp,registry});
     try{
       await assert.rejects(mismatchedAgent.executeMobile({op:"editAndRetry",userId:101,args:{...args,text:"different prompt"}}),/ID задания уже использован/);
@@ -137,8 +147,11 @@ test("mobile edit and retry only reverts the latest owned idle text turn and sub
       const replay=await replayAgent.executeMobile({op:"editAndRetry",userId:101,args}) as {result:unknown};
       assert.deepEqual(replay,result);
     }finally{replayAgent.stop();}
-    assert.deepEqual(reverts,[{threadId:sessionId,turnId}]);
-    assert.deepEqual(submitted,[{userId:101,text:"$fixture-review updated prompt",skillNames:["fixture-review"]}]);
+    assert.deepEqual(reverts,[{threadId:sessionId,turnId},{threadId:sessionId,turnId:olderTurn.turnId}]);
+    assert.deepEqual(submitted,[
+      {userId:101,text:"$fixture-review updated prompt",skillNames:["fixture-review"]},
+      {userId:101,text:"revised older request",skillNames:[]},
+    ]);
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { FileText, GitFork, ImagePlus, LoaderCircle, Mic, Minimize2, Paperclip, Pencil, Play, Search, Send, Sparkles, Square, Trash2, Wrench, X } from "lucide-react";
 import "../../../../apps/mini-app/public/photo-input.js";
-import type { HistoryEntry, MobileActivity, MobileAttachment, MobileCapabilities, MobileEditableTurn, MobileLiveEvent, MobileQueue, MobileSession } from "../types.js";
+import type { HistoryEntry, MobileActivity, MobileAttachment, MobileCapabilities, MobileEditableTurn, MobileEditableTurns, MobileLiveEvent, MobileQueue, MobileSession } from "../types.js";
 import { imageUrl } from "../api.js";
 import { SafeMarkdown } from "../markdown.js";
 import { isMobileSkillNameSafe, prependMobileSkill } from "../skill-prompt.js";
@@ -14,7 +14,7 @@ export type FollowUpMode = "queue" | "steer";
 export function Conversation({
   session, history, activity, events, queue, connected, connecting, loading, streamConnected,
   error, includeTools, onToggleTools, onConnect, onCancel, onFork, forking, onCompact, compacting, onSend, onQueueRemove, onQueueResume, onQueueOpen, onLoadSkills,
-  onLoadLatestEditableTurn, onEditAndRetry, onTranscribeAudio, onUploadAttachment, onRemoveAttachment,
+  onLoadEditableTurns, onEditAndRetry, onTranscribeAudio, onUploadAttachment, onRemoveAttachment,
 }: {
   session?: MobileSession;
   history: HistoryEntry[];
@@ -39,14 +39,15 @@ export function Conversation({
   onQueueResume: () => void;
   onQueueOpen: () => void;
   onLoadSkills: () => Promise<MobileCapabilities["skills"]>;
-  onLoadLatestEditableTurn: () => Promise<MobileEditableTurn>;
-  onEditAndRetry: (turnId: string, text: string) => Promise<void>;
+  onLoadEditableTurns: () => Promise<MobileEditableTurns>;
+  onEditAndRetry: (turnId: string, text: string, expectedLatestTurnId: string) => Promise<void>;
   onTranscribeAudio: (file: File) => Promise<string>;
   onUploadAttachment: (sessionId: string, file: File) => Promise<MobileAttachment>;
   onRemoveAttachment: (sessionId: string, id: string) => Promise<{ removed: boolean }>;
 }) {
   const activeSessionId = useRef(session?.id);
   activeSessionId.current = session?.id;
+  const editLoadRequest = useRef(0);
   const [text, setText] = useState("");
   const [images, setImages] = useState<PromptImage[]>([]);
   const [attachments, setAttachments] = useState<MobileAttachment[]>([]);
@@ -66,6 +67,8 @@ export function Conversation({
   const [editOpen, setEditOpen] = useState(false);
   const [editLoading, setEditLoading] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
+  const [editTurns, setEditTurns] = useState<MobileEditableTurn[]>([]);
+  const [editLatestTurnId, setEditLatestTurnId] = useState("");
   const [editTurn, setEditTurn] = useState<MobileEditableTurn>();
   const [editText, setEditText] = useState("");
   const [editError, setEditError] = useState("");
@@ -81,12 +84,17 @@ export function Conversation({
   }, [history, historySearch]);
 
   useEffect(() => {
+    editLoadRequest.current++;
     setHistorySearchOpen(false);
     setHistorySearch("");
     setSkillPickerOpen(false);
     setAvailableSkills([]);
     setSkillPickerError("");
     setEditOpen(false);
+    setEditLoading(false);
+    setEditSaving(false);
+    setEditTurns([]);
+    setEditLatestTurnId("");
     setEditTurn(undefined);
     setEditError("");
     setEditNotice("");
@@ -95,35 +103,49 @@ export function Conversation({
   }, [session?.id]);
 
   async function openEditDialog() {
+    const targetSessionId = activeSessionId.current;
+    const requestId = ++editLoadRequest.current;
     setEditOpen(true);
     setEditLoading(true);
+    setEditTurns([]);
+    setEditLatestTurnId("");
     setEditTurn(undefined);
     setEditText("");
     setEditError("");
     setEditNotice("");
     try {
-      const latest = await onLoadLatestEditableTurn();
-      setEditTurn(latest);
-      setEditText(typeof latest.text === "string" ? latest.text : "");
+      const result = await onLoadEditableTurns();
+      if (requestId !== editLoadRequest.current || activeSessionId.current !== targetSessionId) return;
+      const turns = Array.isArray(result.turns) ? result.turns : [];
+      const latestTurnId = typeof result.latestTurnId === "string" ? result.latestTurnId : "";
+      const initial = turns.find((turn) => turn.editable) ?? turns[0];
+      setEditTurns(turns);
+      setEditLatestTurnId(latestTurnId);
+      setEditTurn(initial);
+      setEditText(initial?.text ?? "");
     } catch (cause) {
-      setEditError(cause instanceof Error ? cause.message : "Не удалось загрузить последний запрос Codex");
+      if (requestId === editLoadRequest.current && activeSessionId.current === targetSessionId) {
+        setEditError(cause instanceof Error ? cause.message : "Не удалось загрузить запросы Codex");
+      }
     } finally {
-      setEditLoading(false);
+      if (requestId === editLoadRequest.current && activeSessionId.current === targetSessionId) setEditLoading(false);
     }
   }
 
   async function submitEdit() {
-    if (!editTurn?.editable || !editTurn.turnId || !editText.trim() || editSaving) return;
+    if (!editTurn?.editable || !editTurn.turnId || !editLatestTurnId || !editText.trim() || editSaving) return;
+    const targetSessionId = activeSessionId.current;
     setEditSaving(true);
     setEditError("");
     try {
-      await onEditAndRetry(editTurn.turnId, editText.trim());
+      await onEditAndRetry(editTurn.turnId, editText.trim(), editLatestTurnId);
+      if (activeSessionId.current !== targetSessionId) return;
       setEditOpen(false);
-      setEditNotice("Запрос повторно отправлен. Файлы и команды сами не откатывались.");
+      setEditNotice("Запрос заменён. Более поздняя история удалена; файлы и команды сами не откатывались.");
     } catch (cause) {
-      setEditError(cause instanceof Error ? cause.message : "Не удалось повторно отправить запрос");
+      if (activeSessionId.current === targetSessionId) setEditError(cause instanceof Error ? cause.message : "Не удалось повторно отправить запрос");
     } finally {
-      setEditSaving(false);
+      if (activeSessionId.current === targetSessionId) setEditSaving(false);
     }
   }
 
@@ -254,7 +276,7 @@ export function Conversation({
           {compacting ? <LoaderCircle size={14} className="animate-spin" /> : <Minimize2 size={14} />}
           Сократить контекст
         </Button>}
-        {connected && !session.archived && <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" onClick={() => void openEditDialog()} disabled={turnBusy || editLoading || editSaving} aria-label="Редактировать последний запрос">
+        {connected && !session.archived && <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" onClick={() => void openEditDialog()} disabled={turnBusy || editLoading || editSaving} aria-label="Редактировать запрос из истории">
           {editLoading ? <LoaderCircle size={14} className="animate-spin" /> : <Pencil size={14} />}
           Редактировать запрос
         </Button>}
@@ -349,19 +371,27 @@ export function Conversation({
     </div>}
     {editOpen && <div className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-black/75 p-3 sm:p-5" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !editSaving) setEditOpen(false); }}>
       <section className="my-auto w-full max-w-lg rounded-2xl border border-border bg-panel p-4 shadow-soft sm:p-5" role="dialog" aria-modal="true" aria-labelledby="edit-turn-title" aria-describedby="edit-turn-description">
-        <h2 id="edit-turn-title" className="text-base font-semibold">Редактировать последний запрос</h2>
-        <p id="edit-turn-description" className="mt-2 text-sm leading-6 text-muted">При подтверждении Codex удалит этот ход и последующие ходы из истории, затем отправит новый запрос. Уже сделанные изменения файлов, запущенные команды и внешние действия не отменяются.</p>
+        <h2 id="edit-turn-title" className="text-base font-semibold">Редактировать запрос из истории</h2>
+        <p id="edit-turn-description" className="mt-2 text-sm leading-6 text-muted">При подтверждении Codex удалит выбранный ход и все более поздние ходы из истории, затем отправит новый запрос. Изменения файлов, команды и внешние действия не отменяются.</p>
         {editLoading ? <p className="mt-4 flex items-center gap-2 py-4 text-sm text-muted" role="status"><LoaderCircle size={16} className="animate-spin" /> Загружаю запрос…</p>
           : editTurn?.editable && editTurn.turnId ? <>
+            {editTurns.length > 1 && <label className="mt-3 block space-y-1.5"><span className="text-xs font-medium text-muted">Выберите запрос</span><select aria-label="Запрос для редактирования" className="min-h-11 w-full rounded-xl border border-border bg-[#111613] px-3 text-sm text-text" value={editTurn.turnId} disabled={editSaving} onChange={(event) => {
+              const selected = editTurns.find((turn) => turn.turnId === event.target.value);
+              if (selected) { setEditTurn(selected); setEditText(selected.text); setEditError(""); }
+            }}>{editTurns.map((turn, index) => {
+              const snippet = turn.text.replace(/\s+/g, " ").trim().slice(0, 72) || "Запрос без текста";
+              const label = `${index === 0 ? "Последний" : `${index + 1}-й с конца`} · ${snippet}`;
+              return <option key={turn.turnId} value={turn.turnId} disabled={!turn.editable}>{label}{turn.editable ? "" : " · нельзя редактировать"}</option>;
+            })}</select></label>}
             {editTurn.skillNames?.length ? <p className="mt-3 text-xs text-muted">Сохранятся навыки: {editTurn.skillNames.join(", ")}</p> : null}
             <label htmlFor="edit-turn-text" className="mt-3 block text-xs font-medium text-muted">Текст запроса</label>
             <Textarea id="edit-turn-text" value={editText} onChange={(event) => setEditText(event.target.value)} rows={6} maxLength={16000} className="mt-1 max-h-[35svh] resize-y" aria-label="Новый текст запроса" />
             <p className="mt-1 text-right text-[11px] text-muted">{editText.length}/16000</p>
           </> : <div className="mt-4 rounded-xl border border-border bg-[#111613] p-3 text-sm text-muted">
-            <p className="font-medium text-text">Последний запрос нельзя безопасно редактировать</p>
+            <p className="font-medium text-text">Нет запроса, который можно безопасно редактировать</p>
             {editTurn?.reason && <p className="mt-1">{editTurn.reason}</p>}
             {(editTurn?.attachmentCount ?? 0) > 0 && <p className="mt-1">Вложения: {editTurn?.attachmentCount}. Чтобы не потерять их, отправьте новый запрос отдельно.</p>}
-            {!editTurn?.reason && !(editTurn?.attachmentCount ?? 0) && <p className="mt-1">Codex не нашёл подходящий текстовый запрос.</p>}
+            {!editTurn?.reason && !(editTurn?.attachmentCount ?? 0) && <p className="mt-1">Codex не нашёл недавний текстовый запрос без вложений.</p>}
           </div>}
         <p className="mt-3 rounded-xl border border-[#5f4d2d] bg-[#292316] p-3 text-xs leading-5 text-[#f0d995]">Редактирование меняет историю сеанса. Оно не возвращает файлы к прежнему состоянию и не отменяет уже выполненные команды.</p>
         {editError && <p className="mt-3 rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd]" role="alert">{editError}</p>}
