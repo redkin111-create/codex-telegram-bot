@@ -3,6 +3,53 @@ import test from "node:test";
 import { AcpClient } from "../src/acp/client.js";
 import { normalizeMobileMcpServers } from "../src/mobile/integrations.js";
 
+test("mobile MCP resource templates require the current variables and encode them inside the resource URI", async () => {
+  const module = await import("../src/acp/mobile-mcp.js") as unknown as Record<string, unknown>;
+  const getParameters = module.mobileMcpResourceTemplateParameters as ((template: string) => string[] | undefined) | undefined;
+  const resolve = module.resolveMobileMcpResourceTemplate as ((template: string, values: unknown) => string) | undefined;
+  assert.equal(typeof getParameters, "function");
+  assert.equal(typeof resolve, "function");
+  const template = "fixture://accounts/{account_id}/reports/{report}";
+  assert.deepEqual(getParameters!(template), ["account_id", "report"]);
+  assert.equal(resolve!(template, { account_id: "sales & ops", report: "week 1" }),
+    "fixture://accounts/sales%20%26%20ops/reports/week%201");
+  assert.throws(() => resolve!(template, { account_id: "one" }), /параметр/i);
+  assert.throws(() => resolve!(template, { account_id: "one", report: "two", extra: "three" }), /параметр/i);
+  assert.equal(resolve!(template, { account_id: "one/../secret", report: "two" }),
+    "fixture://accounts/one%2F..%2Fsecret/reports/two");
+  assert.equal(getParameters!("fixture://accounts/{?account_id}"), undefined);
+});
+
+test("mobile MCP template reads revalidate the exact live template and keep its URI out of the request metadata", async () => {
+  const client = new AcpClient({ codexCliPath: "codex", workspace: "C:\\work", trustAllTools: false });
+  const calls: Array<{ method: string; params: unknown }> = [];
+  const template = "fixture://accounts/{account_id}/report";
+  const internal = client as unknown as { request: (method: string, params: unknown) => Promise<unknown> };
+  internal.request = async (method, params) => {
+    calls.push({ method, params });
+    if (method === "mcpServerStatus/list") return { data: [{
+      name: "fixture-mcp", runtimeStatus: "connected", resources: [],
+      resourceTemplates: [{ uriTemplate: template, name: "Account report", mimeType: "text/plain" }],
+    }] };
+    if (method === "mcpServer/resource/read") return { contents: [{ text: "Report body" }] };
+    throw new Error(`Unexpected ACP method: ${method}`);
+  };
+  const api = client as unknown as {
+    readMobileMcpResource?: (threadId: string, server: string, uri: string, uriTemplate?: string) => Promise<unknown>;
+  };
+  try {
+    assert.equal(typeof api.readMobileMcpResource, "function");
+    const result = await api.readMobileMcpResource!("thread-1", "fixture-mcp", "fixture://accounts/acme/report", template);
+    assert.deepEqual(result, { text: "Report body", truncated: false, omittedContentBlocks: 0 });
+    await assert.rejects(api.readMobileMcpResource!("thread-1", "fixture-mcp", "fixture://accounts/acme/other", template), /шаблон/i);
+    await assert.rejects(api.readMobileMcpResource!("thread-1", "fixture-mcp", "fixture://accounts/acme/report", "fixture://accounts/{other}/report"), /шаблон/i);
+    assert.deepEqual(calls.find((entry) => entry.method === "mcpServer/resource/read"), { method: "mcpServer/resource/read", params: {
+      threadId: "thread-1", server: "fixture-mcp", uri: "fixture://accounts/acme/report",
+    } });
+    assert.equal(calls.filter((entry) => entry.method === "mcpServer/resource/read").length, 1);
+  } finally { client.stop(); }
+});
+
 test("mobile MCP inventory includes a redacted bounded input schema only", () => {
   const result = normalizeMobileMcpServers([{
     name: "fixture-mcp", runtimeStatus: "connected", authStatus: "oauth", tools: {

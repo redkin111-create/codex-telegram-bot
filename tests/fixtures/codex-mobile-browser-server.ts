@@ -563,8 +563,14 @@ const agent = {
       return { text: `Fixture MCP result: ${input.query}\n<script>alert(1)</script>`, isError: false, truncated: false, omittedContentBlocks: 0 };
     }
     if (job.op === "readMcpResource") {
-      if (!fixtureMcpAuthorized || args.sessionId !== firstSession || args.resourceId !== "fixture-resource-account-notes") throw new Error("Fixture MCP-ресурс недоступен в выбранном сеансе");
-      return { text: "Fixture resource content\n<img src=x onerror=alert(1)>", truncated: false, omittedContentBlocks: 0 };
+      if (!fixtureMcpAuthorized || args.sessionId !== firstSession) throw new Error("Fixture MCP-ресурс недоступен в выбранном сеансе");
+      if (args.resourceId === "fixture-resource-account-notes") return { text: "Fixture resource content\n<img src=x onerror=alert(1)>", truncated: false, omittedContentBlocks: 0 };
+      if (args.resourceId === "fixture-resource-account-report") {
+        const parameters = args.parameters as { account_id?: unknown };
+        if (!parameters || typeof parameters.account_id !== "string") throw new Error("Fixture MCP-шаблон ждёт account_id");
+        return { text: `Fixture report for ${parameters.account_id}\n<img src=x onerror=alert(1)>`, truncated: false, omittedContentBlocks: 0 };
+      }
+      throw new Error("Fixture MCP-ресурс недоступен в выбранном сеансе");
     }
     if (job.op === "capabilities") {
       fixtureCapabilitiesCalls++;
@@ -586,8 +592,11 @@ const agent = {
             type: "object", required: ["query"], properties: { query: { type: "string", description: "Search phrase" } },
           } },
           { name: "host_info", description: "Text only: <script>alert(1)</script>.", inputSchema: { type: "object", properties: {} } },
-        ], resources: fixtureMcpAuthorized ? [{ id: "fixture-resource-account-notes", name: "Account notes", description: "Text-only fixture resource.", mimeType: "text/plain" }] : [],
-        toolCount: 2, resourceCount: 1, resourceTemplateCount: 0, discoveryFailed: false,
+        ], resources: fixtureMcpAuthorized ? [
+          { id: "fixture-resource-account-notes", name: "Account notes", description: "Text-only fixture resource.", mimeType: "text/plain" },
+          { id: "fixture-resource-account-report", name: "Account report", description: "Read a report for one account.", mimeType: "text/plain", parameters: ["account_id"] },
+        ] : [],
+        toolCount: 2, resourceCount: 1, resourceTemplateCount: fixtureMcpAuthorized ? 1 : 0, discoveryFailed: false,
       }],
       plugins: [{ id: "reviewer@official", name: "Review helper", marketplace: "Fixture official",
         description: "Показывает результаты ревью изменений.", capabilities: ["review", "summaries"], sourceType: "remote",

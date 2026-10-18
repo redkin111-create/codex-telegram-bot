@@ -662,7 +662,7 @@ test("MCP resource reads require a paired owner, exact Origin, CSRF and an owned
     const login = await pair(f.origin, f.auth);
     const url = f.origin + "/api/operations";
     const body = (sessionId = allowedSession) => JSON.stringify({ op: "readMcpResource", args: {
-      sessionId, resourceId: "fixture-resource-reference",
+      sessionId, resourceId: "fixture-resource-reference", parameters: { account_id: "phone entered" },
     } });
     const anonymous = await fetch(url, { method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: body() });
     assert.equal(anonymous.status, 401);
@@ -676,6 +676,7 @@ test("MCP resource reads require a paired owner, exact Origin, CSRF and an owned
     assert.equal(approved.status, 200);
     assert.equal(f.calls.at(-1)?.op, "readMcpResource");
     assert.equal(f.calls.at(-1)?.userId, 101);
+    assert.deepEqual(f.calls.at(-1)?.args.parameters, { account_id: "phone entered" });
   } finally { await cleanup(f.server, f.dataDir); }
 });
 

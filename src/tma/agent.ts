@@ -8,6 +8,7 @@ import { execFile as execFileCallback, execFileSync } from "node:child_process";
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { AcpClient } from "../acp/client.js";
+import { mobileMcpResourceTemplateParameters, resolveMobileMcpResourceTemplate } from "../acp/mobile-mcp.js";
 import { CODEX_PINNED_THREAD_SECTION_ID, CODEX_PINNED_THREAD_SECTION_NAME, type CodexThreadSection, type CodexThreadSummary, type CodexProjectSummary, type CodexRateLimitWindow, type CodexThreadGoalStatus, type CodexReviewTarget } from "../acp/codex-protocol.js";
 import { REASONING_LEVELS, textPrompt, type ReasoningEffort } from "../app/types.js";
 import type { RuntimeRegistry } from "../bot/registry.js";
@@ -153,7 +154,7 @@ interface MobilePtyRecord {
   expiry?:NodeJS.Timeout;dataSubscription?:{dispose():void};exitSubscription?:{dispose():void};
 }
 interface MobileMcpResourceRef {
-  ownerId:number;sessionId:string;serverName:string;uri:string;expiresAt:number;
+  ownerId:number;sessionId:string;serverName:string;uri?:string;uriTemplate?:string;expiresAt:number;
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; stt?:Pick<SttService,"enabled"|"transcribe">; mobilePtyFactory?:MobilePtyFactory; }
 export type MobileLocalOperation = "capabilities" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
@@ -998,7 +999,11 @@ export class MiniAppAgent {
           this.mobileMcpResources.delete(resourceId);
           throw new Error("Ссылка на MCP-ресурс устарела. Обновите настройки Codex.");
         }
-        return await acp.readMobileMcpResource(sessionId,resource.serverName,resource.uri);
+        const uri=resource.uriTemplate
+          ?resolveMobileMcpResourceTemplate(resource.uriTemplate,args.parameters)
+          :resource.uri;
+        if(!uri)throw new Error("Ссылка на MCP-ресурс устарела. Обновите настройки Codex.");
+        return await acp.readMobileMcpResource(sessionId,resource.serverName,uri,resource.uriTemplate);
       }
       case "installPlugin":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
@@ -1302,20 +1307,36 @@ export class MiniAppAgent {
       if(!rawServer||typeof rawServer!=="object"||Array.isArray(rawServer))continue;
       const serverRecord=rawServer as Record<string,unknown>;
       const serverName=clean(serverRecord.name,120);
-      if(!serverName||!Array.isArray(serverRecord.resources))continue;
+      if(!serverName)continue;
+      const rawResources=Array.isArray(serverRecord.resources)?serverRecord.resources:[];
+      const rawTemplates=Array.isArray(serverRecord.resourceTemplates)?serverRecord.resourceTemplates:[];
+      if(!rawResources.length&&!rawTemplates.length)continue;
       const summaries:MobileMcpResourceSummary[]=[];
-      for(const [index,rawResource] of serverRecord.resources.slice(0,50).entries()){
+      const entries=[
+        ...rawResources.slice(0,50).map((value)=>({value,kind:"resource" as const})),
+        ...rawTemplates.slice(0,50).map((value)=>({value,kind:"template" as const})),
+      ];
+      for(const [index,entry] of entries.entries()){
         if(issued>=500)break;
+        const rawResource=entry.value;
         if(!rawResource||typeof rawResource!=="object"||Array.isArray(rawResource))continue;
         const resource=rawResource as Record<string,unknown>;
-        const uri=resource.uri;
-        if(typeof uri!=="string"||!uri.trim()||uri.length>2048||/[\u0000-\u001f\u007f]/.test(uri))continue;
+        const uri=entry.kind==="resource"?resource.uri:undefined;
+        const uriTemplate=entry.kind==="template"?resource.uriTemplate:undefined;
+        const parameters=typeof uriTemplate==="string"?mobileMcpResourceTemplateParameters(uriTemplate):undefined;
+        if(entry.kind==="resource"&& (typeof uri!=="string"||!uri.trim()||uri.length>2048||/[\u0000-\u001f\u007f]/.test(uri)))continue;
+        if(entry.kind==="template"&&!parameters)continue;
         const id=randomUUID();
-        this.mobileMcpResources.set(id,{ownerId,sessionId,serverName,uri,expiresAt:now+10*60_000});
+        this.mobileMcpResources.set(id,{
+          ownerId,sessionId,serverName,
+          ...(typeof uri==="string"?{uri}:{}),
+          ...(typeof uriTemplate==="string"?{uriTemplate}:{}),
+          expiresAt:now+10*60_000,
+        });
         const name=clean(resource.name,160)??`Ресурс ${index+1}`;
         const description=clean(resource.description,300);
         const mimeType=clean(resource.mimeType,100);
-        summaries.push({id,name,...(description?{description}:{}),...(mimeType?{mimeType}:{})});
+        summaries.push({id,name,...(description?{description}:{}),...(mimeType?{mimeType}:{}),...(parameters?{parameters}:{})});
         issued++;
       }
       if(summaries.length)result.set(serverName,summaries);

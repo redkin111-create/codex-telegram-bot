@@ -15,7 +15,7 @@ import { codexLaunchInfo, codexSpawn } from "../app/codex-cli.js";
 import { createLogger } from "../logger.js";
 import { killPid } from "../sessions/process.js";
 import { AcpError, isAccountExhaustedError, isContextExhaustedError, isTransientAcpError, toAcpError } from "./errors.js";
-import { normalizeMobileMcpResourceResult, normalizeMobileMcpToolResult, validateMobileMcpArguments } from "./mobile-mcp.js";
+import { mobileMcpResourceUriMatchesTemplate, normalizeMobileMcpResourceResult, normalizeMobileMcpToolResult, validateMobileMcpArguments } from "./mobile-mcp.js";
 import { decideApproval, decidePermissionsApproval } from "./approvals.js";
 import { handleServerRequest, type ServerHandlerOptions } from "./server-handlers.js";
 import { JsonRpcTransport } from "./transport.js";
@@ -501,6 +501,7 @@ export class AcpClient extends EventEmitter {
     threadId: string,
     serverName: string,
     uri: string,
+    uriTemplate?: string,
   ): Promise<ReturnType<typeof normalizeMobileMcpResourceResult>> {
     if (!threadId.trim() || threadId.length > 128 || /[\u0000-\u001f\u007f]/.test(threadId) ||
         !serverName.trim() || serverName.length > 120 || /[\u0000-\u001f\u007f]/.test(serverName) ||
@@ -512,7 +513,14 @@ export class AcpClient extends EventEmitter {
     if (!server || server.runtimeStatus !== "connected") {
       throw new Error("Сервер MCP не подключён к выбранному сеансу Codex");
     }
-    if (!server.resources?.some((entry) => {
+    if (uriTemplate) {
+      if (!mobileMcpResourceUriMatchesTemplate(uriTemplate, uri) || !server.resourceTemplates?.some((entry) => {
+        return entry !== null && typeof entry === "object" && !Array.isArray(entry) &&
+          (entry as Record<string, unknown>).uriTemplate === uriTemplate;
+      })) {
+        throw new Error("MCP-шаблон не найден в текущем каталоге сеанса Codex");
+      }
+    } else if (!server.resources?.some((entry) => {
       return entry !== null && typeof entry === "object" && !Array.isArray(entry) &&
         (entry as Record<string, unknown>).uri === uri;
     })) {

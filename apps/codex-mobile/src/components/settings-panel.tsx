@@ -20,7 +20,7 @@ type McpToolAction = {
   inputSchema?: NonNullable<MobileCapabilities["mcpServers"][number]["tools"][number]["inputSchema"]>;
 };
 type McpToolResult = { text: string; isError: boolean; truncated: boolean; omittedContentBlocks: number };
-type McpResourceAction = { serverName: string; id: string; name: string; description?: string; mimeType?: string };
+type McpResourceAction = { serverName: string; id: string; name: string; description?: string; mimeType?: string; parameters?: string[] };
 type McpResourceResult = { name: string; text: string; truncated: boolean; omittedContentBlocks: number };
 type MarketplaceAction =
   | { kind: "add"; source: string; refName: string }
@@ -84,6 +84,7 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
   const [mcpToolError, setMcpToolError] = useState("");
   const [mcpToolResult, setMcpToolResult] = useState<McpToolResult>();
   const [mcpResourceAction, setMcpResourceAction] = useState<McpResourceAction>();
+  const [mcpResourceParameters, setMcpResourceParameters] = useState<Record<string, string>>({});
   const [mcpResourceError, setMcpResourceError] = useState("");
   const [mcpResourceResult, setMcpResourceResult] = useState<McpResourceResult>();
 
@@ -281,7 +282,10 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
     setMcpResourceError("");
     setMcpResourceResult(undefined);
     try {
-      const result = await onOperation("readMcpResource", { sessionId, resourceId: action.id }) as Partial<Omit<McpResourceResult, "name">>;
+      const result = await onOperation("readMcpResource", {
+        sessionId, resourceId: action.id,
+        ...(action.parameters ? { parameters: mcpResourceParameters } : {}),
+      }) as Partial<Omit<McpResourceResult, "name">>;
       if (!result || typeof result.text !== "string") throw new Error("Codex вернул некорректное содержимое MCP-ресурса");
       setMcpResourceResult({
         name: action.name, text: result.text.slice(0, 64_000), truncated: result.truncated === true,
@@ -354,7 +358,7 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
                 {(server.status === "authenticationRequired" || server.authStatus === "notLoggedIn") && <div className="mt-3 flex flex-wrap gap-2"><Button type="button" variant="outline" className="min-h-9 px-3 text-xs" disabled={!usable} onClick={() => void beginMcpOAuth(server.name)}><ShieldCheck size={14} /> Начать вход</Button></div>}
                 {mcpLoginLinks[server.name] && safeLinkHost(mcpLoginLinks[server.name]) && <div className="mt-3 space-y-2 rounded-lg border border-border bg-[#111613] p-3" role="status"><p className="text-xs leading-relaxed text-muted">Продолжите вход у провайдера. Перед вводом пароля проверьте адрес: <span className="font-medium text-text">{safeLinkHost(mcpLoginLinks[server.name])}</span>.</p><div className="flex flex-wrap items-center gap-2"><a className="inline-flex min-h-9 items-center gap-1 text-xs text-accent underline" href={mcpLoginLinks[server.name]} target="_blank" rel="noopener noreferrer">Открыть страницу входа <ExternalLink size={12} /></a><Button type="button" variant="ghost" className="min-h-9 px-2 text-xs" disabled={loading || saving} onClick={() => void reload()}>Проверить подключение</Button></div></div>}
                 {server.tools.length > 0 && <details className="mt-3 border-t border-border pt-2"><summary className="min-h-8 cursor-pointer py-1 text-xs font-medium">Доступные инструменты ({server.toolCount})</summary><ul className="mt-1 space-y-2">{server.tools.map((tool) => <li key={tool.name} className="rounded-lg bg-[#171d18] p-2"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><p className="break-words font-mono text-[11px]">{tool.name}</p>{tool.description && <p className="mt-1 break-words text-[11px] leading-relaxed text-muted">{tool.description}</p>}</div>{server.status === "connected" && <Button type="button" variant="outline" className="min-h-8 shrink-0 px-2 text-[11px]" disabled={!usable} onClick={() => { setMcpToolResult(undefined); setMcpToolArguments("{}"); setMcpToolError(""); setMcpToolAction({ serverName: server.name, toolName: tool.name, description: tool.description, inputSchema: tool.inputSchema }); }}>Вызвать</Button>}</div></li>)}</ul></details>}
-                {server.resources?.length ? <details className="mt-3 border-t border-border pt-2"><summary className="min-h-8 cursor-pointer py-1 text-xs font-medium">Ресурсы ({server.resources.length})</summary><ul className="mt-1 space-y-2">{server.resources.map((resource) => <li key={resource.id} className="flex items-start justify-between gap-2 rounded-lg bg-[#171d18] p-2"><div className="min-w-0"><p className="break-words text-[11px] font-medium">{resource.name}</p>{resource.description && <p className="mt-1 break-words text-[11px] leading-relaxed text-muted">{resource.description}</p>}{resource.mimeType && <p className="mt-1 text-[10px] text-muted">{resource.mimeType}</p>}</div>{server.status === "connected" && <Button type="button" variant="outline" className="min-h-8 shrink-0 px-2 text-[11px]" disabled={!usable} onClick={() => { setMcpResourceResult(undefined); setMcpResourceError(""); setMcpResourceAction({ serverName: server.name, ...resource }); }}>Читать</Button>}</li>)}</ul></details> : null}
+                {server.resources?.length ? <details className="mt-3 border-t border-border pt-2"><summary className="min-h-8 cursor-pointer py-1 text-xs font-medium">Ресурсы и шаблоны ({server.resources.length})</summary><ul className="mt-1 space-y-2">{server.resources.map((resource) => <li key={resource.id} className="flex items-start justify-between gap-2 rounded-lg bg-[#171d18] p-2"><div className="min-w-0"><p className="break-words text-[11px] font-medium">{resource.name}</p>{resource.parameters?.length ? <p className="mt-1 break-words text-[10px] text-accent">Шаблон · параметры: {resource.parameters.join(", ")}</p> : null}{resource.description && <p className="mt-1 break-words text-[11px] leading-relaxed text-muted">{resource.description}</p>}{resource.mimeType && <p className="mt-1 text-[10px] text-muted">{resource.mimeType}</p>}</div>{server.status === "connected" && <Button type="button" variant="outline" className="min-h-8 shrink-0 px-2 text-[11px]" disabled={!usable} onClick={() => { setMcpResourceResult(undefined); setMcpResourceError(""); setMcpResourceParameters(Object.fromEntries((resource.parameters ?? []).map((name) => [name, ""]))); setMcpResourceAction({ serverName: server.name, ...resource }); }}>{resource.parameters?.length ? "Открыть" : "Читать"}</Button>}</li>)}</ul></details> : null}
               </li>)}</ul> : <p className="text-xs text-muted">В этом сеансе нет подключённых MCP-серверов.</p>}
             <p className="text-[11px] leading-relaxed text-muted">Показано состояние выбранного сеанса. Адреса ресурсов и пути серверу не передаются в браузер; схемы и результаты отображаются как текст.</p>
           </Card>
@@ -464,7 +468,8 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
             <p className="mt-2 break-words text-sm"><span className="font-medium">{mcpResourceAction.serverName}</span> · {mcpResourceAction.name}</p>
             {mcpResourceAction.description && <p className="mt-2 break-words text-xs leading-relaxed text-muted">{mcpResourceAction.description}</p>}
             {mcpResourceAction.mimeType && <p className="mt-2 text-[11px] text-muted">Тип: {mcpResourceAction.mimeType}</p>}
-            <p className="mt-2 text-xs leading-relaxed text-[#e6c990]">Содержимое будет запрошено у этого MCP-сервера и показано как обычный текст. Проверьте название ресурса перед чтением.</p>
+            {mcpResourceAction.parameters?.map((name) => <label key={name} className="block space-y-1.5"><span className="text-xs text-muted">{name}</span><Input aria-label={`Параметр ресурса ${name}`} value={mcpResourceParameters[name] ?? ""} onChange={(event) => setMcpResourceParameters((current) => ({ ...current, [name]: event.target.value }))} maxLength={512} autoCapitalize="off" autoCorrect="off" /></label>)}
+            <p className="mt-2 text-xs leading-relaxed text-[#e6c990]">Содержимое будет запрошено у этого MCP-сервера и показано как обычный текст. Адрес шаблона остаётся на компьютере.</p>
           </div>
           {mcpResourceError && <p role="alert" className="rounded-xl border border-[#733b39] bg-[#351f1e] p-3 text-sm text-[#ffc3bd]">{mcpResourceError}</p>}
           <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={saving} onClick={() => setMcpResourceAction(undefined)}>Отмена</Button><Button type="button" className="flex-1" disabled={saving || !usable} onClick={() => void confirmMcpResourceRead()}>{saving ? "Читаю…" : "Прочитать ресурс"}</Button></div>

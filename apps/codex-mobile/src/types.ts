@@ -166,7 +166,7 @@ export interface MobileCapabilities {
       type?: string; description?: string; required?: string[]; properties?: Record<string, unknown>;
       items?: Record<string, unknown>; enum?: Array<string | number | boolean | null>; additionalProperties?: boolean;
     } }>;
-    resources?: Array<{ id: string; name: string; description?: string; mimeType?: string }>;
+    resources?: Array<{ id: string; name: string; description?: string; mimeType?: string; parameters?: string[] }>;
     toolCount: number;
     resourceCount: number;
     resourceTemplateCount: number;

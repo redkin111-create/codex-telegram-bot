@@ -38,6 +38,7 @@ export interface MobileMcpResourceSummary {
   name: string;
   description?: string;
   mimeType?: string;
+  parameters?: string[];
 }
 
 export interface MobileMcpServerSummary {

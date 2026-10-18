@@ -108,6 +108,70 @@ export function validateMobileMcpArguments(value: unknown): Record<string, unkno
   return root;
 }
 
+/** Support only simple named URI-template variables; operators and raw URI values never reach the browser. */
+export function mobileMcpResourceTemplateParameters(template: string): string[] | undefined {
+  if (typeof template !== "string" || !template.trim() || template.length > 2048 || /[\u0000-\u001f\u007f]/.test(template)) return undefined;
+  if (!/^[A-Za-z][A-Za-z0-9+.-]*:/.test(template)) return undefined;
+  const pattern = /\{([A-Za-z_][A-Za-z0-9_.-]{0,79})\}/g;
+  const parameters: string[] = [];
+  const remainder = template.replace(pattern, (_match, name: string) => {
+    if (!parameters.includes(name)) parameters.push(name);
+    return "codex-mobile-value";
+  });
+  if (/[{}]/.test(remainder) || parameters.length === 0 || parameters.length > 20) return undefined;
+  try {
+    const parsed = new URL(remainder);
+    if (parsed.username || parsed.password || parsed.hostname.includes("codex-mobile-value")) return undefined;
+  } catch { return undefined; }
+  return parameters;
+}
+
+/** Check that a resolved URI still has the exact fixed portions of its advertised template. */
+export function mobileMcpResourceUriMatchesTemplate(template: string, uri: string): boolean {
+  const parameters = mobileMcpResourceTemplateParameters(template);
+  if (!parameters || typeof uri !== "string" || uri.length > 2048 || /[\u0000-\u001f\u007f{}]/.test(uri)) return false;
+  const parts = template.split(/(\{[A-Za-z_][A-Za-z0-9_.-]{0,79}\})/);
+  const captures = new Map<string, number>();
+  let nextCapture = 0;
+  const source = parts.map((part) => {
+    const match = /^\{([A-Za-z_][A-Za-z0-9_.-]{0,79})\}$/.exec(part);
+    if (!match) return part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const prior = captures.get(match[1]!);
+    if (prior !== undefined) return `\\${prior}`;
+    const capture = ++nextCapture;
+    captures.set(match[1]!, capture);
+    return "((?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})*)";
+  }).join("");
+  if (captures.size !== parameters.length) return false;
+  try {
+    const parsed = new URL(uri);
+    if (parsed.username || parsed.password) return false;
+    return new RegExp(`^${source}$`).test(uri);
+  } catch { return false; }
+}
+
+/** Resolve only a currently listed, simple template with one bounded string per named variable. */
+export function resolveMobileMcpResourceTemplate(template: string, value: unknown): string {
+  const parameters = mobileMcpResourceTemplateParameters(template);
+  const values = record(value);
+  if (!parameters || !values || Object.keys(values).length !== parameters.length ||
+      parameters.some((name) => !Object.prototype.hasOwnProperty.call(values, name))) {
+    throw new Error("Укажите все параметры MCP-ресурса без лишних полей");
+  }
+  let result = template;
+  for (const name of parameters) {
+    const entry = values[name];
+    if (typeof entry !== "string" || entry.length > 512 || /[\u0000-\u001f\u007f]/.test(entry)) {
+      throw new Error("Параметры MCP-ресурса должны быть строками до 512 символов без управляющих знаков");
+    }
+    const escaped = encodeURIComponent(entry).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+    result = result.replaceAll(`{${name}}`, escaped);
+  }
+  if (result.length > 2048 || /[{}\u0000-\u001f\u007f]/.test(result)) throw new Error("Не удалось безопасно собрать URI MCP-ресурса");
+  try { new URL(result); } catch { throw new Error("Не удалось безопасно собрать URI MCP-ресурса"); }
+  return result;
+}
+
 function boundedJson(value: unknown): string | undefined {
   let nodes = 0;
   const visit = (input: unknown, depth: number): unknown => {
