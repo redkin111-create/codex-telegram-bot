@@ -1048,8 +1048,9 @@ process.stdin.on("data", (chunk: string) => {
   for (const line of lines) {
     try {
       const command = JSON.parse(line) as { command?: string };
-      if (command.command === "approval" || command.command === "approvalNoSession" || command.command === "permissionApproval") {
+      if (command.command === "approval" || command.command === "approvalNoSession" || command.command === "approvalAdvanced" || command.command === "permissionApproval") {
         const permissionApproval = command.command === "permissionApproval";
+        const advancedApproval = command.command === "approvalAdvanced";
         void mobileApprovals.handle({
           sessionId: firstSession,
           toolCall: permissionApproval
@@ -1062,6 +1063,15 @@ process.stdin.on("data", (chunk: string) => {
             mobileOptions: [permissionApproval
               ? { optionId: "codex-mobile-permissions-session-allow", name: "Разрешить для сеанса" }
               : { optionId: "codex-mobile-session-allow", name: "Разрешить для сеанса" }],
+          } : {}),
+          ...(advancedApproval ? {
+            mobileChoices: [
+              { optionId: "accept", name: "Разрешить один раз", kind: "allow_once" },
+              { optionId: "codex-mobile-decision-1", name: "Разрешить и сохранить правило команды", kind: "allow_rule" },
+              { optionId: "codex-mobile-decision-2", name: "Разрешить хост и сохранить правило", kind: "allow_rule" },
+              { optionId: "cancel", name: "Отменить текущий ход", kind: "cancel" },
+            ],
+            mobileSummary: "Правило команды: [\"npm\",\"test\"]\nСетевое правило для registry.example.com: разрешить",
           } : {}),
           ...(permissionApproval ? {
             permissions: {

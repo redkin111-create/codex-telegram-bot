@@ -42,7 +42,7 @@ export function ApprovalPanel({ approval, onResolve, onClose }: {
         </div>
       </Card>}
       <div className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-2">{approval.options.map((option) => {
-        const reject = /deny|declin|reject|отклон|запрет/i.test(`${option.id} ${option.label}`);
+        const reject = /deny|declin|reject|cancel|abort|отклон|запрет|отмен/i.test(`${option.id} ${option.label}`);
         return <Button key={option.id} variant={reject ? "danger" : "default"} className="min-h-12 whitespace-normal" disabled={busy} onClick={() => {
           if (option.id === "codex-mobile-session-allow" || option.id === "codex-mobile-permissions-session-allow") setSessionApproval(option.id);
           else void choose(option.id);

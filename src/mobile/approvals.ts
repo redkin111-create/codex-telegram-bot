@@ -38,18 +38,21 @@ export class MobileApprovalBroker {
     if (ownerId === undefined || !this.allowedOwners.has(String(ownerId)) || !this.feed.hasSubscribers(params.sessionId)) {
       return this.fallback ? this.fallback(params) : cancelled;
     }
-    const choices = [...params.options];
-    const rejectIndex = choices.findIndex((option) =>
-      /reject|deny|no|cancel|отклон|запрет/i.test(`${option.optionId} ${option.name} ${option.kind ?? ""}`),
-    );
-    choices.splice(rejectIndex < 0 ? choices.length : rejectIndex, 0, ...(params.mobileOptions ?? []));
+    const choices = params.mobileChoices ? [...params.mobileChoices] : [...params.options];
+    if (!params.mobileChoices) {
+      const rejectIndex = choices.findIndex((option) =>
+        /reject|deny|no|cancel|отклон|запрет/i.test(`${option.optionId} ${option.name} ${option.kind ?? ""}`),
+      );
+      choices.splice(rejectIndex < 0 ? choices.length : rejectIndex, 0, ...(params.mobileOptions ?? []));
+    }
     const options = choices.filter((option) =>
       typeof option.optionId === "string" && option.optionId.length <= 100 &&
       typeof option.name === "string" && option.name.length <= 160,
     ).map((option) => ({ id: option.optionId, label: clean(option.name, 160) }));
-    if (!options.length) return this.fallback ? this.fallback(params) : cancelled;
+    if (!options.length) return params.mobileChoices ? cancelled : this.fallback ? this.fallback(params) : cancelled;
     const details = params.permissions ? describeRequestedPermissions(params.permissions) : undefined;
-    const summary = [clean(params.reason, 600), ...(details ?? [])].filter(Boolean).join("\n").slice(0, 1200) || undefined;
+    const summary = [clean(params.reason, 600), ...(details ?? []), clean(params.mobileSummary, 1200)]
+      .filter(Boolean).join("\n").slice(0, 1200) || undefined;
     const id = randomUUID();
     const view = {
       id,

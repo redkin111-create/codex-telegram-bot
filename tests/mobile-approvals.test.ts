@@ -74,6 +74,46 @@ test("mobile approval broker never invents a session grant missing from Codex ch
   assert.deepEqual(await waiting, { outcome: { outcome: "selected", optionId: "decline" } });
 });
 
+test("mobile approval uses the exact Codex choices while leaving legacy choices for Telegram", async () => {
+  const f = fixture();
+  const broker = new MobileApprovalBroker(f.feed, f.registry, new Set(["101"]), undefined, 1000);
+  const waiting = broker.handle({
+    sessionId,
+    toolCall: { title: "npm test", kind: "execute" },
+    options: [{ optionId: "accept", name: "Разрешить один раз" }, { optionId: "decline", name: "Отклонить" }],
+    mobileChoices: [
+      { optionId: "accept", name: "Разрешить один раз" },
+      { optionId: "codex-mobile-decision-2", name: "Разрешить хост и сохранить правило" },
+      { optionId: "cancel", name: "Отменить текущий ход", kind: "cancel" },
+    ],
+    mobileSummary: "Сетевое правило для registry.example.com: разрешить",
+  });
+  const approval = broker.listFor(101, sessionId)[0]!;
+  assert.deepEqual(approval.options.map((option) => option.id), [
+    "accept", "codex-mobile-decision-2", "cancel",
+  ]);
+  assert.match(approval.summary ?? "", /registry\.example\.com/);
+  assert.equal(broker.resolve(101, sessionId, approval.id, "decline"), false);
+  assert.equal(broker.resolve(101, sessionId, approval.id, "codex-mobile-decision-2"), true);
+  assert.deepEqual(await waiting, { outcome: { outcome: "selected", optionId: "codex-mobile-decision-2" } });
+});
+
+test("mobile approval with an empty Codex choice list cancels without using Telegram fallback", async () => {
+  const f = fixture();
+  let fallbackCalled = false;
+  const broker = new MobileApprovalBroker(f.feed, f.registry, new Set(["101"]), async () => {
+    fallbackCalled = true;
+    return { outcome: { outcome: "selected", optionId: "accept" } };
+  }, 1000);
+  const outcome = await broker.handle({
+    sessionId,
+    options: [{ optionId: "accept", name: "Разрешить один раз" }],
+    mobileChoices: [],
+  });
+  assert.deepEqual(outcome, { outcome: { outcome: "cancelled" } });
+  assert.equal(fallbackCalled, false);
+});
+
 test("mobile MCP elicitation collects a bounded form for its owned session", async () => {
   const f = fixture();
   const broker = new MobileElicitationBroker(f.feed, f.registry, new Set(["101"]), 1000);

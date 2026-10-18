@@ -281,7 +281,8 @@ test("session-scoped mobile approval follows Codex availability without changing
   }, "codex-mobile-session-allow");
   assert.equal(advertised, "acceptForSession");
   assert.deepEqual(captured[0]?.options.map((option) => option.optionId), ["accept", "decline"]);
-  assert.deepEqual(captured[0]?.mobileOptions?.map((option) => option.optionId), ["codex-mobile-session-allow"]);
+  assert.equal(captured[0]?.mobileOptions, undefined);
+  assert.deepEqual(captured[0]?.mobileChoices?.map((option) => option.optionId), ["accept", "codex-mobile-session-allow", "decline"]);
 
   const unavailable = await decide("item/commandExecution/requestApproval", {
     threadId: "thread-1", itemId: "item-2", command: "npm test",
@@ -289,6 +290,7 @@ test("session-scoped mobile approval follows Codex availability without changing
   }, "accept");
   assert.equal(unavailable, "accept");
   assert.equal(captured[1]?.mobileOptions, undefined, "an explicit server choice list wins over legacy hints");
+  assert.deepEqual(captured[1]?.mobileChoices?.map((option) => option.optionId), ["accept", "cancel"]);
 
   const legacyNetwork = await decide("item/commandExecution/requestApproval", {
     threadId: "thread-1", itemId: "item-3", command: "npm install",
@@ -301,6 +303,68 @@ test("session-scoped mobile approval follows Codex availability without changing
     changes: [{ path: "src/main.ts" }],
   }, "codex-mobile-session-allow");
   assert.equal(legacyFile, "acceptForSession");
+});
+
+test("mobile command approval maps exact structured Codex decisions and shows their scope", async () => {
+  const execDecision = { acceptWithExecpolicyAmendment: { execpolicy_amendment: ["npm", "test"] } };
+  const networkDecision = { applyNetworkPolicyAmendment: { network_policy_amendment: { host: "registry.example.com", action: "allow" } } };
+  const captured: RequestPermissionParams[] = [];
+  const decide = (optionId: string) => decideApproval("item/commandExecution/requestApproval", {
+    threadId: "thread-1",
+    itemId: "item-advanced",
+    command: "npm test",
+    availableDecisions: ["accept", execDecision, networkDecision, "cancel"],
+  }, false, async (request) => {
+    captured.push(request);
+    return { outcome: { outcome: "selected", optionId } };
+  });
+
+  const execOptionId = "codex-mobile-decision-1";
+  assert.deepEqual(await decide(execOptionId), execDecision);
+  assert.deepEqual(captured[0]?.mobileChoices?.map((option) => option.optionId), [
+    "accept", execOptionId, "codex-mobile-decision-2", "cancel",
+  ]);
+  assert.equal(captured[0]?.options.map((option) => option.optionId).join(","), "accept,decline", "Telegram choices stay unchanged");
+  assert.match(captured[0]?.mobileSummary ?? "", /\["npm","test"\]/);
+  assert.match(captured[0]?.mobileSummary ?? "", /registry\.example\.com/);
+
+  assert.deepEqual(await decide("codex-mobile-decision-2"), networkDecision);
+  assert.equal(await decide("cancel"), "cancel");
+});
+
+test("mobile approval fails closed when Codex advertises no usable decisions", async () => {
+  let captured: RequestPermissionParams | undefined;
+  const result = await decideApproval("item/commandExecution/requestApproval", {
+    threadId: "thread-1", itemId: "item-empty", command: "run",
+    availableDecisions: [{ unknownFutureChoice: { secret: "ignored" } }],
+  }, false, async (request) => {
+    captured = request;
+    return { outcome: { outcome: "selected", optionId: "accept" } };
+  });
+  assert.equal(result, "cancel");
+  assert.deepEqual(captured?.mobileChoices, []);
+
+  const oversized = await decideApproval("item/commandExecution/requestApproval", {
+    threadId: "thread-1", itemId: "item-oversized", command: "run",
+    availableDecisions: Array.from({ length: 33 }, () => "accept"),
+  }, false, async (request) => {
+    captured = request;
+    return { outcome: { outcome: "selected", optionId: "accept" } };
+  });
+  assert.equal(oversized, "cancel");
+  assert.deepEqual(captured?.mobileChoices, []);
+
+  const invalidHost = await decideApproval("item/commandExecution/requestApproval", {
+    threadId: "thread-1", itemId: "item-invalid-host", command: "run",
+    availableDecisions: [{ applyNetworkPolicyAmendment: {
+      network_policy_amendment: { host: "registry.example.com\nallow-anything", action: "allow" },
+    } }],
+  }, false, async (request) => {
+    captured = request;
+    return { outcome: { outcome: "selected", optionId: "codex-mobile-decision-0" } };
+  });
+  assert.equal(invalidHost, "cancel");
+  assert.deepEqual(captured?.mobileChoices, []);
 });
 
 test("Codex permission approval denies on reject, missing handler, and unknown scope", async () => {
