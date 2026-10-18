@@ -1,0 +1,32 @@
+import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import { test } from "node:test";
+import type { ScreenshotRef } from "../apps/codex-mobile/src/types.js";
+
+const appRequire = createRequire(new URL("../apps/codex-mobile/package.json", import.meta.url));
+const React = appRequire("react") as typeof import("react");
+const { renderToStaticMarkup } = appRequire("react-dom/server") as typeof import("react-dom/server");
+const { ScreenshotsGallery } = appRequire("./src/components/screenshots-gallery.tsx") as {
+  ScreenshotsGallery: import("react").ComponentType<any>;
+};
+Object.assign(globalThis, { React, window: { location: { origin: "http://127.0.0.1" } } });
+
+const fixtureImages: ScreenshotRef[] = Array.from({ length: 256 }, (_, index) => ({
+  path: `C:\\fixture\\screenshots\\capture-${String(index + 145).padStart(3, "0")}.png`,
+  name: `capture-${String(index + 145).padStart(3, "0")}.png`,
+  mtimeMs: index + 145,
+  size: 68,
+}));
+
+test("mobile screenshot gallery renders one page at a time", () => {
+  const html = renderToStaticMarkup(React.createElement(ScreenshotsGallery, {
+    sessionId: "11111111-1111-4111-8111-111111111111",
+    images: fixtureImages,
+    onLoadOlder: async () => ({ images: [] }),
+    onOpenImage: () => undefined,
+  }));
+
+  assert.equal((html.match(/aria-label="Открыть скриншот/g) ?? []).length, 80);
+  assert.match(html, /Показать более старые/);
+  assert.doesNotMatch(html, /Показать более новые/);
+});
