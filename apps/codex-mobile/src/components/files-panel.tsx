@@ -32,6 +32,7 @@ export function FilesPanel({ sessionId, connected, onClose, onOperation }: {
   const [newName, setNewName] = useState("");
   const [entryAction, setEntryAction] = useState<{ action: "rename" | "delete"; entry: MobileFileListing["entries"][number]; path: string }>();
   const [renameName, setRenameName] = useState("");
+  const [directoryConfirmation, setDirectoryConfirmation] = useState("");
   const [entryError, setEntryError] = useState("");
 
   async function refreshDirectory(path = directory) {
@@ -121,6 +122,7 @@ export function FilesPanel({ sessionId, connected, onClose, onOperation }: {
   function requestEntryAction(entry: MobileFileListing["entries"][number], action: "rename" | "delete") {
     setEntryAction({ action, entry, path: [directory, entry.name].filter(Boolean).join("/") });
     setRenameName(action === "rename" ? entry.name : "");
+    setDirectoryConfirmation("");
     setEntryError("");
   }
 
@@ -133,17 +135,18 @@ export function FilesPanel({ sessionId, connected, onClose, onOperation }: {
     setEntryError("");
     setError("");
     setNotice("");
-    const expected = { sessionId, path, expectedKind: entry.kind, expectedMtimeMs: entry.mtimeMs, ...(entry.kind === "file" ? { expectedSize: entry.size } : {}) };
+    const expected = { sessionId, path, expectedKind: entry.kind, expectedMtimeMs: entry.mtimeMs, ...(entry.kind === "file" ? { expectedSize: entry.size } : action === "delete" ? { confirmationName: directoryConfirmation } : {}) };
     try {
       if (action === "rename") {
         await onOperation("renameProjectEntry", { ...expected, newName: name });
         setNotice(`${entry.kind === "directory" ? "Папка" : "Файл"} переименован${entry.kind === "directory" ? "а" : ""}`);
       } else {
         await onOperation("deleteProjectEntry", expected);
-        setNotice(entry.kind === "directory" ? "Пустая папка удалена" : "Файл удалён");
+        setNotice(entry.kind === "directory" ? "Папка и содержимое удалены" : "Файл удалён");
       }
       setEntryAction(undefined);
       setRenameName("");
+      setDirectoryConfirmation("");
       await refreshDirectory();
     } catch (cause) {
       setEntryError(cause instanceof Error ? cause.message : "Не удалось изменить файл проекта");
@@ -206,11 +209,12 @@ export function FilesPanel({ sessionId, connected, onClose, onOperation }: {
     </section>
     {entryAction && <div className="fixed inset-0 z-[80] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
       <form role="alertdialog" aria-modal="true" aria-labelledby="file-action-title" className="safe-area-bottom w-full max-w-md space-y-4 rounded-2xl border border-border bg-elevated p-5 shadow-soft" onSubmit={(event) => { event.preventDefault(); void confirmEntryAction(); }}>
-        <div><h3 id="file-action-title" className="text-base font-semibold">{entryAction.action === "rename" ? "Переименовать?" : entryAction.entry.kind === "directory" ? "Удалить пустую папку?" : "Удалить файл?"}</h3><p className="mt-2 break-all font-mono text-xs text-muted">{entryAction.path}</p></div>
+        <div><h3 id="file-action-title" className="text-base font-semibold">{entryAction.action === "rename" ? "Переименовать?" : entryAction.entry.kind === "directory" ? "Удалить папку и содержимое?" : "Удалить файл?"}</h3><p className="mt-2 break-all font-mono text-xs text-muted">{entryAction.path}</p></div>
         {entryAction.action === "rename" ? <label className="block space-y-1.5"><span className="text-xs text-muted">Новое имя в этой папке</span><Input autoFocus aria-label="Новое имя файла или папки" value={renameName} onChange={(event) => setRenameName(event.target.value)} maxLength={255} disabled={saving} /></label>
-          : <p className="text-xs leading-relaxed text-muted">{entryAction.entry.kind === "directory" ? "Удаление работает только для пустых папок. Содержимое папки не удаляется." : "Файл будет удалён из проекта после подтверждения."}</p>}
+          : entryAction.entry.kind === "directory" ? <label className="block space-y-1.5"><span className="text-xs leading-relaxed text-muted">Все файлы и подпапки будут удалены. Введите имя папки для подтверждения: <span className="font-mono text-primary">{entryAction.entry.name}</span></span><Input autoFocus aria-label="Подтверждение удаления папки" value={directoryConfirmation} onChange={(event) => setDirectoryConfirmation(event.target.value)} maxLength={255} disabled={saving} /></label>
+            : <p className="text-xs leading-relaxed text-muted">Файл будет удалён из проекта после подтверждения.</p>}
         {entryError && <p role="alert" className="rounded-lg border border-[#733b39] bg-[#351f1e] p-2 text-xs text-[#ffc3bd]">{entryError}</p>}
-        <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={saving} onClick={() => { setEntryAction(undefined); setEntryError(""); }}>Отмена</Button><Button type="submit" variant={entryAction.action === "delete" ? "danger" : "default"} className="flex-1" disabled={!connected || saving || (entryAction.action === "rename" && (!renameName.trim() || renameName.includes("/") || renameName.includes("\\")))}>{saving ? "Выполняю…" : entryAction.action === "rename" ? "Переименовать" : "Удалить"}</Button></div>
+        <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={saving} onClick={() => { setEntryAction(undefined); setEntryError(""); setDirectoryConfirmation(""); }}>Отмена</Button><Button type="submit" variant={entryAction.action === "delete" ? "danger" : "default"} className="flex-1" disabled={!connected || saving || (entryAction.action === "rename" && (!renameName.trim() || renameName.includes("/") || renameName.includes("\\"))) || (entryAction.action === "delete" && entryAction.entry.kind === "directory" && directoryConfirmation !== entryAction.entry.name)}>{saving ? "Выполняю…" : entryAction.action === "rename" ? "Переименовать" : entryAction.entry.kind === "directory" ? "Удалить папку" : "Удалить файл"}</Button></div>
       </form>
     </div>}
   </div>;

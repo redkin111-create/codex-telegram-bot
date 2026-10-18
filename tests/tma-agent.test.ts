@@ -3,7 +3,7 @@ import test from "node:test";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ReasoningEffort } from "../src/app/types.js";
@@ -1403,10 +1403,14 @@ test("mobile rename keeps a project file inside its authorized folder and reject
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
-test("mobile delete removes an owned file and refuses non-empty project folders",async()=>{
+test("mobile delete removes owned files and recursively deletes only a confirmed project folder",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-delete-entry-"));
   const project=join(dir,"project");mkdirSync(join(project,"empty-folder"),{recursive:true});mkdirSync(join(project,"full-folder"),{recursive:true});
   writeFileSync(join(project,"remove.txt"),"remove this file\n");writeFileSync(join(project,"full-folder","keep.txt"),"keep this file\n");
+  const outside=join(dir,"outside.txt");writeFileSync(outside,"outside project must survive\n");
+  try{symlinkSync(outside,join(project,"full-folder","outside-link.txt"),"file");}catch{/* Symlink creation can be disabled by the host OS. */}
+  const outsideDirectory=join(dir,"outside-directory");mkdirSync(outsideDirectory);writeFileSync(join(outsideDirectory,"keep.txt"),"outside directory must survive\n");
+  try{symlinkSync(outsideDirectory,join(project,"full-folder","outside-directory-link"),"junction");}catch{/* Junction creation can be disabled by the host OS. */}
   const sessionId="27272727-2727-4272-8272-272727272727";
   const runtime={sessionId,isBusy:false};
   const acp=Object.assign(new EventEmitter(),{
@@ -1425,13 +1429,18 @@ test("mobile delete removes an owned file and refuses non-empty project folders"
     assert.deepEqual(removed,{path:"remove.txt",kind:"file"});
     assert.equal(existsSync(join(project,"remove.txt")),false);
     const empty=root.entries.find((entry)=>entry.name==="empty-folder")!;
-    const removedFolder=await agent.executeMobile({op:"deleteProjectEntry",userId:101,args:{sessionId,path:"empty-folder",expectedKind:"directory",expectedMtimeMs:empty.mtimeMs}});
+    const removedFolder=await agent.executeMobile({op:"deleteProjectEntry",userId:101,args:{sessionId,path:"empty-folder",expectedKind:"directory",expectedMtimeMs:empty.mtimeMs,confirmationName:"empty-folder"}});
     assert.deepEqual(removedFolder,{path:"empty-folder",kind:"directory"});
     assert.equal(existsSync(join(project,"empty-folder")),false);
     const full=root.entries.find((entry)=>entry.name==="full-folder")!;
-    await assert.rejects(agent.executeMobile({op:"deleteProjectEntry",userId:101,args:{sessionId,path:"full-folder",expectedKind:"directory",expectedMtimeMs:full.mtimeMs}}),/пуст|содержит|не удалось/i);
+    await assert.rejects(agent.executeMobile({op:"deleteProjectEntry",userId:101,args:{sessionId,path:"full-folder",expectedKind:"directory",expectedMtimeMs:full.mtimeMs,confirmationName:"wrong-name"}}),/подтверд|имя папки/i);
     await assert.rejects(agent.executeMobile({op:"deleteProjectEntry",userId:202,args:{sessionId,path:"full-folder/keep.txt",expectedKind:"file",expectedSize:14,expectedMtimeMs:full.mtimeMs}}),/Пользователь не разрешён/);
     assert.equal(existsSync(join(project,"full-folder","keep.txt")),true);
+    const removedFullFolder=await agent.executeMobile({op:"deleteProjectEntry",userId:101,args:{sessionId,path:"full-folder",expectedKind:"directory",expectedMtimeMs:full.mtimeMs,confirmationName:"full-folder"}});
+    assert.deepEqual(removedFullFolder,{path:"full-folder",kind:"directory"});
+    assert.equal(existsSync(join(project,"full-folder")),false);
+    assert.equal(readFileSync(outside,"utf8"),"outside project must survive\n");
+    assert.equal(readFileSync(join(outsideDirectory,"keep.txt"),"utf8"),"outside directory must survive\n");
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 

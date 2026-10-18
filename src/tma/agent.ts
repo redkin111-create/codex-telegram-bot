@@ -1345,12 +1345,14 @@ export class MiniAppAgent {
         const latest=this.mobileProjectEntry(root,entry.path);
         this.assertMobileEntrySnapshot(latest,args);
         try{
-          if(entry.kind==="directory")rmdirSync(latest.absolute);
-          else unlinkSync(latest.absolute);
+          if(entry.kind==="directory"){
+            if(argumentString(args,"confirmationName",255)!==entry.name)throw new Error("Введите точное имя папки, чтобы подтвердить удаление");
+            this.removeMobileEntryTree(root,latest.absolute);
+          }else unlinkSync(latest.absolute);
         }catch(error){
           const code=(error as NodeJS.ErrnoException).code;
-          if(entry.kind==="directory"&&(code==="ENOTEMPTY"||code==="EEXIST"))throw new Error("Удалить можно только пустую папку");
           if(code==="ENOENT")throw new Error("Файл или папка уже изменились. Обновите список и повторите действие.");
+          if(code==="ENOTEMPTY"||code==="EEXIST")throw new Error("Папка изменилась во время удаления. Обновите список и повторите действие.");
           throw error;
         }
         return {path:entry.path,kind:entry.kind};
@@ -1617,6 +1619,62 @@ export class MiniAppAgent {
   private assertMobileEntrySnapshot(entry:ReturnType<MiniAppAgent["mobileProjectEntry"]>,args:Record<string,unknown>):void{
     if(args.expectedKind!==entry.kind||typeof args.expectedMtimeMs!=="number"||args.expectedMtimeMs!==entry.mtimeMs||
       (entry.kind==="file"&&(typeof args.expectedSize!=="number"||args.expectedSize!==entry.size)))throw new Error("Файл или папка изменились после просмотра. Обновите список и повторите действие.");
+  }
+  private removeMobileEntryTree(root:string,absolute:string):void{
+    const maximumEntries=10_000;
+    type Snapshot={path:string;kind:"file"|"directory"|"symlink";dev:string;ino:string;size:string;mtimeMs:string;ctimeMs:string};
+    const snapshot=(path:string,info:ReturnType<typeof lstatSync>):Snapshot=>{
+      if(!info)throw new Error("Файл или папка уже изменились. Обновите список файлов.");
+      return {path,kind:info.isSymbolicLink()?"symlink":info.isDirectory()?"directory":"file",dev:String(info.dev),ino:String(info.ino),size:String(info.size),mtimeMs:String(info.mtimeMs),ctimeMs:String(info.ctimeMs)};
+    };
+    const same=(left:Snapshot,right:Snapshot):boolean=>left.kind===right.kind&&left.dev===right.dev&&left.ino===right.ino&&left.size===right.size&&left.mtimeMs===right.mtimeMs&&left.ctimeMs===right.ctimeMs;
+    const assertParentInRoot=(path:string):void=>{
+      const parent=realpathSync.native(dirname(path));
+      if(!isPathWithinRoot(root,parent))throw new Error("Путь выходит за пределы проекта");
+    };
+    const pending:Array<{path:string;afterChildren:boolean}>=[{path:absolute,afterChildren:false}];
+    const removalOrder:Snapshot[]=[];
+    while(pending.length){
+      const current=pending.pop()!;
+      if(!isPathWithinRoot(root,current.path))throw new Error("Папка выходит за пределы проекта");
+      assertParentInRoot(current.path);
+      const info=lstatSync(current.path);
+      if(current.afterChildren){
+        if(info.isSymbolicLink()||!info.isDirectory())throw new Error("Папка изменилась во время удаления. Обновите список файлов.");
+        removalOrder.push(snapshot(current.path,info));
+        continue;
+      }
+      if(info.isSymbolicLink()||info.isFile())removalOrder.push(snapshot(current.path,info));
+      else if(info.isDirectory()){
+        pending.push({path:current.path,afterChildren:true});
+        const names=readdirSync(current.path);
+        if(removalOrder.length+pending.length+names.length>maximumEntries)throw new Error("Папка содержит слишком много элементов для безопасного удаления с телефона");
+        for(const name of names){
+          const child=resolve(current.path,name);
+          if(!isPathWithinRoot(root,child))throw new Error("Путь выходит за пределы проекта");
+          pending.push({path:child,afterChildren:false});
+        }
+      }else throw new Error("Удалять можно только обычные файлы, папки и символические ссылки");
+      if(removalOrder.length+pending.length>maximumEntries)throw new Error("Папка содержит слишком много элементов для безопасного удаления с телефона");
+    }
+    for(const expected of removalOrder){
+      assertParentInRoot(expected.path);
+      const current=snapshot(expected.path,lstatSync(expected.path));
+      if(!same(expected,current))throw new Error("Содержимое папки изменилось после просмотра. Обновите список и повторите действие.");
+    }
+    for(const expected of removalOrder){
+      assertParentInRoot(expected.path);
+      const info=lstatSync(expected.path);
+      const current=snapshot(expected.path,info);
+      if(current.kind!==expected.kind||current.dev!==expected.dev||current.ino!==expected.ino)throw new Error("Папка изменилась во время удаления. Обновите список файлов.");
+      if(expected.kind==="directory")rmdirSync(expected.path);
+      else if(expected.kind==="symlink"){
+        let targetIsDirectory=false;
+        try{targetIsDirectory=statSync(expected.path).isDirectory();}catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT")throw error;}
+        if(targetIsDirectory)rmdirSync(expected.path);
+        else unlinkSync(expected.path);
+      }else unlinkSync(expected.path);
+    }
   }
   private mobileEntryName(rawName:string):string{
     const name=rawName.trim();

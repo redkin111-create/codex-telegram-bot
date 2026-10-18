@@ -740,9 +740,10 @@ const agent = {
         if (content === undefined || size !== args.expectedSize) throw new Error("Файл или папка изменились");
         fixtureFiles.delete(path);
       } else if (kind === "directory" && fixtureDirectories.has(path)) {
+        if (args.confirmationName !== path.split("/").at(-1)) throw new Error("Введите точное имя папки, чтобы подтвердить удаление");
         const prefix = path + "/";
-        if ([...fixtureFiles.keys()].some((filePath) => filePath.startsWith(prefix)) || [...fixtureDirectories].some((directory) => directory !== path && directory.startsWith(prefix))) throw new Error("Удалить можно только пустую папку");
-        fixtureDirectories.delete(path);
+        for (const directory of [...fixtureDirectories]) if (directory === path || directory.startsWith(prefix)) fixtureDirectories.delete(directory);
+        for (const filePath of [...fixtureFiles.keys()]) if (filePath.startsWith(prefix)) fixtureFiles.delete(filePath);
       } else throw new Error("Файл или папка не найдены");
       return { path, kind };
     }
