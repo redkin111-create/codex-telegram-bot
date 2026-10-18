@@ -84,6 +84,7 @@ let fixtureBranch = "feat/codex-mobile-fixture";
 let fixtureNotesCommitted = false;
 let fixtureRenameStaged = true;
 let fixturePluginInstalled = false;
+let fixtureMcpAuthorized = false;
 const fixtureSkills = [
   { name: "fixture-review", description: "Навык для проверки. <script>alert(1)</script> остаётся текстом.", enabled: true, scope: "user" as const, canToggle: true, invokable: true },
   { name: "disabled-helper", description: "Отключённый навык.", enabled: false, scope: "repo" as const, canToggle: true, invokable: false },
@@ -361,6 +362,11 @@ const agent = {
       fixturePluginInstalled = false;
       return { uninstalled: true };
     }
+    if (job.op === "mcpOAuthLogin") {
+      if (args.name !== "fixture-mcp" || args.sessionId !== firstSession) throw new Error("MCP-сервер не найден в выбранном сеансе");
+      fixtureMcpAuthorized = true;
+      return { authorizationUrl: "https://login.example.invalid/oauth/fixture" };
+    }
     if (job.op === "capabilities") return {
       online: true, ...fixtureSettings,
       models: [{ id: "fixture", name: "Fixture Model" }, { id: "fixture-fast", name: "Fixture Fast" }],
@@ -369,7 +375,8 @@ const agent = {
       skills: fixtureSkills.map((skill) => ({ ...skill })),
       mcpServersAvailable: true,
       mcpServers: [{
-        name: "Fixture MCP", status: "connected", authStatus: "oauth", serverName: "Fixture MCP server",
+        name: "fixture-mcp", status: fixtureMcpAuthorized ? "connected" : "authenticationRequired",
+        authStatus: fixtureMcpAuthorized ? "oauth" : "notLoggedIn", serverName: "Fixture MCP server",
         serverVersion: "1.0", tools: [
           { name: "read_status", description: "Read a safe fixture status." },
           { name: "host_info", description: "Text only: <script>alert(1)</script>." },

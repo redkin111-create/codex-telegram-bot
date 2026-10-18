@@ -270,6 +270,26 @@ export class AcpClient extends EventEmitter {
     return { pluginCatalog, installedPlugins, apps, installedApps };
   }
 
+  /** Start Codex's native OAuth flow for one MCP server already configured in an authorized thread. */
+  async startMobileMcpOAuthLogin(name: string, threadId: string): Promise<{ authorizationUrl: string }> {
+    if (!name.trim() || name.length > 120 || !threadId.trim() || threadId.length > 128) {
+      throw new Error("Неверные параметры входа в MCP-сервер");
+    }
+    const response = await this.request("mcpServer/oauth/login", { name, threadId }) as { authorizationUrl?: unknown };
+    if (typeof response?.authorizationUrl !== "string") {
+      throw new AcpError("Codex не вернул ссылку для входа в MCP-сервер");
+    }
+    try {
+      const authorizationUrl = new URL(response.authorizationUrl);
+      if (authorizationUrl.protocol !== "https:" || authorizationUrl.username || authorizationUrl.password) {
+        throw new Error("unsafe URL");
+      }
+      return { authorizationUrl: authorizationUrl.href };
+    } catch {
+      throw new AcpError("Codex вернул небезопасную ссылку входа; разрешены только HTTPS-ссылки");
+    }
+  }
+
   /** Read only the MCP connections already associated with one Codex thread. */
   async listMobileMcpServers(threadId: string): Promise<CodexMcpServerStatus[]> {
     const servers: CodexMcpServerStatus[] = [];

@@ -95,7 +95,7 @@ interface MobilePtyRecord {
   expiry?:NodeJS.Timeout;dataSubscription?:{dispose():void};exitSubscription?:{dispose():void};
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "searchThreads" | "listMoreThreads" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
+export type MobileLocalOperation = "capabilities" | "searchThreads" | "listMoreThreads" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "mcpOAuthLogin" | "steer" | "forkThread" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "installPlugin" | "uninstallPlugin" | "createWorktree" | "files" | "readFile" | "readImage" | "writeFile" | "createFile" | "gitStatus" | "gitDiff" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 export class MiniAppAgent {
   private readonly abort=new AbortController();
@@ -676,6 +676,24 @@ export class MiniAppAgent {
           limits,subagents,checkedAt:Date.now(),
           goal,goalAvailable,
         };
+      }
+      case "mcpOAuthLogin":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        if(await this.isArchivedThread(sessionId,chatId))throw new Error("Нельзя запускать вход из архивного сеанса");
+        await this.thread(sessionId,chatId);
+        if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        if(typeof acp.listMobileMcpServers!=="function"||typeof acp.startMobileMcpOAuthLogin!=="function"){
+          throw new Error("Эта версия Codex не поддерживает вход в MCP с телефона");
+        }
+        this.requireIdleMobileRuntime(sessionId,chatId);
+        const name=argumentString(args,"name",120).trim();
+        if(!name)throw new Error("Выберите MCP-сервер из настроек Codex");
+        const servers=await acp.listMobileMcpServers(sessionId);
+        const server=servers.find(entry=>entry.name===name);
+        if(!server)throw new Error("MCP-сервер не найден в выбранном сеансе");
+        const loginRequired=server.runtimeStatus==="authenticationRequired"||server.authStatus==="needs_auth"||server.authStatus==="notLoggedIn";
+        if(!loginRequired)throw new Error("Этот MCP-сервер сейчас не сообщает о необходимости входа");
+        return await acp.startMobileMcpOAuthLogin(name,sessionId);
       }
       case "installPlugin":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");

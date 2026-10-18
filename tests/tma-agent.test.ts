@@ -365,6 +365,41 @@ test("mobile plugin and app catalogs redact host data and plugin changes stay ow
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile MCP OAuth is limited to a configured login-required server in an owned idle thread",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-mcp-oauth-"));
+  const sessionId="22222222-2222-4222-8222-222222222222";
+  const thread={id:sessionId,name:"MCP OAuth",cwd:dir,source:"cli",createdAt:1,updatedAt:2,recencyAt:2};
+  const calls:Array<{name:string;threadId:string}> = [];
+  const runtime={sessionId,isBusy:false};
+  const acp=Object.assign(new EventEmitter(),{
+    isConnected:true,
+    listProjects:async()=>[{id:"project",name:"project",roots:[dir]}],
+    listAllThreads:async(params?:{archived?:boolean})=>params?.archived?[]:[thread],
+    listThreads:async(params?:{archived?:boolean})=>params?.archived?[]:[thread],
+    listMobileMcpServers:async()=>[
+      {name:"fixture-mcp",runtimeStatus:"authenticationRequired",authStatus:"needs_auth"},
+      {name:"already-authorized",runtimeStatus:"connected",authStatus:"oauth"},
+    ],
+    async startMobileMcpOAuthLogin(name:string,id:string){calls.push({name,threadId:id});return {authorizationUrl:"https://login.example.invalid/authorize?fixture=1"};},
+    availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],
+    currentModelId:"default",currentModeId:"code",accountState:async()=>({}),
+  }) as unknown as AcpClient;
+  const registry={controller:()=>({list:()=>[]}),get:()=>runtime,runtimeForSession:()=>runtime} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
+    const result=await agent.executeMobile({op:"mcpOAuthLogin" as never,userId:101,args:{sessionId,name:"fixture-mcp"}}) as {authorizationUrl:string};
+    assert.equal(result.authorizationUrl,"https://login.example.invalid/authorize?fixture=1");
+    assert.deepEqual(calls,[{name:"fixture-mcp",threadId:sessionId}]);
+    await assert.rejects(agent.executeMobile({op:"mcpOAuthLogin" as never,userId:101,args:{sessionId,name:"not-configured"}}),/не найден|не требует входа/i);
+    await assert.rejects(agent.executeMobile({op:"mcpOAuthLogin" as never,userId:202,args:{sessionId,name:"fixture-mcp"}}),/не разрешён/i);
+    runtime.isBusy=true;
+    await assert.rejects(agent.executeMobile({op:"mcpOAuthLogin" as never,userId:101,args:{sessionId,name:"fixture-mcp"}}),/Дождитесь завершения/);
+    assert.equal(calls.length,1);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile skill controls expose disabled skills without local paths and write only one authorized skill",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-skills-"));
   const sessionId="21212121-2121-4212-8212-212121212121";

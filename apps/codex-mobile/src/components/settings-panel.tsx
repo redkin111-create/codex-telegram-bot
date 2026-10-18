@@ -58,12 +58,22 @@ export function SettingsPanel({ sessionId, connected, onClose, onOperation }: {
   const [pluginAction, setPluginAction] = useState<PluginAction>();
   const [pluginNotice, setPluginNotice] = useState<PluginInstallNotice>();
   const [skillAction, setSkillAction] = useState<SkillAction>();
+  const [mcpLoginLinks, setMcpLoginLinks] = useState<Record<string, string>>({});
 
   async function reload() {
     setLoading(true);
     try {
       const next = await readCapabilities(sessionId);
       setCapabilities(next);
+      setMcpLoginLinks((current) => {
+        const pending = { ...current };
+        for (const server of next.mcpServers) {
+          if (server.status === "connected" && (server.authStatus === "oauth" || server.authStatus === "bearerToken")) {
+            delete pending[server.name];
+          }
+        }
+        return pending;
+      });
       setGoalObjective(next.goal?.objective ?? "");
       setGoalBudget(next.goal?.tokenBudget ? String(next.goal.tokenBudget) : "");
       setError("");
@@ -162,6 +172,21 @@ export function SettingsPanel({ sessionId, connected, onClose, onOperation }: {
     } finally { setSaving(false); }
   }
 
+  async function beginMcpOAuth(serverName: string) {
+    setSaving(true);
+    setError("");
+    setMcpLoginLinks((current) => { const pending = { ...current }; delete pending[serverName]; return pending; });
+    try {
+      const result = await onOperation("mcpOAuthLogin", { sessionId, name: serverName }) as { authorizationUrl?: unknown };
+      const authorizationUrl = typeof result?.authorizationUrl === "string" ? result.authorizationUrl : "";
+      const host = safeLinkHost(authorizationUrl);
+      if (!host) throw new Error("Codex не вернул безопасную HTTPS-ссылку для входа");
+      setMcpLoginLinks((current) => ({ ...current, [serverName]: authorizationUrl }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Не удалось начать вход в MCP-сервер");
+    } finally { setSaving(false); }
+  }
+
   const inputClass = "min-h-11 w-full appearance-none rounded-xl border border-border bg-[#111613] px-3 pr-9 text-sm text-text outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:opacity-50";
   const usable = Boolean(capabilities?.online && connected && !saving);
   const selectedPlugin = capabilities?.plugins.find((entry) => entry.id === pluginAction?.pluginId);
@@ -218,6 +243,8 @@ export function SettingsPanel({ sessionId, connected, onClose, onOperation }: {
                 <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="break-words text-sm font-medium">{server.name}</p>{server.serverName && <p className="mt-1 break-words text-[11px] text-muted">{server.serverName}{server.serverVersion ? ` · ${server.serverVersion}` : ""}</p>}</div><Badge>{mcpStatusLabel(server.status)}</Badge></div>
                 <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted"><span>{server.toolCount} инструментов</span><span>{server.resourceCount} ресурсов</span><span>{server.resourceTemplateCount} шаблонов</span>{mcpAuthLabel(server.authStatus) && <span>{mcpAuthLabel(server.authStatus)}</span>}</div>
                 {server.discoveryFailed && <p className="mt-2 text-[11px] text-[#ffc3bd]">Codex сообщил об ошибке списка инструментов. Подробности доступны в локальном Codex.</p>}
+                {(server.status === "authenticationRequired" || server.authStatus === "notLoggedIn") && <div className="mt-3 flex flex-wrap gap-2"><Button type="button" variant="outline" className="min-h-9 px-3 text-xs" disabled={!usable} onClick={() => void beginMcpOAuth(server.name)}><ShieldCheck size={14} /> Начать вход</Button></div>}
+                {mcpLoginLinks[server.name] && safeLinkHost(mcpLoginLinks[server.name]) && <div className="mt-3 space-y-2 rounded-lg border border-border bg-[#111613] p-3" role="status"><p className="text-xs leading-relaxed text-muted">Продолжите вход у провайдера. Перед вводом пароля проверьте адрес: <span className="font-medium text-text">{safeLinkHost(mcpLoginLinks[server.name])}</span>.</p><div className="flex flex-wrap items-center gap-2"><a className="inline-flex min-h-9 items-center gap-1 text-xs text-accent underline" href={mcpLoginLinks[server.name]} target="_blank" rel="noopener noreferrer">Открыть страницу входа <ExternalLink size={12} /></a><Button type="button" variant="ghost" className="min-h-9 px-2 text-xs" disabled={loading || saving} onClick={() => void reload()}>Проверить подключение</Button></div></div>}
                 {server.tools.length > 0 && <details className="mt-3 border-t border-border pt-2"><summary className="min-h-8 cursor-pointer py-1 text-xs font-medium">Доступные инструменты ({server.toolCount})</summary><ul className="mt-1 space-y-2">{server.tools.map((tool) => <li key={tool.name} className="rounded-lg bg-[#171d18] p-2"><p className="break-words font-mono text-[11px]">{tool.name}</p>{tool.description && <p className="mt-1 break-words text-[11px] leading-relaxed text-muted">{tool.description}</p>}</li>)}</ul></details>}
               </li>)}</ul> : <p className="text-xs text-muted">В этом сеансе нет подключённых MCP-серверов.</p>}
             <p className="text-[11px] leading-relaxed text-muted">Показано состояние выбранного сеанса. Адреса, параметры инструментов и секреты авторизации не передаются в мобильный интерфейс.</p>
