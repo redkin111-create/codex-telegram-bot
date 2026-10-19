@@ -53,6 +53,7 @@ export interface StartCodexMobileOptions {
   approvals?: MobileApprovals;
   elicitations?: MobileElicitations;
   accounts?: MobileAccountController;
+  isCodexOAuthCallbackListener?: (callback: URL) => Promise<boolean>;
 }
 
 export async function startCodexMobileService(
@@ -79,6 +80,7 @@ export async function startCodexMobileService(
     dataDir: cfg.dataDir,
     staticRoot,
     allowedOrigins: options.allowedOrigins ?? mobileAllowedOrigins(),
+    isCodexOAuthCallbackListener: options.isCodexOAuthCallbackListener,
   });
   try {
     await new Promise<void>((resolve, reject) => {

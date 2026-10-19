@@ -51,6 +51,8 @@ export interface MobileServerOptions {
   port?: number;
   allowedOrigins?: string[];
   now?: () => number;
+  /** Confirms that an opaque PAR callback is listening on a loopback socket owned by Codex. */
+  isCodexOAuthCallbackListener?: (callback: URL) => Promise<boolean>;
 }
 
 function json(res: ServerResponse, status: number, payload: unknown): void {
@@ -405,6 +407,12 @@ export function createMobileServer(options: MobileServerOptions): Server {
       flow.attempts++;
       const callback = validateMcpOAuthCallback(body.callbackUrl, flow.target);
       if (!callback) { json(res, 400, { error: "Адрес callback не совпадает с текущей попыткой входа" }); return; }
+      if (flow.target.type === "codex-loopback") {
+        let ownedListener = false;
+        try { ownedListener = await options.isCodexOAuthCallbackListener?.(callback) === true; }
+        catch { /* A callback whose owner cannot be confirmed is not forwarded. */ }
+        if (!ownedListener) { json(res, 400, { error: "Адрес возврата не принадлежит активному локальному callback Codex" }); return; }
+      }
       flow.inFlight = true;
       try {
         const status = await forwardMcpOAuthCallback(callback);
@@ -726,7 +734,8 @@ export function createMobileServer(options: MobileServerOptions): Server {
           if (body.op === "mcpOAuthLogin" && !loopbackOrigin(req)) {
             const target = mcpOAuthCallbackTarget(result);
             const serverName = typeof args.name === "string" ? args.name.trim() : "";
-            if (!target || !serverName || serverName.length > 120) {
+            if (!target || !serverName || serverName.length > 120 ||
+                (target.type === "codex-loopback" && !options.isCodexOAuthCallbackListener)) {
               json(res, 409, { error: "Codex не передал проверяемый loopback callback; вход с телефона для этого MCP-сервера недоступен" });
               return;
             }
@@ -736,7 +745,11 @@ export function createMobileServer(options: MobileServerOptions): Server {
               ownerId: device.ownerId, deviceId: device.id, sessionId, target,
               expiresAt: now() + 5 * 60_000, attempts: 0, inFlight: false,
             });
-            json(res, 200, { ...(result && typeof result === "object" ? result as Record<string, unknown> : {}), callbackRelayAvailable: true });
+            json(res, 200, {
+              ...(result && typeof result === "object" ? result as Record<string, unknown> : {}),
+              callbackRelayAvailable: true,
+              callbackRelayMode: target.type,
+            });
             return;
           }
           json(res, 200, result);

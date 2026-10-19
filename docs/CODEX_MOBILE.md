@@ -53,7 +53,7 @@ The requested scope is full phone control for chat, MCP, skills (including brows
 | Files and edits | Browse the authorized session folder in pages of 250 entries, create text files and folders, rename files/folders within their current directory, delete files or folders after exact-name phone confirmation (up to 10,000 nested entries; symbolic links are removed without following them), read UTF-8 text, edit/save up to 512 KB with stale-file detection, download regular files up to 10 MiB as inert attachments with owner/path checks; safely preview PNG/JPEG/WebP/GIF up to 3 MiB after path, owner and file-signature checks; hides common secret folders/files, skips symlinks and blocks writes while the connected Codex session is busy; read unified diffs with line numbers and distinct added/removed lines; start Codex's native inline reviewer against uncommitted changes, a base branch, a commit or custom instructions, with a phone confirmation; render standard Codex `::code-comment{...}` findings as safe cards with priority, file, line range and Markdown body; open the reported file's current Git diff and highlight a matching changed/context line | Recursive folder deletion above 10,000 entries; downloads over 10 MiB; binary files cannot be previewed or edited in-app; findings outside the current staged/unstaged diff cannot be jumped to; adding/replying to inline comments (the app-server exposes no comment operation); Desktop-equivalent file-change navigation |
 | Terminal and Git | Interactive PTY shell in the authorized project folder with an explicit start warning, same-shell reattachment after closing/reopening the panel, bounded scrollback, input, resize, stop and 30-minute idle cleanup; retain the one-shot command mode with a 60-second timeout and bounded text output; list Codex background processes for the selected thread and stop one only after a phone confirmation and fresh thread-scoped Codex check; Git branch/status (common secret paths are omitted from mobile output), staged/unstaged diff with line-numbered added/removed hunks, and per-file/all-files review for bounded untracked text files and inert binary markers; stage/unstage one reported project path, commit staged changes, list local branches, create a branch, switch to an existing local branch, create an isolated worktree plus Codex session from the current commit, and track an already-fetched remote branch locally; fetch from a configured safe remote, fast-forward-pull only a clean tracked branch after a phone confirmation (diverged branches stop without a merge commit), and push only the current branch after a phone confirmation; identify all seven Git unmerged states; compare bounded UTF-8 base/ours/theirs previews (stacked on phones, columns on wider screens), choose one as the draft or edit a combined result in the inert text editor, and save plus stage it only after the standard conflict markers are removed; for binary or oversized-to-preview conflicts, choose a current regular-file Git stage up to 10 MiB with a stale-file hash check, then atomically replace and stage that project file | Untracked text files over 512 KiB require download or external review; symlink/submodule conflicts, files over 10 MiB, and richer Desktop-equivalent review actions |
 | Models, modes, goals and context | Choose a model, collaboration mode and reasoning level on an owned session; persist model, mode and effort through native `thread/settings/update`, read the confirmed model/effort through `thread/read`, and keep the existing chat runtime preference in sync; view, create, pause, resume and clear Codex goals; request manual context compaction while idle; show completion only after Codex emits a completed `contextCompaction` item and show “Статус неизвестен” when no confirmation arrives within 60 seconds | Verify error/rollback behavior across supported Codex versions; Codex `thread/read` does not expose the active collaboration-mode name |
-| Skills, MCP, subagents, plugins and apps | Owner-scoped inventories; shows enabled and disabled skills; toggles uniquely named user/repo skills through Codex's `skills/config/write` and uses Codex's effective-state response; system/admin skills are read-only; selects an enabled skill in the composer and sends the native `$skill-name` marker plus Codex's explicit `skill` input item; skill paths are resolved from Codex and never sent to the browser; shows the selected thread's MCP connection/auth state, counts, safe tool names/descriptions, and a bounded allowlisted JSON-schema subset without defaults, examples or extension metadata; starts Codex's native OAuth flow only for a configured MCP server that currently needs login, exposes only HTTPS authorization links with the provider host, and can refresh the connection state; invokes one tool from a currently connected MCP server after displaying its exact JSON arguments for phone confirmation, rechecking the owner, archive/busy/queue state and live server/tool inventory, and returning bounded text/structured JSON only; lists static MCP resources and simple named URI templates through opaque expiring references, collects bounded text parameters on the phone, resolves and revalidates the URI template on the laptop, and renders bounded plain text (raw resource URIs, binary content and metadata stay out of the browser); lists configured MCP names and safe scope/transport fields; adds stdio commands with arguments and environment variables, or streamable HTTP servers with a bearer-token environment variable, to the selected project or global config after phone confirmation; rejects unsafe names, insecure remote HTTP, credentials in URL authority, duplicate names and workspace config symlink escapes; never returns commands, URLs or secret values after save; requires a separate confirmation to restart the shared ACP only when no active or queued work remains; lists Codex plugins and connected apps; selects up to three enabled, accessible and callable apps in the composer and sends native `mention` input items; the server rechecks the selected thread's live app inventory and installed/callable state and never trusts a browser-supplied app path; installs/removes only remote plugins the live Codex catalog marks available, with a phone confirmation; enables/disables only uniquely identified installed plugins through Codex's `config/value/write`, re-reads the effective plugin state and refuses admin-disabled plugins; this changes the global user config and waits for all work to finish; lists registered marketplaces without exposing local paths, and adds GitHub HTTPS repositories (or `owner/repo` shorthand), upgrades or removes only live Codex-managed entries after confirmation and idle checks; offers only HTTPS app-authorization links and shows their host; handles owner-scoped MCP form and HTTPS URL elicitation on the phone, with allowlisted schemas, server-side field validation and no form values or callback URLs in replayable SSE | MCP prompt list/read and resource subscriptions (the Codex app-server does not expose prompt list/read methods); complete Android OAuth through the native flow only when Codex exposes one exact loopback redirect_uri, with phone paste-back, loopback host/port/path checks and one-time forwarding; callbacks hidden by PAR remain laptop-only; verify real-provider outcomes; cover connected apps that Codex does not expose as MCP tools |
+| Skills, MCP, subagents, plugins and apps | Owner-scoped inventories; shows enabled and disabled skills; toggles uniquely named user/repo skills through Codex's `skills/config/write` and uses Codex's effective-state response; system/admin skills are read-only; selects an enabled skill in the composer and sends the native `$skill-name` marker plus Codex's explicit `skill` input item; skill paths are resolved from Codex and never sent to the browser; shows the selected thread's MCP connection/auth state, counts, safe tool names/descriptions, and a bounded allowlisted JSON-schema subset without defaults, examples or extension metadata; starts Codex's native OAuth flow only for a configured MCP server that currently needs login, exposes only HTTPS authorization links with the provider host, and can refresh the connection state; invokes one tool from a currently connected MCP server after displaying its exact JSON arguments for phone confirmation, rechecking the owner, archive/busy/queue state and live server/tool inventory, and returning bounded text/structured JSON only; lists static MCP resources and simple named URI templates through opaque expiring references, collects bounded text parameters on the phone, resolves and revalidates the URI template on the laptop, and renders bounded plain text (raw resource URIs, binary content and metadata stay out of the browser); lists configured MCP names and safe scope/transport fields; adds stdio commands with arguments and environment variables, or streamable HTTP servers with a bearer-token environment variable, to the selected project or global config after phone confirmation; rejects unsafe names, insecure remote HTTP, credentials in URL authority, duplicate names and workspace config symlink escapes; never returns commands, URLs or secret values after save; requires a separate confirmation to restart the shared ACP only when no active or queued work remains; lists Codex plugins and connected apps; selects up to three enabled, accessible and callable apps in the composer and sends native `mention` input items; the server rechecks the selected thread's live app inventory and installed/callable state and never trusts a browser-supplied app path; installs/removes only remote plugins the live Codex catalog marks available, with a phone confirmation; enables/disables only uniquely identified installed plugins through Codex's `config/value/write`, re-reads the effective plugin state and refuses admin-disabled plugins; this changes the global user config and waits for all work to finish; lists registered marketplaces without exposing local paths, and adds GitHub HTTPS repositories (or `owner/repo` shorthand), upgrades or removes only live Codex-managed entries after confirmation and idle checks; offers only HTTPS app-authorization links and shows their host; handles owner-scoped MCP form and HTTPS URL elicitation on the phone, with allowlisted schemas, server-side field validation and no form values or callback URLs in replayable SSE | MCP prompt list/read and resource subscriptions (the Codex app-server does not expose prompt list/read methods); complete Android OAuth through an exact loopback redirect or PAR callback paste-back when the callback socket is confirmed to belong to the active Codex process; providers whose callbacks cannot be confirmed stay laptop-only; verify real-provider outcomes; cover connected apps that Codex does not expose as MCP tools |
 | Usage and account | Current account identity and quota windows, when ACP exposes them; manually refresh the current snapshot, retain the last good values, and show refresh errors; list, save, rename and forget local saved accounts; toggle existing auto-rotation; switch the shared Codex login only after phone confirmation and server checks that no ACP turn, controller prompt or queued request is pending; preserve the current login before switching and reuse the existing rotator/restart path; start and cancel Codex native ChatGPT device-code login, validate the official HTTPS authorization origin and one-time code, and reveal the code only while login is pending; serialize login with account rotation and save the current auth snapshot before replacing the shared login; expose only generic provider errors; credential fingerprints and auth files never reach the browser | Other sign-in/import flows that need a laptop browser or terminal; account switching still restarts the shared Codex app-server and affects every session; parity checks across supported Desktop versions |
 | Tasks and voice | Goals are supported as noted above; plugin and app catalog coverage is described above; voice controls and audio capture are intentionally not exposed in the mobile interface | Voice parity is outside the requested scope |
 | Host and workspace setup | Connects only to the one existing local runtime and its authorized projects; can create an isolated worktree for a coding task | Host selection, environment setup and workspace-specific permissions |
@@ -74,16 +74,17 @@ verification step, not evidence that the Browser Skill or local browser tools
 were missing. Actual Android pairing and use still need to be checked on the
 owner's phone.
 
-The phone can relay an MCP OAuth callback only when Codex exposes one exact
-loopback `redirect_uri` in its authorization URL. After provider approval, the
-user pastes the browser's final callback URL; the server checks the paired
-device, Origin, CSRF token, owned session, loopback host, exact port/path and
-OAuth state when present, then forwards the request once to that existing local
-Codex listener. URLs and authorization codes are not saved or returned.
-Providers that hide the redirect URI behind PAR remain unavailable from the
-phone. Real provider outcomes still need testing. Plugin install/removal and
-marketplace management work; a true per-thread plugin disable switch is not
-supported by the current Codex app-server.
+The phone can relay an MCP OAuth callback when Codex exposes one exact loopback
+`redirect_uri`, or when its authorization URL uses PAR and the server can verify
+that the final pasted callback URL reaches a loopback socket owned by the
+running Codex app-server process. The server checks the paired device, Origin,
+CSRF token, owned session, callback shape, and visible OAuth state, then forwards
+the request once. Codex validates the state and exchanges the code. URLs and
+authorization codes are not saved or returned. If the callback listener cannot
+be confirmed as Codex-owned, the PAR flow remains laptop-only. Real provider
+outcomes still need testing. Plugin install/removal and marketplace management
+work; a true per-thread plugin disable switch is not supported by the current
+Codex app-server.
 
 The MCP settings panel can also add a local stdio command or a streamable HTTP
 server to the selected project's `.codex/config.toml`, or to Codex's global
@@ -158,7 +159,8 @@ claim to display the new summary. See the [app-server item schema](https://githu
 
 ## Verification checkpoint (2026-10-20)
 
-- Root TypeScript check: passed; full root test suite: 396/396 passed.
+- Root TypeScript check: passed; full root test suite: 403/403 passed.
+- Mobile production build and its TypeScript check: passed.
 - Browser skill on the live public Mobile page at Pixel 7 size (412×915): ran
   `Get-Location` from the project terminal and confirmed the Windows path keeps
   Cyrillic characters; ran `cmd /d /c exit 7` and confirmed the UI reports exit
@@ -166,6 +168,13 @@ claim to display the new summary. See the [app-server item schema](https://githu
   confirmation.
 - Fixed Windows one-shot terminal output encoding and native exit-code
   reporting; added regression tests for both behaviors.
+- PAR callback relay is now implemented with an OS check that requires the
+  exact loopback socket to belong to the active Codex app-server process. The
+  provider's authorization URL and OAuth code stay out of logs and API errors.
+- Browser skill on Pixel 7 at 412×915 with the isolated `phone.localhost`
+  fixture: started a PAR OAuth login, confirmed the UI disclosed the PAR
+  callback limitation and accepted the pasted loopback URL, then saw the fixture
+  MCP report “OAuth подключён”. No external provider or Desktop data was used.
 
 ## Verification checkpoint (2026-10-18)
 
@@ -276,6 +285,11 @@ claim to display the new summary. See the [app-server item schema](https://githu
   the server forwards it to the exact loopback listener and the MCP server shows
   connected. The fixture provider and callback were local test doubles; no
   external provider or Codex Desktop data was used.
+- Browser skill with Pixel 7 emulation at 412×915 from the loopback-only
+  `phone.localhost` fixture origin: run the same OAuth flow with a PAR URL that
+  hides `redirect_uri`; verify the PAR-specific warning, paste the callback,
+  submit it, and confirm the owned-listener check forwards it and the fixture MCP
+  reports connected. No external provider or Codex Desktop data was used.
 - Browser skill with Pixel 7 emulation at 412×915: inspect the fixture MCP
   schema, reject invalid JSON inside the confirmation dialog, cancel once, then
   confirm exact JSON arguments and verify a `<script>` result stays inert text.
@@ -502,16 +516,19 @@ last argument. The laptop-only control channel performs approval; a request
 that arrives through the public Funnel is never considered local based on its
 forwarded `remoteAddress`.
 
-The mobile server now provides a manual callback relay for phone OAuth. It is
-available only when Codex's native authorization URL contains one exact
-loopback `redirect_uri`; the relay matches its host, port and path, checks the
-OAuth state when Codex exposes it, and forwards the callback once to that local
-listener. Authentication, Origin, CSRF and session ownership are checked on
-every relay request. Codex remains responsible for its own state validation and
-token exchange. PAR-based authorization URLs that hide `redirect_uri` are
-rejected for remote use. The Browser skill verified this flow using a local fake
-provider and callback only; a real provider still needs verification over the
-configured Funnel route. Never set `mcp_oauth_callback_url` to a
+The mobile server provides a manual callback relay for phone OAuth. If Codex's
+HTTPS authorization URL exposes one exact loopback `redirect_uri`, the relay
+matches its host, port and path, checks the OAuth state when Codex exposes it,
+and forwards the callback once to that listener. For a PAR URL that hides
+`redirect_uri`, the phone can submit the final callback URL only after the
+server confirms that the exact loopback address is listening in the active
+Codex app-server process. Windows uses `netstat`, Linux uses `ss`, and macOS
+uses `lsof`; if the listener's owner cannot be confirmed, the relay fails
+closed. Both modes check authentication, Origin, CSRF and session ownership on
+every relay request. Codex remains responsible for state validation and token
+exchange. The Browser skill verified both modes with local fake providers and
+callbacks only; real providers still need verification over the configured
+Funnel route. Never set `mcp_oauth_callback_url` to a
 non-loopback host: the current Codex implementation binds its temporary
 callback listener to `0.0.0.0` for that setting. A fixed callback port does not
 change that behavior. The upstream

@@ -1015,7 +1015,7 @@ test("MCP OAuth from an allowed remote Origin relays only its matching callback 
   }
 });
 
-test("MCP OAuth over a remote Origin refuses callback URLs Codex does not expose", async () => {
+test("MCP OAuth PAR relay remains disabled when the Codex listener cannot be inspected", async () => {
   const reservation = createServer();
   reservation.listen(0, "127.0.0.1");
   await once(reservation, "listening");
@@ -1039,6 +1039,71 @@ test("MCP OAuth over a remote Origin refuses callback URLs Codex does not expose
     assert.match((await response.json() as { error: string }).error, /callback|возврат/i);
     assert.equal(f.calls.filter((call) => call.op === "mcpOAuthLogin").length, 1);
   } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("MCP OAuth PAR relay accepts only a loopback listener explicitly confirmed as Codex-owned", async () => {
+  const reservation = createServer();
+  reservation.listen(0, "127.0.0.1");
+  await once(reservation, "listening");
+  const address = reservation.address();
+  assert.ok(address && typeof address !== "string");
+  const port = address.port;
+  reservation.close();
+  await once(reservation, "close");
+
+  const remoteOrigin = `http://phone.localhost:${port}`;
+  const callbackServer = createServer();
+  let callbackPath = "";
+  callbackServer.on("request", (req, res) => {
+    callbackPath = req.url ?? "";
+    res.statusCode = 200;
+    res.end("ok");
+  });
+  callbackServer.listen(0, "127.0.0.1");
+  await once(callbackServer, "listening");
+  const callbackAddress = callbackServer.address();
+  assert.ok(callbackAddress && typeof callbackAddress !== "string");
+  const callbackPort = callbackAddress.port;
+  const f = await startFixture({
+    port,
+    allowedOrigins: [remoteOrigin],
+    isCodexOAuthCallbackListener: async (callback: URL) => callback.hostname === "127.0.0.1" && Number(callback.port) === callbackPort,
+  });
+  f.setMobileOAuthResult({ authorizationUrl: "https://provider.example/authorize?client_id=codex&request_uri=urn%3Arequest&state=expected-state" });
+  try {
+    const login = await pair(f.origin, f.auth);
+    const headers = {
+      origin: remoteOrigin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken,
+      "content-type": "application/json",
+    };
+    const started = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers,
+      body: JSON.stringify({ op: "mcpOAuthLogin", args: { sessionId: allowedSession, name: "fixture-mcp" } }),
+    });
+    assert.equal(started.status, 200);
+    const startedBody = await started.json() as { callbackRelayAvailable: boolean; callbackRelayMode: string };
+    assert.equal(startedBody.callbackRelayAvailable, true);
+    assert.equal(startedBody.callbackRelayMode, "codex-loopback");
+
+    const relay = (callbackUrl: string) => fetch(f.origin + "/api/mcp/oauth/callback", {
+      method: "POST", headers,
+      body: JSON.stringify({ sessionId: allowedSession, name: "fixture-mcp", callbackUrl }),
+    });
+    const wrongPort = await relay(`http://127.0.0.1:${callbackPort + 1}/callback/id?code=secret&state=expected-state`);
+    assert.equal(wrongPort.status, 400);
+    assert.equal(callbackPath, "");
+    const wrongPath = await relay(`http://127.0.0.1:${callbackPort}/admin?code=secret&state=expected-state`);
+    assert.equal(wrongPath.status, 400);
+    assert.equal(callbackPath, "");
+    const completed = await relay(`http://127.0.0.1:${callbackPort}/callback/id?code=secret&state=expected-state`);
+    assert.equal(completed.status, 200);
+    assert.deepEqual(await completed.json(), { forwarded: true });
+    assert.equal(callbackPath, "/callback/id?code=secret&state=expected-state");
+  } finally {
+    callbackServer.closeAllConnections();
+    await new Promise<void>((resolve) => callbackServer.close(() => resolve()));
+    await cleanup(f.server, f.dataDir);
+  }
 });
 
 test("realtime voice start and stop require paired Origin, CSRF and ownership of the target session", async () => {

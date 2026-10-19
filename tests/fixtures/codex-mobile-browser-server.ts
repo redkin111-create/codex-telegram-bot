@@ -132,6 +132,10 @@ const fixtureHost = process.env.CODEX_MOBILE_FIXTURE_HOST ?? "127.0.0.1";
 if (fixtureHost !== "127.0.0.1" && fixtureHost !== "phone.localhost") {
   throw new Error("Browser fixture host must be a loopback address");
 }
+const fixtureMcpOAuthMode = process.env.CODEX_MOBILE_FIXTURE_MCP_OAUTH_MODE ?? "exact";
+if (fixtureMcpOAuthMode !== "exact" && fixtureMcpOAuthMode !== "par") {
+  throw new Error("Browser fixture MCP OAuth mode must be exact or par");
+}
 async function reserveLoopbackPort(): Promise<number> {
   const probe = createServer();
   probe.listen(0, "127.0.0.1");
@@ -776,7 +780,12 @@ const agent = {
     if (job.op === "mcpOAuthLogin") {
       if (args.name !== "fixture-mcp" || args.sessionId !== firstSession) throw new Error("MCP-сервер не найден в выбранном сеансе");
       const authorizationUrl = new URL("https://login.example.invalid/oauth/fixture");
-      authorizationUrl.searchParams.set("redirect_uri", `http://127.0.0.1:${mcpOAuthCallbackAddress.port}/callback/fixture-id`);
+      if (fixtureMcpOAuthMode === "par") {
+        authorizationUrl.searchParams.set("client_id", "fixture-codex-client");
+        authorizationUrl.searchParams.set("request_uri", "urn:ietf:params:oauth:request_uri:fixture");
+      } else {
+        authorizationUrl.searchParams.set("redirect_uri", `http://127.0.0.1:${mcpOAuthCallbackAddress.port}/callback/fixture-id`);
+      }
       authorizationUrl.searchParams.set("state", fixtureMcpOAuthState);
       return { authorizationUrl: authorizationUrl.href };
     }
@@ -1115,6 +1124,8 @@ const server: Server = createMobileServer({
   auth, agent, accounts: mobileAccounts as never, feed: feed as unknown as TmaLiveFeed, approvals: mobileApprovals,
   elicitations: mobileElicitations, dataDir,
   staticRoot: resolve("apps/codex-mobile/dist"), port: requestedPort,
+  isCodexOAuthCallbackListener: async (callback) => callback.protocol === "http:" && callback.hostname === "127.0.0.1" &&
+    Number(callback.port) === mcpOAuthCallbackAddress.port,
   ...(fixtureHost === "phone.localhost" ? { allowedOrigins: [`${mobileOrigin}${requestedPort}`] } : {}),
 });
 server.listen(requestedPort, "127.0.0.1");

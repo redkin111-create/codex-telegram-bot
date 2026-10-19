@@ -10,6 +10,7 @@ import { TmaLiveFeed } from "./tma/live.js";
 import { codexMobileEnabled, startCodexMobileService, type CodexMobileService } from "./mobile/service.js";
 import { MobileApprovalBroker, MobileElicitationBroker } from "./mobile/approvals.js";
 import { MobileAccountController } from "./mobile/accounts.js";
+import { isLoopbackListenerOwnedByProcess } from "./mobile/oauth-callback.js";
 import { createBot } from "./bot/bot.js";
 import { CANONICAL_DIR, loadConfig } from "./config.js";
 import { InstanceLock } from "./app/instance-lock.js";
@@ -100,7 +101,13 @@ async function main(): Promise<void> {
         acp,
         registry,
       });
-      mobile = await startCodexMobileService(cfg, agent, feed, { approvals, elicitations, accounts: mobileAccounts });
+      mobile = await startCodexMobileService(cfg, agent, feed, {
+        approvals,
+        elicitations,
+        accounts: mobileAccounts,
+        isCodexOAuthCallbackListener: (callback) =>
+          isLoopbackListenerOwnedByProcess(acp.pid, callback.hostname, Number(callback.port)),
+      });
     } catch (error) {
       restoreMobileHandlers?.();
       restoreMobileHandlers = undefined;
