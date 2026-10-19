@@ -19,6 +19,7 @@ import { TmaScreenshotIndex } from "./screenshots.js";
 import type { AppConfig } from "../config.js";
 import { isPathWithinRoot } from "../projects/manager.js";
 import { addMobileMcpConfigServer, listMobileMcpConfig, restartMobileCodex, setMobileMcpConfigEnabled } from "../mobile/mcp-config.js";
+import { selectedMobileSkillName } from "../mobile/skill-selection.js";
 import { buildContentBlocks } from "../bot/prompt-content.js";
 import { createLogger } from "../logger.js";
 import { readConversationHistoryAsync, searchConversationHistoryAsync } from "../sessions/history.js";
@@ -122,10 +123,6 @@ function mobileReviewTarget(value:unknown):CodexReviewTarget{
     return {type:"custom",instructions};
   }
   throw new Error("Неизвестный тип ревью");
-}
-function selectedMobileSkillName(text:string):string|undefined{
-  const match=/^\$([\p{L}\p{N}][\p{L}\p{N}_.:-]{0,159})(?=$|[\t \r\n])/u.exec(text.trim());
-  return match?.[1];
 }
 const MOBILE_APP_ID_PATTERN=/^[a-z0-9][a-z0-9_.:@-]{0,199}$/i;
 function selectedMobileAppIds(value:unknown):string[]{
