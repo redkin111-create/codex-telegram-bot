@@ -185,6 +185,7 @@ let fixtureGitPullCount = 0;
 let fixtureNotesCommitted = false;
 let fixtureRenameStaged = true;
 let fixturePluginInstalled = false;
+let fixturePluginEnabled = true;
 let fixtureMarketplaces = [
   { name: "Fixture official", pluginCount: 2, installedPluginCount: 1, manageable: true },
   { name: "Built-in catalog", pluginCount: 4, installedPluginCount: 0, manageable: false },
@@ -744,6 +745,11 @@ const agent = {
       fixturePluginInstalled = false;
       return { uninstalled: true };
     }
+    if (job.op === "setPluginEnabled") {
+      if (args.pluginId !== "reviewer@official" || !fixturePluginInstalled || typeof args.enabled !== "boolean") throw new Error("Плагин недоступен для изменения");
+      fixturePluginEnabled = args.enabled;
+      return { pluginId: args.pluginId, enabled: fixturePluginEnabled };
+    }
     if (job.op === "addMarketplace") {
       const source = typeof args.source === "string" ? args.source : "";
       if (!/^(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}|https:\/\/github\.com\/[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}(?:\.git)?)$/i.test(source)) {
@@ -819,7 +825,7 @@ const agent = {
       }],
       plugins: [{ id: "reviewer@official", name: "Review helper", marketplace: "Fixture official",
         description: "Показывает результаты ревью изменений.", capabilities: ["review", "summaries"], sourceType: "remote",
-        installed: fixturePluginInstalled, enabled: true, installable: !fixturePluginInstalled,
+        installed: fixturePluginInstalled, enabled: fixturePluginEnabled, canToggle: fixturePluginInstalled, installable: !fixturePluginInstalled,
         installPolicy: "AVAILABLE", availability: "AVAILABLE", mustShowInstallationInterstitial: false }],
       pluginCatalogAvailable: true,
       marketplaces: fixtureMarketplaces.map((marketplace) => ({ ...marketplace })),

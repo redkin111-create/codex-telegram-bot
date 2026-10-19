@@ -93,6 +93,29 @@ test("incremental index returns successive screenshots without requiring final a
   }finally{rmSync(dir,{recursive:true,force:true});}
 });
 
+test("screenshot index deduplicates equivalent paths with repeated separators",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"tma-duplicate-screen-paths-"));
+  try{
+    const cwd=join(dir,"toy");
+    mkdirSync(cwd);
+    const image=join(cwd,"capture.png");
+    const equivalent=process.platform==="win32"
+      ? image.replaceAll("\\","\\\\")
+      : image.replaceAll("/","//");
+    const file=join(dir,"rollout.jsonl");
+    writeFileSync(image,screenshot);
+    writeFileSync(file,record(image)+record(equivalent));
+
+    const index=new TmaScreenshotIndex();
+    const recent=await index.scan(sid,file,cwd);
+    assert.equal(recent.length,1,"one physical screenshot should produce one gallery entry");
+    assert.deepEqual((await index.olderPage(sid,file,cwd)).images,[],
+      "the equivalent older reference should not reappear on a history page");
+    assert.deepEqual(await index.authorized(sid,file,cwd,equivalent),recent[0],
+      "authorization should accept an equivalent path for the same validated screenshot");
+  }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
 test("screenshot index returns every tracked image when a session has more than one screenful",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"tma-many-screens-"));
   try{

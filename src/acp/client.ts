@@ -814,6 +814,61 @@ export class AcpClient extends EventEmitter {
     await this.refreshInventories();
   }
 
+  /** Toggle an installed plugin in Codex's user config and confirm its effective runtime state. */
+  async setMobilePluginEnabled(pluginId: string, enabled: boolean, cwd: string): Promise<boolean> {
+    if (!/^[a-z0-9][a-z0-9_.:@-]{0,199}$/i.test(pluginId) || typeof enabled !== "boolean" || !cwd.trim() || cwd.length > 4096) {
+      throw new Error("Неверные параметры плагина Codex");
+    }
+    const findMatches = (value: unknown) => {
+      const inventory = mobileAppRecord(value);
+      if (!Array.isArray(inventory?.marketplaces)) return [];
+      return inventory.marketplaces.flatMap((rawMarketplace) => {
+        const marketplace = mobileAppRecord(rawMarketplace);
+        return Array.isArray(marketplace?.plugins)
+          ? marketplace.plugins.flatMap((rawPlugin) => {
+            const plugin = mobileAppRecord(rawPlugin);
+            return plugin?.id === pluginId ? [plugin] : [];
+          })
+          : [];
+      });
+    };
+    const readState = async () => {
+      const [catalog, installed] = await Promise.all([
+        this.request("plugin/list", { cwds: [cwd] }),
+        this.request("plugin/installed", {}),
+      ]);
+      const catalogMatches = findMatches(catalog);
+      const installedMatches = findMatches(installed).filter((plugin) => plugin.installed === true);
+      if (catalogMatches.length === 0 || installedMatches.length === 0) {
+        throw new Error("Плагин не найден среди установленных в текущем проекте Codex");
+      }
+      if (catalogMatches.length !== 1 || installedMatches.length !== 1) {
+        throw new Error("Плагин нельзя однозначно выбрать в Codex");
+      }
+      const catalogPlugin = catalogMatches[0]!;
+      const installedPlugin = installedMatches[0]!;
+      if (catalogPlugin.availability === "DISABLED_BY_ADMIN" || installedPlugin.availability === "DISABLED_BY_ADMIN") {
+        throw new Error("Этот плагин отключён политикой администратора");
+      }
+      return { catalogPlugin, installedPlugin };
+    };
+
+    const current = await readState();
+    if (current.catalogPlugin.enabled === enabled && current.installedPlugin.enabled === enabled) return enabled;
+
+    await this.request("config/value/write", {
+      keyPath: `plugins.${JSON.stringify(pluginId)}.enabled`,
+      value: enabled,
+      mergeStrategy: "upsert",
+    });
+    await this.refreshInventories();
+    const updated = await readState();
+    if (updated.catalogPlugin.enabled !== enabled || updated.installedPlugin.enabled !== enabled) {
+      throw new AcpError("Codex не подтвердил итоговое состояние плагина");
+    }
+    return enabled;
+  }
+
   private async loadCapabilities(): Promise<void> {
     await Promise.all([
       this.loadCollaborationModes(),

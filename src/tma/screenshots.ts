@@ -8,7 +8,7 @@
  * file data or untrusted tool output.
  */
 import { open, realpath, stat } from "node:fs/promises";
-import { basename, extname, isAbsolute, relative, sep } from "node:path";
+import { basename, extname, isAbsolute, normalize, relative, sep } from "node:path";
 import { watchImagePathsFromEvents } from "../bot/watch-images.js";
 
 export interface ScreenshotRef {
@@ -26,6 +26,11 @@ const OLDER_PAGE_SIZE=80;
 const OLDER_CHUNK_SIZE=256*1024;
 const MAX_BYTES=3*1024*1024;
 const EXTENSIONS=new Set([".png",".jpg",".jpeg",".webp",".gif"]);
+
+function pathIdentity(path:string):string{
+  const normalized=normalize(path);
+  return process.platform==="win32"?normalized.toLocaleLowerCase("en-US"):normalized;
+}
 
 export interface ScreenshotPage {
   images:ScreenshotRef[];
@@ -80,8 +85,13 @@ export class TmaScreenshotIndex {
         if(parts[0]?.startsWith("\0"))parts.shift();
         // Never allow a single enormous event to monopolize the bot.
         const references=watchImagePathsFromEvents(parts.filter(x=>x.length<MAX_LINE),cwd);
+        const known=new Set(current.references.map(pathIdentity));
         for(const candidate of references){
-          if(!current.references.includes(candidate))current.references.push(candidate);
+          const identity=pathIdentity(candidate);
+          if(!known.has(identity)){
+            current.references.push(candidate);
+            known.add(identity);
+          }
         }
         if(current.references.length>MAX_REFERENCES)current.references.splice(0,current.references.length-MAX_REFERENCES);
       }
@@ -91,6 +101,7 @@ export class TmaScreenshotIndex {
     let canonicalRoot:string;
     try{canonicalRoot=await realpath(cwd);}catch{return [];}
     const images:ScreenshotRef[]=[];
+    const seen=new Set<string>();
     for(const candidate of current.references){
       if(!EXTENSIONS.has(extname(candidate).toLowerCase()))continue;
       try{
@@ -99,6 +110,9 @@ export class TmaScreenshotIndex {
         if(!rel||rel===".."||rel.startsWith(".."+sep)||isAbsolute(rel))continue;
         const meta=await stat(actual);
         if(!meta.isFile()||meta.size<8||meta.size>MAX_BYTES)continue;
+        const identity=pathIdentity(actual);
+        if(seen.has(identity))continue;
+        seen.add(identity);
         images.push({path:candidate,name:basename(actual),mtimeMs:meta.mtimeMs,size:meta.size});
       }catch{/* not written yet, inaccessible or unsafe */}
     }
@@ -108,7 +122,8 @@ export class TmaScreenshotIndex {
 
   async authorized(id:string,jsonl:string,cwd:string,path:string):Promise<ScreenshotRef|undefined>{
     const images=await this.scan(id,jsonl,cwd);
-    return images.find(img=>img.path===path);
+    const identity=pathIdentity(path);
+    return images.find(img=>pathIdentity(img.path)===identity);
   }
 
   /** Return an older, workspace-validated page without retaining an unbounded index. */
@@ -120,7 +135,7 @@ export class TmaScreenshotIndex {
     if(limit===0)return {images:[]};
 
     const recent=await this.scan(id,jsonl,cwd);
-    const known=new Set(recent.map(image=>image.path));
+    const known=new Set(recent.map(image=>pathIdentity(image.path)));
     const groups:Array<{offset:number;paths:string[]}>=[];
     const retained=new Set<string>();
     let retainedCount=0;
@@ -128,16 +143,16 @@ export class TmaScreenshotIndex {
     const addLine=(line:Buffer,offset:number)=>{
       if(line.length===0||line.length>MAX_LINE)return;
       const paths=watchImagePathsFromEvents([line.toString("utf8")],cwd)
-        .filter(path=>EXTENSIONS.has(extname(path).toLowerCase())&&!known.has(path)&&!retained.has(path))
+        .filter(path=>EXTENSIONS.has(extname(path).toLowerCase())&&!known.has(pathIdentity(path))&&!retained.has(pathIdentity(path)))
         .slice(-OLDER_PAGE_SIZE);
       if(paths.length===0)return;
       groups.push({offset,paths});
-      for(const path of paths)retained.add(path);
+      for(const path of paths)retained.add(pathIdentity(path));
       retainedCount+=paths.length;
       while(retainedCount>OLDER_PAGE_SIZE&&groups.length>1){
         const oldest=groups.shift()!;
         retainedCount-=oldest.paths.length;
-        for(const path of oldest.paths)retained.delete(path);
+        for(const path of oldest.paths)retained.delete(pathIdentity(path));
         hasEarlier=true;
       }
     };
@@ -196,6 +211,7 @@ export class TmaScreenshotIndex {
     let canonicalRoot:string;
     try{canonicalRoot=await realpath(cwd);}catch{return [];}
     const images:ScreenshotRef[]=[];
+    const seen=new Set<string>();
     for(const candidate of candidates){
       if(!EXTENSIONS.has(extname(candidate).toLowerCase()))continue;
       try{
@@ -204,6 +220,9 @@ export class TmaScreenshotIndex {
         if(!rel||rel===".."||rel.startsWith(".."+sep)||isAbsolute(rel))continue;
         const meta=await stat(actual);
         if(!meta.isFile()||meta.size<8||meta.size>MAX_BYTES)continue;
+        const identity=pathIdentity(actual);
+        if(seen.has(identity))continue;
+        seen.add(identity);
         images.push({path:candidate,name:basename(actual),mtimeMs:meta.mtimeMs,size:meta.size});
       }catch{/* not written yet, inaccessible or unsafe */}
     }

@@ -805,6 +805,30 @@ test("plugin changes require the paired device, same Origin, CSRF and an owned s
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
+test("plugin enablement is a protected per-session operation", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const url = f.origin + "/api/operations";
+    const body = (sessionId = allowedSession) => JSON.stringify({
+      op: "setPluginEnabled", args: { sessionId, pluginId: "fixture-plugin", enabled: false },
+    });
+    const anonymous = await fetch(url, { method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: body() });
+    assert.equal(anonymous.status, 401);
+    const noCsrf = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" }, body: body() });
+    assert.equal(noCsrf.status, 403);
+    const wrongOrigin = await fetch(url, { method: "POST", headers: { origin: "https://attacker.example", cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body() });
+    assert.equal(wrongOrigin.status, 403);
+    const foreign = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body(foreignSession) });
+    assert.equal(foreign.status, 403);
+    assert.equal(f.calls.filter((call) => call.op === "setPluginEnabled").length, 0);
+    const accepted = await fetch(url, { method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" }, body: body() });
+    assert.equal(accepted.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "setPluginEnabled");
+    assert.equal(f.calls.at(-1)?.userId, 101);
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
 test("marketplace changes require the paired owner, exact Origin, CSRF and an owned session", async () => {
   const f = await startFixture();
   try {

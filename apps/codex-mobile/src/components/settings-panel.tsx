@@ -11,7 +11,7 @@ const effortLabel: Record<string, string> = {
   minimal: "Минимум", low: "Низкий", medium: "Средний", high: "Высокий", max: "Максимум",
 };
 
-type PluginAction = { kind: "install" | "uninstall"; pluginId: string; };
+type PluginAction = { kind: "install" | "uninstall" | "enable" | "disable"; pluginId: string; };
 type PluginInstallNotice = { name: string; installUrl?: string }[];
 type SkillAction = { name: string; enabled: boolean };
 type McpToolAction = {
@@ -231,8 +231,13 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
           authorizationRequired?: Array<{ id: string; name: string; installUrl?: string }>;
         };
         setPluginNotice(result.authorizationRequired?.map(({ name, installUrl }) => ({ name, installUrl })) ?? []);
-      } else {
+      } else if (action.kind === "uninstall") {
         await onOperation("uninstallPlugin", { sessionId, pluginId: plugin.id });
+        setPluginNotice([]);
+      } else {
+        const enabled = action.kind === "enable";
+        const result = await onOperation("setPluginEnabled", { sessionId, pluginId: plugin.id, enabled }) as { enabled?: unknown };
+        if (result.enabled !== enabled) throw new Error("Codex не подтвердил итоговое состояние плагина");
         setPluginNotice([]);
       }
       setPluginAction(undefined);
@@ -463,10 +468,10 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
               <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{plugin.name}</p><p className="mt-1 truncate text-[11px] text-muted">{plugin.marketplace}</p></div><Badge>{plugin.installed ? plugin.enabled ? "Установлен" : "Отключён" : plugin.installable ? "Доступен" : "Недоступен"}</Badge></div>
               {plugin.description && <p className="mt-2 text-xs leading-relaxed text-muted">{plugin.description}</p>}
               {plugin.mustShowInstallationInterstitial && plugin.capabilities.length > 0 && <p className="mt-2 text-[11px] text-muted">Возможности: {plugin.capabilities.join(", ")}</p>}
-              <div className="mt-3 flex justify-end">{plugin.installed ? <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" disabled={!usable} onClick={() => setPluginAction({ kind: "uninstall", pluginId: plugin.id })}><Trash2 size={14} /> Удалить</Button>
-                : plugin.installable ? <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" disabled={!usable} onClick={() => setPluginAction({ kind: "install", pluginId: plugin.id })}><Download size={14} /> Установить</Button> : null}</div>
+              <div className="mt-3 flex justify-end gap-2">{plugin.installed && plugin.canToggle && <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label={`${plugin.enabled ? "Отключить" : "Включить"} плагин ${plugin.name}`} disabled={!usable} onClick={() => setPluginAction({ kind: plugin.enabled ? "disable" : "enable", pluginId: plugin.id })}>{plugin.enabled ? <Pause size={14} /> : <Play size={14} />}{plugin.enabled ? "Отключить" : "Включить"}</Button>}{plugin.installed ? <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label={`Удалить плагин ${plugin.name}`} disabled={!usable} onClick={() => setPluginAction({ kind: "uninstall", pluginId: plugin.id })}><Trash2 size={14} /> Удалить</Button>
+                : plugin.installable ? <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label={`Установить плагин ${plugin.name}`} disabled={!usable} onClick={() => setPluginAction({ kind: "install", pluginId: plugin.id })}><Download size={14} /> Установить</Button> : null}</div>
             </li>)}</ul> : <p className="text-xs text-muted">Каталог плагинов пуст.</p>}
-            <p className="text-[11px] leading-relaxed text-muted">Установка и удаление меняют настройки Codex на этом компьютере. Действие доступно только для записи из актуального каталога уже подключённого Codex.</p>
+            <p className="text-[11px] leading-relaxed text-muted">Установка и удаление меняют настройки Codex на этом компьютере. Включение и отключение меняет глобальную настройку пользователя и может повлиять на другие проекты и сеансы. Политика администратора имеет приоритет.</p>
             {pluginNotice && <div role="status" className="rounded-xl border border-border bg-[#111613] p-3 text-xs leading-relaxed">
               {pluginNotice.length ? <><p className="font-semibold">Чтобы завершить настройку плагина, подключите сервис:</p><ul className="mt-2 space-y-2">{pluginNotice.map((app) => <li key={app.name}>{app.installUrl && safeLinkHost(app.installUrl) ? <a className="inline-flex items-center gap-1 text-accent underline" href={app.installUrl} target="_blank" rel="noopener noreferrer">{app.name} · {safeLinkHost(app.installUrl)}<ExternalLink size={12} /></a> : <span>{app.name} · откройте Codex на компьютере для авторизации</span>}</li>)}</ul></> : <p>Изменение плагинов передано Codex.</p>}
             </div>}
@@ -506,11 +511,11 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
       </div>
       {pluginAction && selectedPlugin && <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
         <section role="alertdialog" aria-modal="true" aria-labelledby="plugin-confirm-title" className="safe-area-bottom w-full max-w-md space-y-4 rounded-2xl border border-border bg-elevated p-5 shadow-soft">
-          <div><h3 id="plugin-confirm-title" className="text-base font-semibold">{pluginAction.kind === "install" ? "Установить плагин?" : "Удалить плагин?"}</h3><p className="mt-2 text-sm leading-relaxed text-muted"><span className="font-medium text-text">{selectedPlugin.name}</span> · {selectedPlugin.marketplace}</p>
-            <p className="mt-2 text-xs leading-relaxed text-muted">{pluginAction.kind === "install" ? "Codex загрузит плагин из выбранного удалённого каталога. Он может добавлять инструкции и подключать внешние сервисы." : "Плагин будет удалён из настроек Codex на этом компьютере. Это может повлиять на другие сеансы."}</p>
+          <div><h3 id="plugin-confirm-title" className="text-base font-semibold">{pluginAction.kind === "install" ? "Установить плагин?" : pluginAction.kind === "uninstall" ? "Удалить плагин?" : pluginAction.kind === "enable" ? "Включить плагин?" : "Отключить плагин?"}</h3><p className="mt-2 text-sm leading-relaxed text-muted"><span className="font-medium text-text">{selectedPlugin.name}</span> · {selectedPlugin.marketplace}</p>
+            <p className="mt-2 text-xs leading-relaxed text-muted">{pluginAction.kind === "install" ? "Codex загрузит плагин из выбранного удалённого каталога. Он может добавлять инструкции и подключать внешние сервисы." : pluginAction.kind === "uninstall" ? "Плагин будет удалён из настроек Codex на этом компьютере. Это может повлиять на другие сеансы." : "Изменится глобальная настройка плагина в Codex на этом компьютере. Это может повлиять на другие проекты и сеансы."}</p>
             {selectedPlugin.capabilities.length > 0 && <p className="mt-2 text-xs text-muted">Заявленные возможности: {selectedPlugin.capabilities.join(", ")}</p>}
           </div>
-          <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={saving} onClick={() => setPluginAction(undefined)}>Отмена</Button><Button type="button" className="flex-1" disabled={saving || !usable} onClick={() => void confirmPluginAction()}>{saving ? "Выполняю…" : pluginAction.kind === "install" ? "Установить" : "Удалить"}</Button></div>
+          <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" disabled={saving} onClick={() => setPluginAction(undefined)}>Отмена</Button><Button type="button" className="flex-1" disabled={saving || !usable} onClick={() => void confirmPluginAction()}>{saving ? "Выполняю…" : pluginAction.kind === "install" ? "Установить" : pluginAction.kind === "uninstall" ? "Удалить" : pluginAction.kind === "enable" ? "Включить" : "Отключить"}</Button></div>
         </section>
       </div>}
       {skillAction && selectedSkill && <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">

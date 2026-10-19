@@ -57,8 +57,8 @@ test("mobile integration inventory drops local paths and unsafe URLs while keepi
   assert.equal(result.pluginCatalogAvailable, true);
   assert.equal(result.appsAvailable, true);
   assert.equal(result.plugins.length, 2);
-  assert.deepEqual(result.plugins.map((plugin) => [plugin.id, plugin.installed, plugin.installable]), [
-    ["reviewer@official", false, true], ["local@official", true, false],
+  assert.deepEqual(result.plugins.map((plugin) => [plugin.id, plugin.installed, plugin.enabled, plugin.canToggle, plugin.installable]), [
+    ["reviewer@official", false, true, false, true], ["local@official", true, true, true, false],
   ]);
   assert.equal(result.plugins[0]?.description, "Review changes");
   assert.deepEqual(result.apps.map((app) => [app.id, app.enabled, app.callable, app.installUrl]), [
@@ -120,7 +120,7 @@ test("installed integration inventories remain visible when the runtime cannot l
 
   assert.equal(result.pluginCatalogAvailable, true);
   assert.equal(result.appsAvailable, true);
-  assert.deepEqual(result.plugins.map((plugin) => [plugin.id, plugin.installed, plugin.installable]), [["existing@local", true, false]]);
+  assert.deepEqual(result.plugins.map((plugin) => [plugin.id, plugin.installed, plugin.canToggle, plugin.installable]), [["existing@local", true, true, false]]);
   assert.deepEqual(result.apps.map((app) => [app.id, app.name, app.enabled, app.callable]), [["notes", "Notes connector", true, false]]);
   assert.doesNotMatch(JSON.stringify(result), /C:\\\\private/);
 });
@@ -167,5 +167,78 @@ test("ACP plugin operations re-check installed state and use only catalog-derive
     await client.uninstallMobilePlugin("remote@official");
     assert.equal(pluginIsInstalled, false);
     await assert.rejects(client.uninstallMobilePlugin("unknown@official"), /не найден среди установленных/i);
+  } finally { client.stop(); }
+});
+
+test("ACP plugin enablement changes only a unique installed plugin and verifies the effective state", async () => {
+  const client = new AcpClient({ codexCliPath: "codex", workspace: "C:\\work", trustAllTools: false });
+  const internal = client as unknown as { request: (method: string, params: unknown) => Promise<unknown> };
+  const calls: Array<{ method: string; params: unknown }> = [];
+  let enabled = true;
+  let installed = true;
+  internal.request = async (method, params) => {
+    calls.push({ method, params });
+    if (method === "plugin/list") return { marketplaces: [{ name: "official", plugins: installed ? [
+      { id: "remote@official", installed: true, enabled, availability: "AVAILABLE" },
+    ] : [] }] };
+    if (method === "plugin/installed") return { marketplaces: [{ name: "official", plugins: installed ? [
+      { id: "remote@official", installed: true, enabled, availability: "AVAILABLE" },
+    ] : [] }] };
+    if (method === "config/value/write") {
+      const write = params as { keyPath: string; value: unknown; mergeStrategy: string };
+      assert.equal(write.keyPath, 'plugins."remote@official".enabled');
+      assert.equal(write.value, false);
+      assert.equal(write.mergeStrategy, "upsert");
+      enabled = false;
+      return { status: "ok" };
+    }
+    throw new Error(`Unexpected ACP method: ${method}`);
+  };
+  client.refreshInventories = async () => undefined;
+  try {
+    assert.equal(await client.setMobilePluginEnabled("remote@official", false, "C:\\work\\project"), false);
+    assert.deepEqual(calls.map(({ method }) => method), ["plugin/list", "plugin/installed", "config/value/write", "plugin/list", "plugin/installed"]);
+    installed = false;
+    await assert.rejects(client.setMobilePluginEnabled("missing@official", false, "C:\\work\\project"), /не найден среди установленных/i);
+  } finally { client.stop(); }
+});
+
+test("ACP plugin enablement rejects ambiguous, admin-disabled and unconfirmed plugin state", async () => {
+  const client = new AcpClient({ codexCliPath: "codex", workspace: "C:\\work", trustAllTools: false });
+  const internal = client as unknown as { request: (method: string, params: unknown) => Promise<unknown> };
+  let inventory: unknown = { marketplaces: [{ name: "official", plugins: [
+    { id: "remote@official", installed: true, enabled: true, availability: "AVAILABLE" },
+  ] }] };
+  let catalog: unknown = { marketplaces: [{ name: "official", plugins: [
+    { id: "remote@official", installed: true, enabled: true, availability: "AVAILABLE" },
+  ] }] };
+  let writes = 0;
+  internal.request = async (method) => {
+    if (method === "plugin/installed") return inventory;
+    if (method === "plugin/list") return catalog;
+    if (method === "config/value/write") { writes += 1; return { status: "ok" }; }
+    throw new Error(`Unexpected ACP method: ${method}`);
+  };
+  client.refreshInventories = async () => undefined;
+  try {
+    inventory = { marketplaces: [{ name: "official", plugins: [
+      { id: "remote@official", installed: true, enabled: true },
+      { id: "remote@official", installed: true, enabled: true },
+    ] }] };
+    catalog = inventory;
+    await assert.rejects(client.setMobilePluginEnabled("remote@official", false, "C:\\work\\project"), /однозначно|несколько/i);
+    inventory = { marketplaces: [{ name: "official", plugins: [
+      { id: "remote@official", installed: true, enabled: true, availability: "AVAILABLE" },
+    ] }] };
+    catalog = { marketplaces: [{ name: "official", plugins: [
+      { id: "remote@official", installed: true, enabled: false, availability: "DISABLED_BY_ADMIN" },
+    ] }] };
+    await assert.rejects(client.setMobilePluginEnabled("remote@official", true, "C:\\work\\project"), /администратор|политик/i);
+    inventory = { marketplaces: [{ name: "official", plugins: [
+      { id: "remote@official", installed: true, enabled: true, availability: "AVAILABLE" },
+    ] }] };
+    catalog = inventory;
+    await assert.rejects(client.setMobilePluginEnabled("remote@official", false, "C:\\work\\project"), /не подтвердил|итоговое состояние/i);
+    assert.equal(writes, 1);
   } finally { client.stop(); }
 });

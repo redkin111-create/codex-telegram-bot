@@ -772,7 +772,7 @@ test("mobile capability inventory is redacted and settings reuse the owner's exi
 test("mobile plugin and app catalogs redact host data and plugin changes stay owner-scoped",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-integrations-"));
   const sessionId="20202020-2020-4020-8020-202020202020";
-  const calls:Array<{op:string;id?:string;marketplace?:string;cwd?:string}> = [];
+  const calls:Array<{op:string;id?:string;enabled?:boolean;marketplace?:string;cwd?:string}> = [];
   const runtime={sessionId,isBusy:false};
   const acp=Object.assign(new EventEmitter(),{
     isConnected:true,
@@ -786,6 +786,7 @@ test("mobile plugin and app catalogs redact host data and plugin changes stay ow
     availableSkills:[],
     availableMcpServers:[],
     currentModelId:"default",
+    hasInflightPrompt:()=>false,
     mobileIntegrationInventory:async(cwd?:string,threadId?:string)=>{
       calls.push({op:"inventory",cwd,id:threadId});
       return {
@@ -801,12 +802,14 @@ test("mobile plugin and app catalogs redact host data and plugin changes stay ow
       {id:"unsafe",name:"Unsafe",installUrl:"javascript:alert(1)"},
     ]};},
     async uninstallMobilePlugin(id:string){calls.push({op:"uninstall",id});},
+    async setMobilePluginEnabled(id:string,enabled:boolean,cwd:string){calls.push({op:"enabled",id,enabled,cwd});return enabled;},
   }) as unknown as AcpClient;
   const registry={
     controller:()=>({list:()=>[]}),
     get:()=>runtime,
     runtimeForSession:()=>runtime,
     ownerChatForSession:()=>101,
+    hasPendingWork:()=>false,
   } as unknown as RuntimeRegistry;
   const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101"])} as AppConfig;
   const agent=new MiniAppAgent({cfg,acp,registry});
@@ -829,8 +832,14 @@ test("mobile plugin and app catalogs redact host data and plugin changes stay ow
       {id:"unsafe",name:"Unsafe"},
     ]);
     assert.deepEqual(calls[1],{op:"install",id:"reviewer@official",marketplace:"official",cwd:dir});
+    assert.deepEqual(await agent.executeMobile({op:"setPluginEnabled",userId:101,args:{sessionId,pluginId:"reviewer@official",enabled:false}}),{pluginId:"reviewer@official",enabled:false});
+    assert.deepEqual(calls[2],{op:"enabled",id:"reviewer@official",enabled:false,cwd:dir});
+    runtime.isBusy=true;
+    await assert.rejects(agent.executeMobile({op:"setPluginEnabled",userId:101,args:{sessionId,pluginId:"reviewer@official",enabled:true}}),/занят|текущей задач/i);
+    runtime.isBusy=false;
     await agent.executeMobile({op:"uninstallPlugin",userId:101,args:{sessionId,pluginId:"reviewer@official"}});
-    assert.equal(calls[2]?.op,"uninstall");
+    assert.equal(calls[3]?.op,"uninstall");
+    await assert.rejects(agent.executeMobile({op:"setPluginEnabled",userId:202,args:{sessionId,pluginId:"reviewer@official",enabled:true}}),/не разрешён/i);
     await assert.rejects(agent.executeMobile({op:"installPlugin",userId:202,args:{sessionId,pluginId:"reviewer@official",marketplace:"official"}}),/не разрешён/i);
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });

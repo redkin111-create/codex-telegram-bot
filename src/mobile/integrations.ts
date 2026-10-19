@@ -11,6 +11,7 @@ export interface MobilePluginSummary {
   sourceType?: "remote" | "local" | "git" | "npm";
   installed: boolean;
   enabled: boolean;
+  canToggle: boolean;
   installable: boolean;
   installPolicy: "AVAILABLE" | "INSTALLED_BY_DEFAULT" | "NOT_AVAILABLE" | "unknown";
   availability: string;
@@ -133,6 +134,7 @@ function flattenPlugins(value: unknown, installedIds: Set<string>): MobilePlugin
           : undefined,
         installed,
         enabled: plugin?.enabled === true,
+        canToggle: installed && availability !== "DISABLED_BY_ADMIN",
         installable: !installed && sourceType === "remote" && installPolicy === "AVAILABLE" && availability !== "DISABLED_BY_ADMIN",
         installPolicy,
         availability,
@@ -193,7 +195,14 @@ export function normalizeMobileIntegrations(
   for (const plugin of flattenPlugins(installedPlugins, installedIds)) {
     const key = `${plugin.marketplace}:${plugin.id}`;
     const existing = plugins.get(key);
-    plugins.set(key, existing ? { ...plugin, ...existing, installed: true, installable: false } : { ...plugin, installed: true, installable: false });
+    plugins.set(key, existing ? {
+      ...existing,
+      ...plugin,
+      installed: true,
+      enabled: typeof plugin.enabled === "boolean" ? plugin.enabled : existing.enabled,
+      canToggle: plugin.availability !== "DISABLED_BY_ADMIN" && existing.canToggle,
+      installable: false,
+    } : { ...plugin, installed: true, installable: false });
   }
   return {
     pluginCatalogAvailable: Array.isArray(pluginCatalogRecord?.marketplaces) || Array.isArray(installedPluginCatalogRecord?.marketplaces),
