@@ -337,10 +337,26 @@ test("MCP config and shared Codex restart operations require paired session owne
     assert.equal(forbiddenChange.status, 403);
     const changed = await fetch(f.origin + "/api/operations", {
       method: "POST", headers: { ...headers, "x-csrf-token": login.csrfToken },
-      body: body("setMcpConfigEnabled", allowedSession, { name: "fixture", enabled: false }),
+      body: body("setMcpConfigEnabled", allowedSession, { name: "fixture", scope: "workspace", enabled: false }),
     });
     assert.equal(changed.status, 200);
     assert.equal(f.calls.at(-1)?.op, "setMcpConfigEnabled");
+
+    const removeBody = body("removeMcpConfigServer", allowedSession, { name: "fixture", scope: "workspace" });
+    const removeWithoutCsrf = await fetch(f.origin + "/api/operations", { method: "POST", headers, body: removeBody });
+    assert.equal(removeWithoutCsrf.status, 403);
+    const beforeForeignRemove = f.calls.length;
+    const foreignRemove = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { ...headers, "x-csrf-token": login.csrfToken },
+      body: body("removeMcpConfigServer", foreignSession, { name: "fixture", scope: "workspace" }),
+    });
+    assert.equal(foreignRemove.status, 403);
+    assert.equal(f.calls.length, beforeForeignRemove, "foreign session MCP removal must never reach the agent");
+    const removed = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { ...headers, "x-csrf-token": login.csrfToken }, body: removeBody,
+    });
+    assert.equal(removed.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "removeMcpConfigServer");
 
     const addBody = body("addMcpConfigServer", allowedSession, {
       name: "from_phone", scope: "workspace", transport: "stdio", command: "node", args: ["server.js"], env: { TOKEN: "fixture-secret" },

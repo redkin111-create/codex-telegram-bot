@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addMobileMcpConfigServer, listMobileMcpConfig, restartMobileCodex, setMobileMcpConfigEnabled } from "../src/mobile/mcp-config.js";
+import { addMobileMcpConfigServer, listMobileMcpConfig, removeMobileMcpConfigServer, restartMobileCodex, setMobileMcpConfigEnabled } from "../src/mobile/mcp-config.js";
 
 function withConfigFixture(run: (paths: { root: string; global: string; workspace: string }) => void | Promise<void>) {
   const previous = process.env.CODEX_HOME;
@@ -21,7 +21,7 @@ function withConfigFixture(run: (paths: { root: string; global: string; workspac
   });
 }
 
-test("mobile MCP inventory exposes only safe fields and workspace entries shadow global ones", async () => {
+test("mobile MCP inventory shows both safe config scopes and marks the effective entry", async () => {
   await withConfigFixture(({ root, global, workspace }) => {
     mkdirSync(join(root, ".codex"));
     writeFileSync(global, `[mcp_servers.shared]\ncommand = "secret-command"\nargs = ["--token", "hidden-arg"]\nenv = { API_KEY = "hidden-secret" }\n\n[mcp_servers.global-only]\nurl = "https://private.example/token"\n`);
@@ -29,9 +29,10 @@ test("mobile MCP inventory exposes only safe fields and workspace entries shadow
 
     const servers = listMobileMcpConfig(root);
     assert.deepEqual(servers, [
-      { name: "global-only", scope: "global", enabled: true, transport: "http" },
-      { name: "shared", scope: "workspace", enabled: false, transport: "http" },
-      { name: "workspace-only", scope: "workspace", enabled: true, transport: "stdio" },
+      { name: "global-only", scope: "global", enabled: true, transport: "http", effective: true },
+      { name: "shared", scope: "global", enabled: true, transport: "stdio", effective: false },
+      { name: "shared", scope: "workspace", enabled: false, transport: "http", effective: true },
+      { name: "workspace-only", scope: "workspace", enabled: true, transport: "stdio", effective: true },
     ]);
     const serialized = JSON.stringify(servers);
     for (const secret of ["secret-command", "hidden-arg", "hidden-secret", "private.example", "workspace-secret", "config.toml"]) {
@@ -47,7 +48,7 @@ test("mobile MCP toggle reuses Codex config writer and preserves unrelated setti
     writeFileSync(workspace, original);
 
     const disabled = setMobileMcpConfigEnabled(root, "review", false);
-    assert.deepEqual(disabled, { name: "review", scope: "workspace", enabled: false, transport: "stdio", restartRequired: true });
+    assert.deepEqual(disabled, { name: "review", scope: "workspace", enabled: false, transport: "stdio", effective: true, restartRequired: true });
     const updated = readFileSync(workspace, "utf8");
     assert.match(updated, /enabled = false/);
     assert.match(updated, /command = "reviewer"/);
@@ -71,16 +72,61 @@ test("mobile MCP add writes a workspace stdio server without exposing secrets", 
       args: ["-y", "@example/review-mcp"],
       env: { REVIEW_TOKEN: "do-not-return-this" },
     });
-    assert.deepEqual(added, { name: "local_review", scope: "workspace", enabled: true, transport: "stdio", restartRequired: true });
+    assert.deepEqual(added, { name: "local_review", scope: "workspace", enabled: true, transport: "stdio", effective: true, restartRequired: true });
     const text = readFileSync(workspace, "utf8");
     assert.match(text, /\[features\]\nvoice = true/);
     assert.match(text, /\[mcp_servers\.local_review\]/);
     assert.match(text, /args = \["-y", "@example\/review-mcp"\]/);
     assert.match(text, /env = \{ REVIEW_TOKEN = "do-not-return-this" \}/);
     assert.deepEqual(listMobileMcpConfig(root), [
-      { name: "local_review", scope: "workspace", enabled: true, transport: "stdio" },
+      { name: "local_review", scope: "workspace", enabled: true, transport: "stdio", effective: true },
     ]);
     assert.equal(JSON.stringify(added).includes("do-not-return-this"), false);
+  });
+});
+
+test("mobile MCP removal deletes one exact scope including nested tables and preserves other TOML", async () => {
+  await withConfigFixture(({ root, global, workspace }) => {
+    mkdirSync(join(root, ".codex"));
+    writeFileSync(global, `[mcp_servers.review]\ncommand = "global-review"\n`);
+    writeFileSync(workspace, `# Project settings\n[mcp_servers.review]\ncommand = "project-review"\n\n[mcp_servers.review.env]\nTOKEN = "secret"\n\n[mcp_servers.other]\ncommand = "keep-me"\n\n[features]\nvoice = true\n`);
+
+    const removed = removeMobileMcpConfigServer(root, "review", "workspace");
+    assert.deepEqual(removed, { name: "review", scope: "workspace", removed: true, restartRequired: true });
+    const text = readFileSync(workspace, "utf8");
+    assert.doesNotMatch(text, /project-review|\[mcp_servers\.review(?:\.env)?\]|TOKEN =/);
+    assert.match(text, /\[mcp_servers\.other\]\ncommand = "keep-me"/);
+    assert.match(text, /\[features\]\nvoice = true/);
+    assert.deepEqual(listMobileMcpConfig(root), [
+      { name: "other", scope: "workspace", enabled: true, transport: "stdio", effective: true },
+      { name: "review", scope: "global", enabled: true, transport: "stdio", effective: true },
+    ]);
+  });
+});
+
+test("mobile MCP removal rejects invalid, missing, and unsafe config targets", async () => {
+  await withConfigFixture(({ root, workspace }) => {
+    mkdirSync(join(root, ".codex"));
+    writeFileSync(workspace, `[mcp_servers.review]\ncommand = "reviewer"\n`);
+    assert.throws(() => removeMobileMcpConfigServer(root, "../config", "workspace"), /имя MCP-сервера/i);
+    assert.throws(() => removeMobileMcpConfigServer(root, "missing", "workspace"), /MCP-сервер не найден/i);
+    assert.throws(() => removeMobileMcpConfigServer(root, "review", "global"), /MCP-сервер не найден/i);
+  });
+});
+
+test("mobile MCP removal can remove a shadowed global entry without removing the project override", async () => {
+  await withConfigFixture(({ root, global, workspace }) => {
+    mkdirSync(join(root, ".codex"));
+    writeFileSync(global, `[mcp_servers.shared]\ncommand = "global-secret"\n`);
+    writeFileSync(workspace, `[mcp_servers.shared]\ncommand = "project-server"\n`);
+
+    const removed = removeMobileMcpConfigServer(root, "shared", "global");
+    assert.deepEqual(removed, { name: "shared", scope: "global", removed: true, restartRequired: true });
+    assert.equal(readFileSync(global, "utf8").includes("global-secret"), false);
+    assert.match(readFileSync(workspace, "utf8"), /project-server/);
+    assert.deepEqual(listMobileMcpConfig(root), [
+      { name: "shared", scope: "workspace", enabled: true, transport: "stdio", effective: true },
+    ]);
   });
 });
 
@@ -93,7 +139,7 @@ test("mobile MCP add writes an HTTPS global server with bearer token environment
       url: "https://mcp.example.test/mcp?tenant=demo",
       bearerTokenEnvVar: "DOCS_MCP_TOKEN",
     });
-    assert.deepEqual(added, { name: "remote_docs", scope: "global", enabled: true, transport: "http", restartRequired: true });
+    assert.deepEqual(added, { name: "remote_docs", scope: "global", enabled: true, transport: "http", effective: true, restartRequired: true });
     const text = readFileSync(global, "utf8");
     assert.match(text, /url = "https:\/\/mcp\.example\.test\/mcp\?tenant=demo"/);
     assert.match(text, /bearer_token_env_var = "DOCS_MCP_TOKEN"/);

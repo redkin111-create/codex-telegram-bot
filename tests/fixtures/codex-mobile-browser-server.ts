@@ -220,10 +220,11 @@ const fixtureSkills = [
   { name: "disabled-helper", description: "Отключённый навык.", enabled: false, scope: "repo" as const, canToggle: true, invokable: false },
   { name: "managed-skill", description: "Управляется политикой.", enabled: true, scope: "admin" as const, canToggle: false, invokable: true },
 ];
-type FixtureMcpConfigEntry = { name: string; scope: "global" | "workspace"; enabled: boolean; transport: "http" | "stdio" };
+type FixtureMcpConfigEntry = { name: string; scope: "global" | "workspace"; enabled: boolean; transport: "http" | "stdio"; effective: boolean };
 const fixtureMcpConfig: FixtureMcpConfigEntry[] = [
-  { name: "fixture-git", scope: "workspace" as const, enabled: true, transport: "stdio" as const },
-  { name: "fixture-search", scope: "global" as const, enabled: false, transport: "http" as const },
+  { name: "fixture-git", scope: "global" as const, enabled: true, transport: "http" as const, effective: false },
+  { name: "fixture-git", scope: "workspace" as const, enabled: true, transport: "stdio" as const, effective: true },
+  { name: "fixture-search", scope: "global" as const, enabled: false, transport: "http" as const, effective: true },
 ];
 const fixtureTerminals = new Map<string, { sessionId: string; output: string; pendingInput: string; exited: boolean; exitCode: number | null; }>();
 const fixtureTerminalBySession = new Map<string, string>();
@@ -719,15 +720,22 @@ const agent = {
       const scope = args.scope === "global" ? "global" : args.scope === "workspace" ? "workspace" : undefined;
       const transport = args.transport === "http" ? "http" : args.transport === "stdio" ? "stdio" : undefined;
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(name) || !scope || !transport || fixtureMcpConfig.some((server) => server.name === name)) throw new Error("Проверьте имя MCP-сервера и выбранное подключение");
-      const entry: FixtureMcpConfigEntry = { name, scope, enabled: true, transport };
+      const entry: FixtureMcpConfigEntry = { name, scope, enabled: true, transport, effective: true };
       fixtureMcpConfig.push(entry);
       return { ...entry, restartRequired: true };
     }
     if (job.op === "setMcpConfigEnabled") {
-      const server = fixtureMcpConfig.find((entry) => entry.name === args.name);
+      const server = fixtureMcpConfig.find((entry) => entry.name === args.name && entry.scope === args.scope);
       if (!server || typeof args.enabled !== "boolean") throw new Error("MCP-сервер недоступен для изменения");
       server.enabled = args.enabled;
       return { ...server, restartRequired: true };
+    }
+    if (job.op === "removeMcpConfigServer") {
+      if (job.userId !== ownerId || !sessions.some((session) => session.id === sessionId)) throw new Error("Доступ к сеансу запрещён");
+      const index = fixtureMcpConfig.findIndex((entry) => entry.name === args.name && entry.scope === args.scope);
+      if (index < 0) throw new Error("MCP-сервер недоступен для удаления");
+      const [server] = fixtureMcpConfig.splice(index, 1);
+      return { name: server!.name, scope: server!.scope, removed: true, restartRequired: true };
     }
     if (job.op === "restartCodex") {
       if ([...controlled.values()].some((runtime) => runtime.busy || runtime.queue.length > 0)) throw new Error("Сначала завершите активную работу и очистите очередь");

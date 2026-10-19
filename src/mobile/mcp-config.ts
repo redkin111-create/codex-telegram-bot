@@ -18,10 +18,18 @@ export interface MobileMcpConfigEntry {
   scope: McpScope;
   enabled: boolean;
   transport: McpTransport;
+  effective: boolean;
 }
 
 export interface MobileMcpConfigChange extends MobileMcpConfigEntry {
   restartRequired: boolean;
+}
+
+export interface MobileMcpConfigRemoval {
+  name: string;
+  scope: McpScope;
+  removed: true;
+  restartRequired: true;
 }
 
 export type MobileMcpConfigDraft = {
@@ -81,27 +89,46 @@ function configuredServers(cwd: string): McpServer[] {
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 }
 
-function publicEntry(server: McpServer): MobileMcpConfigEntry {
+function allConfiguredServers(cwd: string): McpServer[] {
+  let projectRoot: string;
+  try { projectRoot = realpathSync.native(cwd); }
+  catch { throw new Error("Папка проекта для MCP недоступна"); }
+  const workspace = configServers(workspaceMcpPath(projectRoot), "workspace", projectRoot);
+  const global = configServers(globalMcpPath(), "global");
+  return [...global, ...workspace].sort((a, b) => {
+    const byName = a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    return byName || (a.scope === b.scope ? 0 : a.scope === "global" ? -1 : 1);
+  });
+}
+
+function publicEntry(server: McpServer, effective = true): MobileMcpConfigEntry {
   return {
     name: server.name.slice(0, 128),
     scope: server.scope,
     enabled: !server.disabled,
     transport: server.transport,
+    effective,
   };
 }
 
 /** Read configured MCP servers without returning commands, URLs, paths, args or environment values. */
 export function listMobileMcpConfig(cwd: string): MobileMcpConfigEntry[] {
   if (typeof cwd !== "string" || !cwd.trim() || cwd.length > 1200) throw new Error("Неверная папка проекта для MCP");
-  return configuredServers(cwd).map(publicEntry);
+  const servers = allConfiguredServers(cwd);
+  const workspaceNames = new Set(servers.filter((server) => server.scope === "workspace").map((server) => server.name));
+  return servers.map((server) => publicEntry(server, server.scope === "workspace" || !workspaceNames.has(server.name)));
 }
 
 /** Toggle one effective Codex MCP entry through the existing TOML-preserving writer. */
-export function setMobileMcpConfigEnabled(cwd: string, name: string, enabled: boolean): MobileMcpConfigChange {
+export function setMobileMcpConfigEnabled(cwd: string, name: string, enabled: boolean, scope?: McpScope): MobileMcpConfigChange {
   if (typeof cwd !== "string" || !cwd.trim() || cwd.length > 1200) throw new Error("Неверная папка проекта для MCP");
   if (typeof name !== "string" || !SAFE_SERVER_NAME.test(name)) throw new Error("Неверное имя MCP-сервера");
   if (typeof enabled !== "boolean") throw new Error("Состояние MCP-сервера должно быть включено или выключено");
-  const server = configuredServers(cwd).find((item) => item.name === name);
+  if (scope !== undefined && scope !== "global" && scope !== "workspace") throw new Error("Выберите область MCP-сервера");
+  const servers = allConfiguredServers(cwd);
+  const server = scope === undefined
+    ? configuredServers(cwd).find((item) => item.name === name)
+    : servers.find((item) => item.name === name && item.scope === scope);
   if (!server) throw new Error("MCP-сервер не найден в разрешённой конфигурации");
 
   // Recheck the file boundary immediately before calling the existing writer.
@@ -111,8 +138,56 @@ export function setMobileMcpConfigEnabled(cwd: string, name: string, enabled: bo
   const restartRequired = (!current.disabled) !== enabled;
   const result = setMcpDisabled(current, !enabled);
   if (!result.ok) throw new Error("Не удалось изменить конфигурацию MCP");
-  const updated = publicEntry({ ...current, disabled: !enabled });
+  const isOverridden = current.scope === "global" && servers.some((item) => item.scope === "workspace" && item.name === name);
+  const updated = publicEntry({ ...current, disabled: !enabled }, !isOverridden);
   return { ...updated, restartRequired };
+}
+
+function withoutMcpServerTables(text: string, name: string): string | undefined {
+  const lines = text.split(/\r?\n/);
+  let rootCount = 0;
+  let inTarget = false;
+  const kept: string[] = [];
+  for (const line of lines) {
+    if (/^\s*\[\[/.test(line)) {
+      inTarget = false;
+      kept.push(line);
+      continue;
+    }
+    const anyHeader = /^\s*\[\s*([^\]]+)\s*\]\s*$/.exec(line);
+    if (anyHeader) {
+      const serverHeader = /^mcp_servers\.([A-Za-z0-9_-]+)(?:\.(.+))?$/.exec(anyHeader[1]!.trim());
+      if (serverHeader?.[1] === name) {
+        inTarget = true;
+        if (!serverHeader[2]) rootCount++;
+        continue;
+      }
+      inTarget = false;
+    }
+    if (!inTarget) kept.push(line);
+  }
+  if (rootCount !== 1) return undefined;
+  return kept.join("\n");
+}
+
+/** Remove one selected-scope MCP config entry without touching other tables or secrets outside that entry. */
+export function removeMobileMcpConfigServer(cwd: string, name: string, scope: McpScope): MobileMcpConfigRemoval {
+  if (typeof cwd !== "string" || !cwd.trim() || cwd.length > 1200) throw new Error("Неверная папка проекта для MCP");
+  if (typeof name !== "string" || !SAFE_SERVER_NAME.test(name)) throw new Error("Неверное имя MCP-сервера");
+  if (scope !== "global" && scope !== "workspace") throw new Error("Выберите область MCP-сервера");
+  const server = allConfiguredServers(cwd).find((item) => item.name === name && item.scope === scope);
+  if (!server) throw new Error("MCP-сервер не найден в разрешённой конфигурации");
+
+  const projectRoot = scope === "workspace" ? realpathSync.native(cwd) : undefined;
+  const candidates = configServers(server.configPath, scope, projectRoot);
+  if (!candidates.some((item) => item.name === name && item.scope === scope)) {
+    throw new Error("MCP-сервер изменился. Обновите список и повторите действие");
+  }
+  const current = checkedConfigText(server.configPath, scope, projectRoot);
+  const next = withoutMcpServerTables(current.text, name);
+  if (next === undefined) throw new Error("MCP-сервер изменился или его запись неоднозначна. Обновите список");
+  writeMobileConfig(server.configPath, current.text, current.existed, next, scope, projectRoot);
+  return { name, scope, removed: true, restartRequired: true };
 }
 
 function checkedConfigPath(cwd: string, scope: McpScope, createDirectory: boolean): { path: string; projectRoot?: string } {
@@ -252,7 +327,7 @@ export function addMobileMcpConfigServer(cwd: string, input: unknown): MobileMcp
   if (parseMcpServers(current.text)[draft.name]) throw new Error("MCP-сервер с таким именем уже существует");
   const next = `${current.text}${current.text ? (current.text.endsWith("\n") ? "\n" : "\n\n") : ""}${mcpDraftToml(draft)}`;
   writeMobileConfig(target.path, current.text, current.existed, next, draft.scope, target.projectRoot);
-  return { name: draft.name, scope: draft.scope, enabled: true, transport: draft.transport, restartRequired: true };
+  return { name: draft.name, scope: draft.scope, enabled: true, transport: draft.transport, effective: true, restartRequired: true };
 }
 
 /** Restart the shared Codex app-server only when no session has work in flight. */

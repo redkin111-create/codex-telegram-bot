@@ -1038,7 +1038,7 @@ test("mobile MCP config is session scoped and restart refuses shared runtime wor
   }) as unknown as AcpClient;
   const registry={
     hasPendingWork:()=>pending,
-    runtimeForSession:()=>undefined,
+    runtimeForSession:(userId:number,id:string)=>id===sessionId&&userId===101?{isBusy:busy}:undefined,
     ownerChatForSession:(id:string)=>id===sessionId?101:id===foreignSessionId?202:undefined,
     controller:()=>({list:()=>[]}),get:()=>({sessionId}),
   } as unknown as RuntimeRegistry;
@@ -1046,21 +1046,31 @@ test("mobile MCP config is session scoped and restart refuses shared runtime wor
   const agent=new MiniAppAgent({cfg,acp,registry});
   try{
     const listed=await agent.executeMobile({op:"listMcpConfig" as never,userId:101,args:{sessionId}}) as Array<Record<string,unknown>>;
-    assert.deepEqual(listed,[{name:"fixture",scope:"workspace",enabled:true,transport:"stdio"}]);
+    assert.deepEqual(listed,[{name:"fixture",scope:"workspace",enabled:true,transport:"stdio",effective:true}]);
     assert.deepEqual(await agent.executeMobile({op:"setMcpConfigEnabled" as never,userId:101,args:{sessionId,name:"fixture",enabled:false}}),
-      {name:"fixture",scope:"workspace",enabled:false,transport:"stdio",restartRequired:true});
+      {name:"fixture",scope:"workspace",enabled:false,transport:"stdio",effective:true,restartRequired:true});
     const added=await agent.executeMobile({op:"addMcpConfigServer" as never,userId:101,args:{
       sessionId,name:"mobile_added",scope:"workspace",transport:"stdio",command:"node",args:["server.js"],env:{MOBILE_TOKEN:"hidden-from-response"},
     }}) as Record<string,unknown>;
-    assert.deepEqual(added,{name:"mobile_added",scope:"workspace",enabled:true,transport:"stdio",restartRequired:true});
+    assert.deepEqual(added,{name:"mobile_added",scope:"workspace",enabled:true,transport:"stdio",effective:true,restartRequired:true});
     assert.equal(JSON.stringify(added).includes("hidden-from-response"),false);
     assert.match(readFileSync(join(project,".codex","config.toml"),"utf8"),/\[mcp_servers\.mobile_added\]/);
     assert.doesNotMatch(JSON.stringify(listed),/fixture-server|config\.toml/);
     await assert.rejects(agent.executeMobile({op:"setMcpConfigEnabled" as never,userId:202,args:{sessionId,name:"fixture",enabled:true}}),/Доступ к сеансу запрещён/);
+    await assert.rejects(agent.executeMobile({op:"removeMcpConfigServer" as never,userId:202,args:{sessionId,name:"fixture",scope:"workspace"}}),/Доступ к сеансу запрещён/);
+    await assert.rejects(agent.executeMobile({op:"removeMcpConfigServer" as never,userId:101,args:{sessionId,name:"fixture",scope:"workspace"}}),/ожидания|задач Codex/);
     await assert.rejects(agent.executeMobile({op:"addMcpConfigServer" as never,userId:202,args:{
       sessionId,name:"foreign_add",scope:"workspace",transport:"stdio",command:"node",
     }}),/Доступ к сеансу запрещён/);
     assert.doesNotMatch(readFileSync(join(project,".codex","config.toml"),"utf8"),/foreign_add/);
+    pending=false;
+    busy=true;
+    await assert.rejects(agent.executeMobile({op:"removeMcpConfigServer" as never,userId:101,args:{sessionId,name:"fixture",scope:"workspace"}}),/Codex/);
+    busy=false;
+    assert.deepEqual(await agent.executeMobile({op:"removeMcpConfigServer" as never,userId:101,args:{sessionId,name:"fixture",scope:"workspace"}}),
+      {name:"fixture",scope:"workspace",removed:true,restartRequired:true});
+    assert.doesNotMatch(readFileSync(join(project,".codex","config.toml"),"utf8"),/fixture-server/);
+    pending=true;
     await assert.rejects(agent.executeMobile({op:"restartCodex" as never,userId:101,args:{sessionId}}),/ожидающие запросы/);
     assert.equal(restarts,0);
     pending=false;

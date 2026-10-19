@@ -18,7 +18,7 @@ import { LiveSessionConflictError } from "../bot/session-runtime.js";
 import { TmaScreenshotIndex } from "./screenshots.js";
 import type { AppConfig } from "../config.js";
 import { isPathWithinRoot } from "../projects/manager.js";
-import { addMobileMcpConfigServer, listMobileMcpConfig, restartMobileCodex, setMobileMcpConfigEnabled } from "../mobile/mcp-config.js";
+import { addMobileMcpConfigServer, listMobileMcpConfig, removeMobileMcpConfigServer, restartMobileCodex, setMobileMcpConfigEnabled } from "../mobile/mcp-config.js";
 import { selectedMobileSkillName } from "../mobile/skill-selection.js";
 import { buildContentBlocks } from "../bot/prompt-content.js";
 import { createLogger } from "../logger.js";
@@ -179,7 +179,7 @@ interface MobileMcpResourceRef {
   ownerId:number;sessionId:string;serverName:string;uri?:string;uriTemplate?:string;expiresAt:number;
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; stt?:Pick<SttService,"enabled"|"transcribe">; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "listOlderScreenshots" | "listThreadReadStates" | "updateThreadReadState" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "searchHistory" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "listRealtimeVoices" | "startRealtime" | "stopRealtime" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "addMcpConfigServer" | "setMcpConfigEnabled" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "createSideChat" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "setPluginEnabled" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "downloadFile" | "writeFile" | "createFile" | "createDirectory" | "renameProjectEntry" | "deleteProjectEntry" | "gitStatus" | "gitDiff" | "gitConflictStages" | "gitResolveConflictStage" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPull" | "gitPush";
+export type MobileLocalOperation = "capabilities" | "listOlderScreenshots" | "listThreadReadStates" | "updateThreadReadState" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "searchHistory" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "listRealtimeVoices" | "startRealtime" | "stopRealtime" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "addMcpConfigServer" | "setMcpConfigEnabled" | "removeMcpConfigServer" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "createSideChat" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "setPluginEnabled" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "downloadFile" | "writeFile" | "createFile" | "createDirectory" | "renameProjectEntry" | "deleteProjectEntry" | "gitStatus" | "gitDiff" | "gitConflictStages" | "gitResolveConflictStage" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPull" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 const MOBILE_GLOBAL_OPERATIONS=new Set<MobileLocalOperation>(["listThreadReadStates","listThreadSections","createThreadSection","renameThreadSection","deleteThreadSection"]);
 export class MiniAppAgent {
@@ -1295,7 +1295,20 @@ export class MiniAppAgent {
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
         const selected=await this.thread(sessionId,chatId);
         if(typeof args.enabled!=="boolean")throw new Error("Состояние MCP-сервера должно быть включено или выключено");
-        return setMobileMcpConfigEnabled(selected.cwd||"",argumentString(args,"name",128),args.enabled);
+        const scope=args.scope;
+        if(scope!==undefined&&scope!=="global"&&scope!=="workspace")throw new Error("Выберите область MCP-сервера");
+        return setMobileMcpConfigEnabled(selected.cwd||"",argumentString(args,"name",128),args.enabled,scope);
+      }
+      case "removeMcpConfigServer":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        if(await this.isArchivedThread(sessionId,chatId))throw new Error("Нельзя менять настройки MCP из архивного сеанса");
+        const selected=await this.thread(sessionId,chatId);
+        if(!selected.cwd)throw new Error("Для этого сеанса Codex не найден проект");
+        this.requireIdleMobileRuntime(sessionId,chatId);
+        if(acp.hasInflightPrompt()||registry.hasPendingWork())throw new Error("Дождитесь завершения всех задач Codex перед удалением MCP-сервера");
+        const scope=args.scope;
+        if(scope!=="global"&&scope!=="workspace")throw new Error("Выберите область MCP-сервера");
+        return removeMobileMcpConfigServer(selected.cwd,argumentString(args,"name",128),scope);
       }
       case "addMcpConfigServer":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
