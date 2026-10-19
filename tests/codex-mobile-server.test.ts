@@ -17,13 +17,15 @@ const secondOwnedSession = "00000000-0000-4000-8000-000000000303";
 class FixtureFeed {
   readonly epoch = "1234567890abcdef12345678";
   readonly cursors: number[] = [];
+  readonly replay: LiveEvent[] = [];
   private listeners = new Set<(event: LiveEvent) => void>();
 
   latestId() { return 9; }
   getStatus(_sessionId: string) { return undefined; }
-  subscribe(_sessionId: string, after: number, listener: (event: LiveEvent) => void) {
+  subscribe(sessionId: string, after: number, listener: (event: LiveEvent) => void) {
     this.cursors.push(after);
     this.listeners.add(listener);
+    for (const event of this.replay) if (event.sessionId === sessionId && event.id > after) listener(event);
     return () => this.listeners.delete(listener);
   }
   publish(event: LiveEvent) {
@@ -1901,6 +1903,30 @@ test("authenticated event stream resumes its cursor and closes when the client d
     assert.deepEqual(f.feed.cursors, [7]);
     await reader.cancel();
     controller.abort();
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("event stream closes cleanly when replay hits response backpressure", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    f.feed.replay.push(...Array.from({ length: 160 }, (_, index) => ({
+      id: index + 1, sessionId: allowedSession, kind: "text" as const, text: "x".repeat(4096), at: index + 1,
+    })));
+    const response = await fetch(f.origin + "/api/events", {
+      method: "POST",
+      headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: allowedSession, after: 0, epoch: f.feed.epoch }),
+    });
+    assert.equal(response.status, 200);
+    const reader = response.body!.getReader();
+    let bytes = 0;
+    while (true) {
+      const part = await reader.read();
+      if (part.done) break;
+      bytes += part.value.byteLength;
+    }
+    assert.ok(bytes > 0, "the replay should deliver buffered events before reconnecting");
   } finally { await cleanup(f.server, f.dataDir); }
 });
 

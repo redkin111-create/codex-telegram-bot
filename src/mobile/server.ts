@@ -768,10 +768,12 @@ export function createMobileServer(options: MobileServerOptions): Server {
       res.setHeader("Connection", "keep-alive");
       res.setHeader("X-Accel-Buffering", "no");
       res.flushHeaders();
+      if (res.destroyed) return;
       res.write(": connected\n\n");
       res.write(`event: hello\ndata: ${JSON.stringify({ epoch: options.feed.epoch })}\n\n`);
       let stopped = false;
       let unsubscribe = () => {};
+      let heartbeat: ReturnType<typeof setInterval> | undefined;
       const close = () => { if (stopped) return; stopped = true; clearInterval(heartbeat); unsubscribe(); };
       const end = () => { close(); if (!res.destroyed && !res.writableEnded) res.end(); };
       res.once("close", close);
@@ -782,7 +784,7 @@ export function createMobileServer(options: MobileServerOptions): Server {
       const cursor = epoch === options.feed.epoch ? after : 0;
       unsubscribe = options.feed.subscribe(sessionId, cursor, push);
       if (stopped || res.destroyed || res.writableEnded) { unsubscribe(); return; }
-      const heartbeat = setInterval(() => {
+      heartbeat = setInterval(() => {
         if (!options.auth.authenticate(cookie(req, SESSION_COOKIE)) || !options.auth.verifyCsrf(device.id, cookie(req, CSRF_COOKIE))) {
           res.write("event: revoked\ndata: {}\n\n"); end(); return;
         }

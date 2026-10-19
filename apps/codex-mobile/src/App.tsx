@@ -1,10 +1,11 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FolderOpen, GitBranch, LoaderCircle, Menu, RefreshCw, Shield, ShieldAlert, SlidersHorizontal, Terminal } from "lucide-react";
 import {
-  logout, MobileApiError, readActivity, readApprovals, readElicitations,
+  logout, MobileApiError, openEventStream, readActivity, readApprovals, readElicitations,
   readAppInventory, readHistory, readSession, readSkillInventory, readSnapshot, removeAttachment, resolveApproval, resolveElicitation, runOperation, uploadAttachment,
 } from "./api.js";
 import { coalesceInFlight } from "./single-flight.js";
+import { consumeMobileEventStream, MobileEventBuffer } from "./lib/event-stream.js";
 import { ApprovalPanel } from "./components/approval-panel.js";
 import { ElicitationPanel } from "./components/elicitation-panel.js";
 import { Conversation, type FollowUpMode, type PromptImage } from "./components/conversation.js";
@@ -42,7 +43,7 @@ export default function App() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [activity, setActivity] = useState<MobileActivity>();
   const [queue, setQueue] = useState<MobileQueue>(emptyQueue);
-  const [events] = useState<MobileLiveEvent[]>([]);
+  const [events, setEvents] = useState<MobileLiveEvent[]>([]);
   const [includeTools, setIncludeTools] = useState(false);
   const [loading, setLoading] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -69,6 +70,7 @@ export default function App() {
   const searchGeneration = useRef(0);
   const sessionPageRequests = useRef(new Set<string>());
   const snapshotRequest = useRef<Promise<void> | undefined>(undefined);
+  const eventBuffer = useRef<MobileEventBuffer | undefined>(undefined);
 
   const expireSession = useCallback(() => {
     setDevice(undefined);
@@ -157,6 +159,7 @@ export default function App() {
     [snapshot?.controlled],
   );
   const connected = !selectedSession?.archived && connectedIds.has(selectedId);
+  const activityBusy = selectedSession?.busy === true || activity?.busy === true || queue.busy;
   const sessionPageKey = `${showArchived ? "archived" : "active"}:${selectedProject}`;
   const currentSessionPage = sessionPages[sessionPageKey];
   const baseProjectSessions = useMemo(
@@ -171,6 +174,8 @@ export default function App() {
       setActivity(undefined);
       setQueue(emptyQueue);
       setStreamConnected(false);
+      setEvents([]);
+      eventBuffer.current?.setSession("");
       setPendingApproval(undefined);
       setApprovalOpen(false);
       setPendingElicitation(undefined);
@@ -189,24 +194,19 @@ export default function App() {
         if (alive) setHistory(result.entries);
       } catch (cause) { if (alive) handleApiError(cause); }
       finally { if (alive) setLoading(false); }
-      try {
-        const [nextActivity, approvalResult, elicitationResult] = await Promise.all([
-          readActivity(selectedId), readApprovals(selectedId), readElicitations(selectedId),
-        ]);
-        if (alive) {
-          setActivity(nextActivity);
-          setPendingApproval(approvalResult.approvals[0]);
-          setApprovalOpen(approvalResult.approvals.length > 0);
-          setPendingElicitation(elicitationResult.elicitations[0]);
-          setElicitationOpen(elicitationResult.elicitations.length > 0);
-          setStreamConnected(true);
+      const [approvalResult, elicitationResult] = await Promise.allSettled([
+        readApprovals(selectedId), readElicitations(selectedId),
+      ]);
+      if (alive) {
+        if (approvalResult.status === "fulfilled") {
+          setPendingApproval(approvalResult.value.approvals[0]);
+          setApprovalOpen(approvalResult.value.approvals.length > 0);
+        } else handleApiError(approvalResult.reason);
+        if (elicitationResult.status === "fulfilled") {
+          setPendingElicitation(elicitationResult.value.elicitations[0]);
+          setElicitationOpen(elicitationResult.value.elicitations.length > 0);
+        } else handleApiError(elicitationResult.reason);
         }
-      } catch (cause) {
-        if (alive) {
-          setStreamConnected(false);
-          handleApiError(cause);
-        }
-      }
       if (connected) {
         try {
           const nextQueue = await runOperation<MobileQueue>("queue", { sessionId: selectedId }, csrf);
@@ -218,6 +218,105 @@ export default function App() {
     const timer = window.setInterval(() => { void load(); }, 5000);
     return () => { alive = false; window.clearInterval(timer); };
   }, [device, selectedId, includeTools, connected, csrf, handleApiError]);
+
+  useEffect(() => {
+    if (!device || !selectedId) return;
+    let alive = true;
+    let inFlight = false;
+    const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const next = await readActivity(selectedId);
+        if (alive) setActivity(next);
+      } catch (cause) {
+        if (alive) handleApiError(cause);
+      } finally { inFlight = false; }
+    };
+    void refresh();
+    const timer = window.setInterval(() => { void refresh(); }, activityBusy ? 5_000 : 30_000);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, [device, selectedId, activityBusy, handleApiError]);
+
+  useEffect(() => {
+    if (!device || !selectedId) return;
+    const buffer = eventBuffer.current ?? (eventBuffer.current = new MobileEventBuffer(selectedId));
+    if (buffer.setSession(selectedId)) setEvents([]);
+    const controller = new AbortController();
+    let alive = true;
+    let retryDelay = 500;
+    let retryTimer: number | undefined;
+    let activeReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    setStreamConnected(false);
+
+    const connect = async (): Promise<void> => {
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+      try {
+        const cursor = buffer.requestCursor;
+        reader = await openEventStream(selectedId, cursor.after, cursor.epoch, csrf, controller.signal);
+        activeReader = reader;
+        if (!alive) { await reader.cancel(); return; }
+        retryDelay = 500;
+        setStreamConnected(true);
+        const result = await consumeMobileEventStream(reader, buffer, {
+          onEpochChanged: () => { if (alive) setEvents(buffer.events); },
+          onEvent: (event) => {
+            if (!alive) return;
+            setEvents(buffer.events);
+            if (event.kind === "approval" && event.approval) {
+              setPendingApproval(event.approval);
+              setApprovalOpen(true);
+            } else if (event.kind === "elicitation") {
+              void readElicitations(selectedId).then((value) => {
+                if (!alive) return;
+                setPendingElicitation(value.elicitations[0]);
+                setElicitationOpen(value.elicitations.length > 0);
+              }).catch((cause: unknown) => { if (alive) handleApiError(cause); });
+            } else if (event.kind === "status" && event.status) {
+              const busy = event.status === "working" || event.status === "approval";
+              setActivity((current) => ({
+                busy,
+                queue: current?.queue ?? 0,
+                images: current?.images ?? [],
+                liveStatus: event.status!,
+                liveLabel: event.label ?? "Статус неизвестен",
+              }));
+              if (!busy) {
+                void readActivity(selectedId).then((value) => { if (alive) setActivity(value); })
+                  .catch((cause: unknown) => { if (alive) handleApiError(cause); });
+                void refreshSnapshot();
+              }
+            }
+          },
+        }, controller.signal);
+        if (result === "revoked") {
+          if (alive) expireSession();
+          return;
+        }
+        throw new Error("Поток событий Codex закрылся");
+      } catch (cause) {
+        if (!alive || controller.signal.aborted) return;
+        setStreamConnected(false);
+        if (cause instanceof MobileApiError && (cause.status === 401 || cause.status === 403)) {
+          handleApiError(cause);
+          return;
+        }
+        retryTimer = window.setTimeout(() => { void connect(); }, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 10_000);
+      } finally {
+        if (activeReader === reader) activeReader = undefined;
+        reader?.releaseLock();
+      }
+    };
+
+    void connect();
+    return () => {
+      alive = false;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+      controller.abort();
+      void activeReader?.cancel().catch(() => undefined);
+    };
+  }, [device, selectedId, csrf, expireSession, handleApiError, refreshSnapshot]);
 
   const operation = useCallback(async <T,>(op: Parameters<typeof runOperation<T>>[0], args: Record<string, unknown>) => {
     setError("");
@@ -558,7 +657,7 @@ export default function App() {
         <div className="min-w-0"><p className="truncate text-sm font-bold tracking-tight">Codex Mobile</p><p className="truncate text-[10px] text-muted">{snapshot.online ? "Локальный Codex runtime" : "Соединение с Codex потеряно"}</p></div>
       </div>
       <div className="flex items-center gap-2">
-        <span className="hidden text-[11px] text-muted sm:inline">{streamConnected ? "Автообновление · 5 с" : "Нет связи с Codex"}</span>
+        <span className="hidden text-[11px] text-muted sm:inline">{streamConnected ? "Живые обновления" : "Поток переподключается…"}</span>
         <Button variant="ghost" className="min-h-10 px-2" aria-label="Обновить" onClick={() => void refreshSnapshot(true)} disabled={refreshing}>{refreshing ? <LoaderCircle size={17} className="animate-spin" /> : <RefreshCw size={17} />}</Button>
         {pendingApproval && <Button variant="outline" className="min-h-10 px-2 text-[#f2c66d]" aria-label="Открыть подтверждение" onClick={() => setApprovalOpen(true)}><ShieldAlert size={17} /></Button>}
         {pendingElicitation && <Button variant="outline" className="min-h-10 px-2 text-accent" aria-label="Открыть запрос MCP" onClick={() => setElicitationOpen(true)}><ShieldAlert size={17} /></Button>}
