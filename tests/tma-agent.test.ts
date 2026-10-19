@@ -2137,6 +2137,43 @@ test("TMA can still send to a listed session omitted by a later catalogue refres
   }
 });
 
+test("mobile-created empty sessions stay visible to their owner when Codex omits them from its catalogue",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-empty-session-"));
+  const sessionId="12121212-1212-4212-8212-121212121212";
+  const acp=Object.assign(new EventEmitter(),{
+    isConnected:true,
+    listProjects:async()=>[{id:"p1",name:"fixture",roots:[dir]}],
+    listThreads:async()=>[],
+    listAllThreads:async()=>[],
+    availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],
+    currentModelId:"default",currentModeId:"code",
+  }) as unknown as AcpClient;
+  const createdRuntime={sessionId,isBusy:false,queueLength:0};
+  const controller={
+    addNew:async(cwd:string)=>({sessionId,cwd,isBusy:false,queueLength:0}),
+    list:()=>[createdRuntime],
+  };
+  const registry={controller:()=>controller,get:()=>createdRuntime,runtimeForSession:()=>createdRuntime} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101","202"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
+    const created=await agent.execute({id:"abcdef0123456789abcdef02",op:"create",userId:101,args:{cwd:dir}}) as {sessionId:string};
+    assert.equal(created.sessionId,sessionId);
+    const ownerSnapshot=await agent.execute({id:"abcdef0123456789abcdef03",op:"snapshot",userId:101,args:{}}) as {
+      selected:string|null;sessions:Array<{id:string;title:string;cwd:string}>;
+    };
+    assert.equal(ownerSnapshot.selected,sessionId);
+    const visible=ownerSnapshot.sessions.find((session)=>session.id===sessionId);
+    assert.equal(visible?.title,"Новый сеанс");
+    assert.equal(visible?.cwd,dir);
+    const foreignSnapshot=await agent.execute({id:"abcdef0123456789abcdef04",op:"snapshot",userId:202,args:{}}) as {
+      sessions:Array<{id:string}>;
+    };
+    assert.equal(foreignSnapshot.sessions.some((session)=>session.id===sessionId),false);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile section management uses Codex metadata APIs and cannot move a foreign session",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-sections-"));
   const sessionId="abcdefab-cdef-4abc-8def-abcdefabcdef";

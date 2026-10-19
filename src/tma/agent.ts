@@ -328,7 +328,12 @@ export class MiniAppAgent {
       // Codex's other ephemeral threads remain invisible.
       for(const t of known.values())if(t.ephemeral&&!visible.some(x=>x.id===t.id))visible.unshift(t);
       for(const t of this.ownThreads.values()){
-        if(this.telegramSessions.getOwner(t.id)?.chatId===userId&&!visible.some(x=>x.id===t.id))visible.unshift(t);
+        const owner=this.telegramSessions.getOwner(t.id)?.chatId;
+        // A just-created app-server thread may be absent from thread/list until
+        // its first turn is written. Keep the per-user entry created by the
+        // authorized mobile/TMA action visible without exposing other users'
+        // in-memory threads.
+        if((owner===userId||known.has(t.id))&&!visible.some(x=>x.id===t.id))visible.unshift(t);
       }
       // A transient app-server catalogue may omit an open session. Keep
       // previously authorized references so TMA can still read and send to it.

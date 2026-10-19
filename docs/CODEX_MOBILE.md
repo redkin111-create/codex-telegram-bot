@@ -28,6 +28,13 @@ must not start a second `codex app-server` process.
 - Live tool badges use fixed labels; they do not send command text, search
   queries, tool arguments or absolute laptop paths to the phone. File changes
   can show only the final filename.
+
+When Mobile is enabled, the shared ACP starts with Codex Code Mode enabled so
+its installed skills can use the host tools they require. If `CODEX_CLI_PATH`
+points to an incomplete Codex install, startup prefers another installed CLI
+that includes the companion `codex-code-mode-host` executable. Browser Skill
+uses its local `bsk` CLI and connected Chrome extension; Codex's embedded
+`cua_repl` browser surface is not forwarded into the mobile page.
 - Persistent auth state uses the project's local data directory and atomic
   file storage; no database, cloud service or paid service is introduced.
 - Voice controls are intentionally omitted from the mobile interface at the
@@ -123,6 +130,22 @@ completed `ContextCompaction` item is the only event that changes the mobile
 status to confirmed; if the event is missing for 60 seconds the client reports
 an unknown status. The item currently contains only an id, so the phone does not
 claim to display the new summary. See the [app-server item schema](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/item.rs#L421-L423).
+
+## Verification checkpoint (2026-10-19)
+
+- Root TypeScript check: passed.
+- Root test suite: 370/370 passed, including mobile CLI fallback to a Codex
+  installation with its Code Mode host and preserving permission flags.
+- A new empty mobile-created session remains visible only to its owner even
+  before Codex adds it to the thread catalogue.
+- Installed Codex CLI accepts the Code Mode feature flag, the companion host
+  exists beside the selected CLI, and runtime path selection was checked with a
+  deliberately incomplete `CODEX_CLI_PATH`.
+- Browser Skill was selected and executed through the public mobile page; it
+  read the already-open page title through `bsk` without navigation.
+- `npm audit` reports one low-severity `diff` advisory for denial of service in
+  `parsePatch`/`applyPatch`; npm only offers a fix in breaking `diff@9`. No
+  dependency was changed in this repair.
 
 ## Verification checkpoint (2026-10-18)
 

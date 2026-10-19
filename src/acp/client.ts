@@ -15,6 +15,7 @@ import { statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { REASONING_LEVELS, type ReasoningEffort } from "../app/types.js";
 import { codexLaunchInfo, codexSpawn } from "../app/codex-cli.js";
+import { hasCodexCodeModeHost } from "../config.js";
 import { createLogger } from "../logger.js";
 import { killPid } from "../sessions/process.js";
 import { AcpError, isAccountExhaustedError, isContextExhaustedError, isTransientAcpError, toAcpError } from "./errors.js";
@@ -213,6 +214,8 @@ export interface AcpClientOptions {
   workspace: string;
   /** When true, run every command/edit with no approval prompts (full auto). */
   trustAllTools: boolean;
+  /** Expose Codex's local tool host for mobile skills and integrations. */
+  codeModeHost?: boolean;
   /** Allow network access in workspace-write mode without broadening file access. */
   networkAccess?: boolean;
   /** Optional CODEX_HOME override (config/sessions/auth live here). */
@@ -223,6 +226,13 @@ export interface AcpClientOptions {
   promptIdleTimeoutMs?: number;
   /** Optional absolute safety cap for a single turn; disabled by default. */
   promptMaxMs?: number;
+}
+
+export function buildAcpAppServerArgs(options: Pick<AcpClientOptions, "trustAllTools" | "codeModeHost">): string[] {
+  const args = ["app-server"];
+  if (!options.trustAllTools) args.push("--enable", "request_permissions_tool");
+  if (options.codeModeHost) args.push("--enable", "code_mode_host");
+  return args;
 }
 
 interface Pending {
@@ -323,8 +333,10 @@ export class AcpClient extends EventEmitter {
   private async connect(): Promise<void> {
     this.connected = false;
     this.subagents.clear();
-    const args = ["app-server"];
-    if (!this.opts.trustAllTools) args.push("--enable", "request_permissions_tool");
+    const args = buildAcpAppServerArgs(this.opts);
+    if (this.opts.codeModeHost && !hasCodexCodeModeHost(this.opts.codexCliPath)) {
+      log.error("code-mode host is enabled, but its companion executable is missing beside the configured Codex CLI; set CODEX_CLI_PATH to a complete Codex installation");
+    }
     const env = { ...process.env } as NodeJS.ProcessEnv;
     if (this.opts.codexHome) env.CODEX_HOME = this.opts.codexHome;
     log.info(`spawning: ${codexLaunchInfo(this.opts.codexCliPath)} app-server`);

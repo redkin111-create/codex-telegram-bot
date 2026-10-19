@@ -21,6 +21,7 @@ async function main(): Promise<void> {
   process.stdout.write("\u{1F916} Codex Telegram Bot — starting…\n");
 
   const cfg = loadConfig();
+  const mobileEnabled = codexMobileEnabled();
   setLogLevel(cfg.logLevel);
   enableFileLogging(cfg.logFile);
   const log = createLogger("main");
@@ -49,6 +50,7 @@ async function main(): Promise<void> {
     codexCliPath: cfg.codexCliPath,
     workspace: cfg.workspace,
     trustAllTools: cfg.trustAllTools,
+    codeModeHost: mobileEnabled,
     networkAccess: cfg.codexNetworkAccess,
     codexHome: cfg.codexHome,
     autoRestart: cfg.acpAutoRestart,
@@ -72,7 +74,7 @@ async function main(): Promise<void> {
   let mobile: CodexMobileService | undefined;
   let mobileOwnedFeed: TmaLiveFeed | undefined;
   let restoreMobileHandlers: (() => void) | undefined;
-  if (codexMobileEnabled()) {
+  if (mobileEnabled) {
     try {
       // Use the adapters created by local TMA / remote TMA when available.
       // Mobile-only mode creates an in-process adapter, but never starts its
