@@ -265,6 +265,57 @@ test("mobile sends file attachments and selected skills into the shared runtime 
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
+test("mobile resolves natural skill requests from Codex and stops when disabled or missing",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-natural-skill-"));
+  const project=join(dir,"project");
+  mkdirSync(project);
+  const sessionId="82828282-8282-4282-8282-828282828282";
+  const thread={id:sessionId,name:"Natural skill fixture",cwd:project,source:"cli",createdAt:1,updatedAt:2,recencyAt:2};
+  let skills=[{name:"browser-skill",path:"C:\\skills\\browser-skill\\SKILL.md",enabled:true,scope:"user" as const}];
+  let catalogReads=0;
+  const acp=Object.assign(new EventEmitter(),{
+    isConnected:true,
+    listProjects:async()=>[{id:"project",name:"Fixture",roots:[project]}],
+    listThreads:async()=>[thread],
+    listAllThreads:async()=>[thread],
+    listMobileSkills:async(cwd:string)=>{catalogReads++;assert.equal(cwd,project);return skills;},
+    availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],
+    currentModelId:"default",currentModeId:"code",
+  }) as unknown as AcpClient;
+  const runtime={sessionId,isBusy:false,queueLength:0};
+  const controller={runtimeForSession:()=>runtime,foreground:()=>runtime,list:()=>[]};
+  const submitted:Array<{text:string;skillNames?:string[]}> = [];
+  const registry={controller:()=>controller,get:()=>runtime,async submitPrompt(_userId:number,input:{text:string;skillNames?:string[]}){
+    submitted.push(input);return {kind:"submitted",outcome:"accepted"};
+  }} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
+  const owners=new TelegramSessionRegistry(dir);
+  owners.recordMobile(sessionId,101,project,"Fixture");
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    const result=await agent.execute({id:"abcdef0123456789abcdef31",op:"send",userId:101,args:{
+      sessionId,text:"Проведи реальную браузерную проверку через browser skill.",requestId:"mobile-natural-skill-0001",
+    }});
+    assert.deepEqual(result,{result:"accepted"});
+    assert.equal(catalogReads,1);
+    assert.deepEqual(submitted[0]?.skillNames,["browser-skill"]);
+
+    skills=[{...skills[0]!,enabled:false}];
+    await assert.rejects(agent.execute({id:"abcdef0123456789abcdef32",op:"send",userId:101,args:{
+      sessionId,text:"Проведи реальную браузерную проверку через browser skill.",requestId:"mobile-natural-skill-0002",
+    }}),/выключен или недоступен/i);
+    assert.equal(catalogReads,2);
+    assert.equal(submitted.length,1,"a disabled requested skill must not silently fall back to a normal prompt");
+
+    skills=[];
+    await assert.rejects(agent.execute({id:"abcdef0123456789abcdef33",op:"send",userId:101,args:{
+      sessionId,text:"Проведи реальную браузерную проверку через browser skill.",requestId:"mobile-natural-skill-0003",
+    }}),/browser-skill не найден/i);
+    assert.equal(catalogReads,3);
+    assert.equal(submitted.length,1,"a missing browser skill must stop the request before Codex receives it");
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("mobile voice transcription accepts bounded audio only for an owned session",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-voice-"));
   const sessionId="78787878-7878-4787-8787-787878787878";

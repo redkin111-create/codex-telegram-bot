@@ -159,14 +159,26 @@ claim to display the new summary. See the [app-server item schema](https://githu
 
 ## Verification checkpoint (2026-10-20)
 
-- Root TypeScript check: passed; full root test suite: 407/407 passed.
+- Root TypeScript check: passed; full root test suite: 414/414 passed.
 - Mobile production build and its TypeScript check: passed.
+- `npm audit` in `apps/codex-mobile`: 0 known vulnerabilities.
 - Mobile prompt routing now recognizes a `$skill` marker on its own line after
   introductory text. The Mobile send integration test confirms
   `$browser-skill` reaches the shared runtime as a selected skill; the ACP test
   verifies that Codex resolves it to an explicit skill input using its own
   current inventory. Pixel 7 Browser Skill checks used the isolated fixture;
   no test prompt was sent to a live Codex session.
+- Natural-language requests such as “use browser skill” now resolve against
+  Codex's live project skill inventory and reach the shared runtime as skill
+  selections. Sending stops with a clear error when `browser-skill` is absent
+  or disabled, so Codex cannot silently receive the task without that skill.
+  Unit tests cover these cases, and the Pixel 7 Browser Skill fixture at 412×915
+  showed the natural-language request and fixture-only skill response in chat.
+  The fixture did not run Codex or open a real browser page.
+- The failed remote browser-skill attempt's saved tool list shows failed
+  `cua_repl` calls and no `bsk` invocation. Its tool error payload was not
+  retained, so the reply's claim that the Mobile runtime lacked its Code Mode
+  host could not be confirmed from those logs.
 - After loading the current branch, the service listened on `127.0.0.1:3301`
   and `127.0.0.1:3302`; the existing Funnel routes still pointed `443` to
   `3301` and `8443` to `3302`. No Tailscale setting changed.

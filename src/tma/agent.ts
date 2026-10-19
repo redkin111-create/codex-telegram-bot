@@ -19,7 +19,7 @@ import { TmaScreenshotIndex } from "./screenshots.js";
 import type { AppConfig } from "../config.js";
 import { isPathWithinRoot } from "../projects/manager.js";
 import { addMobileMcpConfigServer, listMobileMcpConfig, removeMobileMcpConfigServer, restartMobileCodex, setMobileMcpConfigEnabled } from "../mobile/mcp-config.js";
-import { selectedMobileSkillName } from "../mobile/skill-selection.js";
+import { mayRequestMobileSkillNaturally, requestedMobileSkillNames, requestsBrowserMobileSkill } from "../mobile/skill-selection.js";
 import { buildContentBlocks } from "../bot/prompt-content.js";
 import { createLogger } from "../logger.js";
 import { readConversationHistoryAsync, searchConversationHistoryAsync } from "../sessions/history.js";
@@ -54,6 +54,24 @@ function mobileThreadSection(section?:CodexThreadSection|null){
   return section.id===CODEX_PINNED_THREAD_SECTION_ID
     ? {id:section.id,name:"Закреплённые",builtIn:true}
     : {id:section.id,name:section.name,builtIn:false};
+}
+async function mobileSkillsRequestedByPrompt(acp:AcpClient,text:string,cwd:string):Promise<string[]>{
+  const explicit=requestedMobileSkillNames(text,[]);
+  if(!mayRequestMobileSkillNaturally(text))return explicit;
+  if(typeof acp.listMobileSkills!=="function")throw new Error("Эта версия Codex не поддерживает список навыков для выбранной папки проекта");
+  let inventory:Awaited<ReturnType<AcpClient["listMobileSkills"]>>;
+  try{inventory=await acp.listMobileSkills(cwd);}
+  catch{throw new Error("Не удалось проверить доступность навыков Codex. Обновите список навыков и повторите.");}
+  if(requestsBrowserMobileSkill(text)&&!inventory.some(skill=>skill.name.toLowerCase()==="browser-skill")){
+    throw new Error("Навык browser-skill не найден в списке Codex для этого проекта. Добавьте или включите его, затем повторите запрос.");
+  }
+  const names=requestedMobileSkillNames(text,inventory.map(skill=>skill.name));
+  for(const name of names.filter(value=>!explicit.includes(value))){
+    const matches=inventory.filter(skill=>skill.name===name);
+    if(matches.length!==1)throw new Error(`Навык ${name} нельзя однозначно выбрать в этом проекте Codex`);
+    if(matches[0]!.enabled===false||!matches[0]!.path)throw new Error(`Навык ${name} выключен или недоступен в этом проекте Codex`);
+  }
+  return names;
 }
 function mobileEditableTurnSummary(turn:CodexMobileEditableTurn){
   return {
@@ -1110,8 +1128,9 @@ export class MiniAppAgent {
             const input=textPrompt(text||"Проанализируй прикреплённые изображения.");
             input.images=images;
             if(appIds.length)input.appIds=appIds;
-            const skillName=selectedMobileSkillName(text);
-            if(skillName&&!appIds.includes(skillName))input.skillNames=[skillName];
+            const skillNames=await mobileSkillsRequestedByPrompt(acp,text,thread.cwd);
+            const selectedSkills=skillNames.filter(name=>!appIds.includes(name));
+            if(selectedSkills.length)input.skillNames=selectedSkills;
             dispatched=true;
             await acp.steer(sessionId,buildContentBlocks(input));
             const result={steered:true};
@@ -2629,8 +2648,9 @@ export class MiniAppAgent {
               input.attachmentPaths=mobileAttachments.flatMap(file=>file.path?[file.path]:[]);
               input.displayText=message||`Файлы: ${mobileAttachments.map(file=>file.name).join(", ")}`;
             }
-            const skillName=selectedMobileSkillName(message);
-            if(skillName&&!appIds.includes(skillName))input.skillNames=[skillName];
+            const skillNames=await mobileSkillsRequestedByPrompt(acp,message,t.cwd);
+            const selectedSkills=skillNames.filter(name=>!appIds.includes(name));
+            if(selectedSkills.length)input.skillNames=selectedSkills;
             // Once this call starts, a crash or ambiguous error may mean Codex
             // already accepted the task; do not automatically resend.
             dispatched=true;

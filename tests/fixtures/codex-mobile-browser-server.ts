@@ -8,6 +8,7 @@ import { deflateSync } from "node:zlib";
 import { MobileAuthStore } from "../../src/mobile/auth.js";
 import type { MobilePromptAttachment } from "../../src/mobile/attachments.js";
 import { createMobileServer } from "../../src/mobile/server.js";
+import { requestedMobileSkillNames } from "../../src/mobile/skill-selection.js";
 import { MobileApprovalBroker, MobileElicitationBroker } from "../../src/mobile/approvals.js";
 import { MiniAppAgent, type MobileLocalJob } from "../../src/tma/agent.js";
 import type { LiveEvent, TmaLiveFeed } from "../../src/tma/live.js";
@@ -338,6 +339,7 @@ const agent = {
         : `\n\nВложенный файл «${file.name}» сохранён по пути: ${file.path ?? "недоступен"}.`).join("");
       const appMentions = appIds.length ? `${appIds.map((id) => id === "calendar" ? "$calendar-connector" : `$${id}`).join(" ")}\n\n` : "";
       const message = `${appMentions}${String(args.text ?? "")}${fileContext}`.trim();
+      const requestedSkills = requestedMobileSkillNames(String(args.text ?? ""), fixtureSkills.filter((skill) => skill.enabled && skill.invokable).map((skill) => skill.name));
       const runtime = controlled.get(sessionId) ?? { busy: false, queue: [], paused: false };
       if (runtime.busy) {
         runtime.queue.push({ id: randomUUID(), text: message || "Проверить прикреплённое фото" });
@@ -346,7 +348,9 @@ const agent = {
       }
       const entries = history.get(sessionId) ?? [];
       entries.push({ role: "user", text: message || "Проверка фото", timestamp: Date.now() });
-      entries.push({ role: "assistant", text: "Задание принято из тестовой среды. Настоящий Codex не запускался.", timestamp: Date.now() });
+      entries.push({ role: "assistant", text: requestedSkills.length
+        ? `Тестовая среда получила навыки Codex: ${requestedSkills.join(", ")}. Настоящий Codex не запускался.`
+        : "Задание принято из тестовой среды. Настоящий Codex не запускался.", timestamp: Date.now() });
       history.set(sessionId, entries);
       fixtureLatestTurnId = randomUUID();
       fixtureTurnIds.push(fixtureLatestTurnId);
