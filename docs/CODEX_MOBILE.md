@@ -9,8 +9,9 @@ must not start a second `codex app-server` process.
 - `src/index.ts` remains the owner of the one `AcpClient` and `RuntimeRegistry`.
   Mobile is an opt-in service wired into that existing process.
 - The HTTP service binds only to `127.0.0.1` on a port separate from the
-  Telegram Mini App's 3301. It has no public listener and does not configure
-  Tailscale. A future private Serve setup must be reviewed separately.
+  Telegram Mini App's 3301. Tailscale can proxy to it without opening a public
+  Node.js listener; its active network exposure is documented below and is
+  configured manually, outside the application.
 - A phone is paired by a one-time code which the laptop's Windows CLI approves
   over a separate local IPC channel (Windows named pipe or Unix socket). The
   mobile HTTP server has no approval route. A reverse proxy's loopback
@@ -410,38 +411,43 @@ claim to display the new summary. See the [app-server item schema](https://githu
 - Browser skill with Pixel 7 emulation at 412×915: while a fixture Codex task was busy, verify the Git review button and dialog submit were disabled; stop the fixture task, run review while idle, and confirm the fixture response. The busy guard was also covered by a unit test.
 - Browser skill with Pixel 7 emulation at 412×915: inspect the fixture's untracked text file both from its per-file action and the all-files diff; verify the added line and filename render as inert diff text. The real Git integration test confirms a changed tracked `.env` is omitted from status and the all-files diff.
 - Browser skill with Pixel 7 emulation at 412×915: add a fixture stdio MCP server, inspect the confirmation for its exact command and project scope, confirm it, and verify the server appears with a separate shared-runtime restart notice; add a fixture HTTPS MCP server with a query value and verify the confirmation shows only its host, then confirm it appears in the list. The fixture launched no local command and made no MCP connection.
-- Live validation (2026-10-19): the feature branch was started manually with the existing instance configuration and data, and it reused the existing `AcpClient` and one Codex app-server. Mini App and Mobile listen on `127.0.0.1:3301` and `127.0.0.1:3302`; the local health check reports Codex connected. A private Tailscale Serve route maps HTTPS 8443 to port 3302; Funnel 443 still maps to 3301. No startup file or task was changed. The old-checkout watchdog process was stopped for this approved Windows session; the branch is not registered for autostart, so the existing launcher may start the old checkout after the next Windows login.
-- Live Browser skill check with Pixel 7 emulation at 412×915: the real pairing screen loaded from loopback and an unauthenticated `/api/session` request returned 401. Chromium could not navigate to the private Serve URL (`ERR_CONNECTION_CLOSED`), while a TLS-verified Windows `curl` request to that same URL returned 200 and its unauthenticated session API returned 401. Actual Android access and device pairing remain unverified; no test browser was paired.
+- Live validation (2026-10-19): the feature branch was started manually with the existing instance configuration and data, and it reused the existing `AcpClient` and one Codex app-server. Mini App and Mobile listen on `127.0.0.1:3301` and `127.0.0.1:3302`; the local health check reports Codex connected. Tailscale Funnel 443 still maps to 3301, and the separately authorized public Funnel 8443 maps to 3302. No startup file or task was changed. The old-checkout watchdog process was stopped for this approved Windows session; the branch is not registered for autostart, so the existing launcher may start the old checkout after the next Windows login.
+- Live Browser skill check with Pixel 7 emulation at 412×915: the real pairing screen loads from loopback and an unauthenticated `/api/session` request returns 401. Chromium still cannot navigate to the `:8443` hostname (`ERR_CONNECTION_CLOSED`). This Windows browser uses a local proxy at `127.0.0.1:10809`; the Mobile hostname was added to the proxy bypass list, but browser access remains unverified. `tailscale funnel status` reports both Funnel ports active, and a TLS-verified request through the laptop's tailnet address returns 200 with an unauthenticated session request returning 401. A direct TLS probe from this laptop to the public Funnel relay did not complete, so actual Android access and device pairing remain unverified; the tailnet currently reports no Android/iOS peer.
 
 ## Safety limits
 
 - Preserve the Telegram bot's startup behavior, autostart, Funnel on 443,
-  Mini App port 3301 and existing sessions. Change Tailscale only with explicit
-  authorization and only on the dedicated private Serve port.
+  Mini App port 3301 and existing sessions. Funnel on 8443 is enabled only by
+  the user's explicit public-access request on 2026-10-19. Do not reset the
+  complete Tailscale configuration.
 - Never start a second Codex app-server for Mobile. The mobile HTTP server must run inside the existing process that owns the shared ACP runtime.
-- Do not add public routes or trust forwarded client IP headers.
+- Do not add additional public routes or trust forwarded client IP headers.
 - Do not render untrusted HTML or execute content from Codex, tools or files.
 - Do not claim a turn completed unless the existing runtime confirms it; show
   an unknown status when completion cannot be established.
 
-## Android private connection
+## Android public connection
 
-For the current manual test session, Tailscale Serve is configured on HTTPS
-port `8443` and proxies to the Mobile listener on `127.0.0.1:3302`. The existing
-Funnel remains on HTTPS port `443` and proxies to `127.0.0.1:3301`; port 8443
-is not enabled in the Funnel allowlist. The Android origin is exactly
-`https://<tailnet-host>:8443`. Tailscale describes Serve as sharing a local
-service within the tailnet; Funnel is the public sharing option. See the
-[Tailscale Serve CLI reference](https://tailscale.com/docs/reference/tailscale-cli/serve).
+For the current manual test session, Tailscale Funnel is enabled on HTTPS port
+`8443` and proxies to the Mobile listener on `127.0.0.1:3302`. The existing
+Funnel remains on HTTPS port `443` and proxies to `127.0.0.1:3301`. The public
+Mobile URL is `https://laptop-mttke9pg.tail42f29f.ts.net:8443/`; it can be
+opened without installing Tailscale on the phone. Anyone can load the pairing
+page, but private Codex data and controls remain behind device authentication.
+The owner must approve a one-time pairing code locally on the laptop before a
+mobile session is created. See the
+[Tailscale Funnel documentation](https://tailscale.com/kb/1223/funnel).
 
 The server is running manually for the approved Windows session. Its autostart
-was not changed. Tailscale's Serve route remains configured if the server stops,
-but then has no local Mobile service to proxy to until the branch is started
-again. Roll back only this route with `tailscale serve --https=8443 off`; do not
-use `tailscale serve reset`, which would also remove the existing 443 route.
+was not changed. Funnel remains configured if the server stops, but then has no
+local Mobile service to proxy to until the branch is started again. To remove
+only this public route and restore tailnet-only access, run
+`tailscale funnel --https=8443 off` followed by `tailscale serve --https=8443 3302`.
+Do not use `tailscale funnel reset` or `tailscale serve reset`, which would also
+remove the existing 443 route.
 
-To connect Android, join the same tailnet, open the exact HTTPS origin, create a
-pairing code on the phone and approve it locally from the repository root:
+To connect Android, open the public HTTPS URL, create a pairing code on the
+phone and approve it locally from the repository root:
 
 ```powershell
 $env:CODEX_TG_DIR = '<existing-instance-directory>'
@@ -450,8 +456,8 @@ node --import tsx src/cli.ts mobile approve 'ONE_TIME_CODE'
 
 If `ALLOWED_USERS` has more than one owner, pass the selected owner ID as the
 last argument. The laptop-only control channel performs approval; a request
-that arrives through Tailscale is never considered local based on its forwarded
-`remoteAddress`.
+that arrives through the public Funnel is never considered local based on its
+forwarded `remoteAddress`.
 
 The mobile server now provides a manual callback relay for phone OAuth. It is
 available only when Codex's native authorization URL contains one exact
@@ -462,7 +468,7 @@ every relay request. Codex remains responsible for its own state validation and
 token exchange. PAR-based authorization URLs that hide `redirect_uri` are
 rejected for remote use. The Browser skill verified this flow using a local fake
 provider and callback only; a real provider still needs verification over the
-configured private Tailscale route. Never set `mcp_oauth_callback_url` to a
+configured Funnel route. Never set `mcp_oauth_callback_url` to a
 non-loopback host: the current Codex implementation binds its temporary
 callback listener to `0.0.0.0` for that setting. A fixed callback port does not
 change that behavior. The upstream
@@ -471,16 +477,15 @@ shows this host-selection behavior. The mobile client does not implement a
 second OAuth client. See the
 [Codex app-server OAuth instructions](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md).
 
-1. Confirm Android is connected to the same tailnet and use the exact origin
-   configured in `CODEX_MOBILE_ORIGINS`.
+1. Use the exact public origin configured in `CODEX_MOBILE_ORIGINS`.
 2. Create a pairing code on Android and approve it on the laptop using the local
-   CLI. Do not send the one-time code to a proxy or expose it in logs.
+   CLI. Do not send the one-time code to anyone or expose it in logs.
 3. Verify the paired phone can read only owner-authorized projects and sessions,
-   then test device revocation and reconnection over the tailnet.
+   then test device revocation and reconnection over the public Funnel.
 4. If the server process stops, either restart this feature branch manually or
-   remove only the 8443 Serve route. Do not enable autostart or alter the old
+   remove only the 8443 Funnel route. Do not enable autostart or alter the old
    launcher without a separate explicit decision.
 
-The application itself does not modify Tailscale configuration. The private
-Serve route described above was configured manually; the existing Funnel was
-left unchanged.
+The application itself does not modify Tailscale configuration. The public
+Funnel on 8443 was configured manually after the user's request; Funnel 443 and
+the existing bot route remain unchanged.
