@@ -518,7 +518,7 @@ test("mobile session pages continue past the snapshot cap within the selected pr
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
-test("mobile terminal runs a bounded one-shot command in the authorized project and refuses a busy Codex session",async()=>{
+function createMobileTerminalFixture(){
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-terminal-"));
   const project=join(dir,"workspace");
   const sessionId="94949494-9494-4494-8494-949494949494";
@@ -532,6 +532,32 @@ test("mobile terminal runs a bounded one-shot command in the authorized project 
   const registry={runtimeForSession:()=>runtime,controller:()=>({list:()=>[]})} as unknown as RuntimeRegistry;
   const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
   const agent=new MiniAppAgent({cfg,acp,registry});
+  return {agent,sessionId,runtime,close(){agent.stop();rmSync(dir,{recursive:true,force:true});}};
+}
+
+test("mobile one-shot terminal preserves Unicode output",async()=>{
+  const {agent,sessionId,close}=createMobileTerminalFixture();
+  try{
+    const command=process.platform==="win32"
+      ? "Write-Output 'mobile-terminal-Администратор'"
+      : "printf 'mobile-terminal-Администратор\\n'";
+    const result=await agent.executeMobile({op:"terminalExec" as never,userId:101,args:{sessionId,command}}) as {exitCode:number;stdout:string};
+    assert.equal(result.exitCode,0);
+    assert.match(result.stdout,/mobile-terminal-Администратор/);
+  }finally{close();}
+});
+
+test("mobile one-shot terminal reports the native command's nonzero exit code",async()=>{
+  const {agent,sessionId,close}=createMobileTerminalFixture();
+  try{
+    const command=process.platform==="win32"?"cmd /d /c exit 7":"exit 7";
+    const result=await agent.executeMobile({op:"terminalExec" as never,userId:101,args:{sessionId,command}}) as {exitCode:number|null};
+    assert.equal(result.exitCode,7);
+  }finally{close();}
+});
+
+test("mobile terminal runs a bounded one-shot command in the authorized project and refuses a busy Codex session",async()=>{
+  const {agent,sessionId,runtime,close}=createMobileTerminalFixture();
   const command=process.platform==="win32"?"Write-Output mobile-terminal-ok; (Get-Location).Path":"printf 'mobile-terminal-ok\\n'; pwd";
   try{
     const result=await agent.executeMobile({op:"terminalExec" as never,userId:101,args:{sessionId,command}}) as {
@@ -548,7 +574,7 @@ test("mobile terminal runs a bounded one-shot command in the authorized project 
     assert.ok(largeResult.stdout.length<=65_600,"terminal output remains bounded after truncation");
     runtime.isBusy=true;
     await assert.rejects(agent.executeMobile({op:"terminalExec" as never,userId:101,args:{sessionId,command}}),/Дождитесь завершения текущей задачи/);
-  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+  }finally{close();}
 });
 
 test("mobile interactive terminal reattaches, streams output, scopes input and stops the project shell",async()=>{

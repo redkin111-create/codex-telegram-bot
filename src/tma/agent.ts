@@ -27,9 +27,9 @@ import { TelegramSessionRegistry } from "../sessions/telegram-registry.js";
 import { argumentString, isTmaJob, type TmaJob, type TmaResult } from "./protocol.js";
 import { parseTmaImages, tmaPromptFingerprint } from "./prompt-images.js";
 import { DurablePromptJournal } from "./prompt-journal.js";
+import { runMobileTerminalCommand } from "./mobile-terminal.js";
 
 const execFile=promisify(execFileCallback);
-const MAX_MOBILE_TERMINAL_OUTPUT=64*1024;
 const MAX_MOBILE_PTY_BUFFER=512*1024;
 const MAX_MOBILE_PTY_READ=64*1024;
 const MAX_MOBILE_CONFLICT_STAGE_BYTES=512*1024;
@@ -842,7 +842,7 @@ export class MiniAppAgent {
         const {root}=this.mobileRoot(sessionId,chatId);
         const command=argumentString(args,"command",4000).trim();
         if(!command||command.includes("\0"))throw new Error("Введите корректную команду");
-        return this.mobileTerminalCommand(root,command);
+        return runMobileTerminalCommand(root,command);
       }
       case "terminalStart":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
@@ -1900,31 +1900,6 @@ export class MiniAppAgent {
     }
     terminal.dataSubscription?.dispose();
     terminal.exitSubscription?.dispose();
-  }
-  private async mobileTerminalCommand(cwd:string,command:string):Promise<{
-    exitCode:number|null;stdout:string;stderr:string;truncated:boolean;durationMs:number;timedOut:boolean;
-  }>{
-    const started=Date.now();
-    const executable=process.platform==="win32"?"powershell.exe":"/bin/sh";
-    const args=process.platform==="win32"?["-NoLogo","-NoProfile","-NonInteractive","-Command",command]:["-c",command];
-    const limit=(value:string)=>value.length>MAX_MOBILE_TERMINAL_OUTPUT;
-    const trim=(value:string)=>limit(value)?value.slice(0,MAX_MOBILE_TERMINAL_OUTPUT)+"\n[Вывод сокращён]":value;
-    try{
-      const result=await execFile(executable,args,{
-        cwd,timeout:60_000,maxBuffer:256*1024,encoding:"utf8",windowsHide:true,
-        env:{...process.env,GIT_TERMINAL_PROMPT:"0"},
-      });
-      const stdout=String(result.stdout),stderr=String(result.stderr);
-      return {exitCode:0,stdout:trim(stdout),stderr:trim(stderr),truncated:limit(stdout)||limit(stderr),durationMs:Date.now()-started,timedOut:false};
-    }catch(error){
-      const failure=error as NodeJS.ErrnoException & {stdout?:string|Buffer;stderr?:string|Buffer;signal?:string};
-      const stdout=String(failure.stdout??""),stderr=String(failure.stderr??"");
-      const timedOut=failure.code==="ETIMEDOUT";
-      return {
-        exitCode:typeof failure.code==="number"?failure.code:null,stdout:trim(stdout),stderr:trim(stderr),
-        truncated:limit(stdout)||limit(stderr),durationMs:Date.now()-started,timedOut,
-      };
-    }
   }
   private mobileRoot(sessionId:string,userId:number):{root:string;name:string}{
     const thread=this.knownThreads.get(userId)?.get(sessionId);

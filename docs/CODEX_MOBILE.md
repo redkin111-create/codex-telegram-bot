@@ -156,6 +156,17 @@ claim to display the new summary. See the [app-server item schema](https://githu
   `parsePatch`/`applyPatch`; npm only offers a fix in breaking `diff@9`. No
   dependency was changed in this repair.
 
+## Verification checkpoint (2026-10-20)
+
+- Root TypeScript check: passed; full root test suite: 396/396 passed.
+- Browser skill on the live public Mobile page at Pixel 7 size (412×915): ran
+  `Get-Location` from the project terminal and confirmed the Windows path keeps
+  Cyrillic characters; ran `cmd /d /c exit 7` and confirmed the UI reports exit
+  code 7. Both commands were one-shot and required the page's explicit run
+  confirmation.
+- Fixed Windows one-shot terminal output encoding and native exit-code
+  reporting; added regression tests for both behaviors.
+
 ## Verification checkpoint (2026-10-18)
 
 - Root TypeScript check: passed.
