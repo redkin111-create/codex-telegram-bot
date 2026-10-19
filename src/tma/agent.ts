@@ -1164,6 +1164,7 @@ export class MiniAppAgent {
           }));
           const {goal,available:goalAvailable}=goalState;
           return {
+            capabilitySection:"core",
             online:acp.isConnected,
             model:nativeSettings&&"model" in nativeSettings?(nativeSettings.model||"default"):runtime?.model||acp.currentModelId||"default",
             mode:runtime?.agent||acp.currentModeId||"",
@@ -1181,7 +1182,7 @@ export class MiniAppAgent {
             : acp.availableSkills;
           const skillNameCounts=new Map<string,number>();
           for(const skill of skills)skillNameCounts.set(skill.name,(skillNameCounts.get(skill.name)??0)+1);
-          return {skills:skills.slice(0,100).map(skill=>({name:skill.name.slice(0,160),description:skill.description?.slice(0,500),
+          return {capabilitySection:"skills",skills:skills.slice(0,100).map(skill=>({name:skill.name.slice(0,160),description:skill.description?.slice(0,500),
             enabled:skill.enabled!==false,scope:skill.scope,canToggle:(skill.scope==="user"||skill.scope==="repo")&&skillNameCounts.get(skill.name)===1,
             invokable:skill.enabled!==false&&skillNameCounts.get(skill.name)===1}))};
         }
@@ -1192,7 +1193,7 @@ export class MiniAppAgent {
               ? await acp.mobileIntegrationInventory(integrationThread.cwd,sessionId)
               : undefined;
           const integrations=normalizeMobileIntegrations(undefined,undefined,rawApps?.apps,rawApps?.installedApps);
-          return {apps:integrations.apps,appsAvailable:integrations.appsAvailable};
+          return {capabilitySection:"apps",apps:integrations.apps,appsAvailable:integrations.appsAvailable};
         }
         if(section==="plugins"){
           const rawPlugins=acp.isConnected&&integrationThread&&typeof acp.mobilePluginInventory==="function"
@@ -1200,20 +1201,21 @@ export class MiniAppAgent {
             : undefined;
           const integrations=normalizeMobileIntegrations(rawPlugins?.pluginCatalog,rawPlugins?.installedPlugins,undefined,undefined);
           return {
+            capabilitySection:"plugins",
             plugins:integrations.plugins,
             pluginCatalogAvailable:integrations.pluginCatalogAvailable,
             marketplaces:normalizeMobileMarketplaces(rawPlugins?.pluginCatalog,rawPlugins?.installedPlugins),
           };
         }
         if(section==="mcp"){
-          if(!acp.isConnected||!integrationThread||typeof acp.listMobileMcpServers!=="function")return {mcpServersAvailable:false,mcpServers:[]};
+          if(!acp.isConnected||!integrationThread||typeof acp.listMobileMcpServers!=="function")return {capabilitySection:"mcp",mcpServersAvailable:false,mcpServers:[]};
           try{
             const mcpInventory=await acp.listMobileMcpServers(sessionId);
             const resourceRefs=this.issueMobileMcpResourceRefs(chatId,sessionId,mcpInventory);
-            return {mcpServersAvailable:true,mcpServers:normalizeMobileMcpServers(mcpInventory).map(server=>({
+            return {capabilitySection:"mcp",mcpServersAvailable:true,mcpServers:normalizeMobileMcpServers(mcpInventory).map(server=>({
               ...server,resources:resourceRefs.get(server.name)??[],
             }))};
-          }catch{return {mcpServersAvailable:false,mcpServers:[]};}
+          }catch{return {capabilitySection:"mcp",mcpServersAvailable:false,mcpServers:[]};}
         }
         const inventoryRefresh=acp.isConnected?acp.refreshInventories().catch(()=>undefined):Promise.resolve(undefined);
         const nativeSettingsRead=sessionId&&integrationThread&&acp.isConnected&&typeof acp.readMobileThreadSettings==="function"
@@ -1257,6 +1259,7 @@ export class MiniAppAgent {
           id:s.sessionId,name:(s.sessionName||s.agentName||"Агент").slice(0,120),status:(s.status?.type||"unknown").slice(0,60),
         }));
         return {
+          capabilitySection:"all",
           online:acp.isConnected,
           model:nativeSettings&&"model" in nativeSettings?(nativeSettings.model||"default"):runtime?.model||acp.currentModelId||"default",
           mode:runtime?.agent||acp.currentModeId||"",

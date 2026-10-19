@@ -207,6 +207,7 @@ export interface MobileApproval {
 }
 
 export interface MobileCapabilities {
+  capabilitySection?: "core" | "skills" | "apps" | "plugins" | "mcp" | "all";
   online: boolean;
   model: string;
   mode: string;

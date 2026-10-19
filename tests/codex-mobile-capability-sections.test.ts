@@ -70,7 +70,8 @@ test("the skill picker reads only the authorized project's skill inventory", asy
   const f = fixture();
   try {
     const result = await f.agent.executeMobile({ op: "capabilities", userId: 101, args: { sessionId: ownedSession, section: "skills" } }) as Record<string, unknown>;
-    assert.deepEqual(Object.keys(result), ["skills"]);
+    assert.equal(result.capabilitySection, "skills");
+    assert.deepEqual(Object.keys(result), ["capabilitySection", "skills"]);
     assert.deepEqual(result.skills, [{ name: "browser-skill", description: "Browser checks", enabled: true, scope: "user", canToggle: true, invokable: true }]);
     assert.deepEqual(f.calls, { refresh: 0, skills: 1, integrations: 0, plugins: 0, mcp: 0, settings: 0, goal: 0, account: 0 });
   } finally {
@@ -83,7 +84,8 @@ test("the app picker reads only the authorized thread's Codex App inventory", as
   const f = fixture();
   try {
     const result = await f.agent.executeMobile({ op: "capabilities", userId: 101, args: { sessionId: ownedSession, section: "apps" } }) as Record<string, unknown>;
-    assert.deepEqual(Object.keys(result).sort(), ["apps", "appsAvailable"].sort());
+    assert.equal(result.capabilitySection, "apps");
+    assert.deepEqual(Object.keys(result).sort(), ["apps", "appsAvailable", "capabilitySection"].sort());
     assert.deepEqual(result.apps, [{ id: "calendar", name: "Calendar", description: undefined, enabled: true, accessible: true, callable: true, installUrl: undefined }]);
     assert.equal(result.appsAvailable, true);
     assert.deepEqual(f.calls, { refresh: 0, skills: 0, integrations: 1, plugins: 0, mcp: 0, settings: 0, goal: 0, account: 0 });
@@ -98,6 +100,7 @@ test("the settings core returns without discovering MCP or plugin inventories", 
   try {
     const result = await f.agent.executeMobile({ op: "capabilities", userId: 101, args: { sessionId: ownedSession, section: "core" } }) as Record<string, unknown>;
     assert.equal(result.online, true);
+    assert.equal(result.capabilitySection, "core");
     assert.equal(result.model, "model");
     assert.deepEqual(result.mcpServers, []);
     assert.deepEqual(result.plugins, []);
@@ -114,7 +117,8 @@ test("the plugin settings inventory does not read Apps or MCP details", async ()
   const f = fixture();
   try {
     const result = await f.agent.executeMobile({ op: "capabilities", userId: 101, args: { sessionId: ownedSession, section: "plugins" } }) as Record<string, unknown>;
-    assert.deepEqual(Object.keys(result).sort(), ["marketplaces", "pluginCatalogAvailable", "plugins"].sort());
+    assert.equal(result.capabilitySection, "plugins");
+    assert.deepEqual(Object.keys(result).sort(), ["capabilitySection", "marketplaces", "pluginCatalogAvailable", "plugins"].sort());
     assert.deepEqual(result.plugins, []);
     assert.deepEqual(f.calls, { refresh: 0, skills: 0, integrations: 0, plugins: 1, mcp: 0, settings: 0, goal: 0, account: 0 });
   } finally {

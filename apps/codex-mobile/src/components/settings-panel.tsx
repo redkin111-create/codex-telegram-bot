@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Activity, Bot, ChevronDown, CircleHelp, Clock3, Download, ExternalLink, Pause, Play, Plug, Puzzle, RefreshCw, ShieldCheck, Sparkles, Target, Trash2, X } from "lucide-react";
 import { completeMcpOAuthCallback, readAppInventory, readCapabilities, readMcpInventory, readPluginInventory, readSkillInventory } from "../api.js";
+import { isCapabilitySectionResponse } from "../capability-compat.js";
 import { AccountsPanel } from "./accounts-panel.js";
 import { McpConfigPanel } from "./mcp-config-panel.js";
 import type { MobileCapabilities, MobileOperation } from "../types.js";
@@ -107,6 +108,19 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
       setCapabilities(core);
       setGoalObjective(core.goal?.objective ?? "");
       setGoalBudget(core.goal?.tokenBudget ? String(core.goal.tokenBudget) : "");
+      if (!isCapabilitySectionResponse(core, "core")) {
+        setMcpInventoryLoaded(true);
+        setMcpLoginLinks((current) => {
+          const pending = { ...current };
+          for (const server of core.mcpServers) {
+            if (server.status === "connected" && (server.authStatus === "oauth" || server.authStatus === "bearerToken")) {
+              delete pending[server.name];
+            }
+          }
+          return pending;
+        });
+        return;
+      }
       const [skills, apps, plugins] = await Promise.allSettled([
         readSkillInventory(sessionId), readAppInventory(sessionId), readPluginInventory(sessionId),
       ]);
