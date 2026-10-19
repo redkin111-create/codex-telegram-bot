@@ -90,6 +90,18 @@ async function startFixture(extensions: Record<string, unknown> = {}) {
       };
       if (job.op === "readImage") return readImageValue;
       if (job.op === "downloadFile") return downloadValue;
+      if (job.op === "capabilities" && job.args.section === "skills") return {
+        skills: [{ name: "fixture-skill", description: "Safe plain text", enabled: true, scope: "user", canToggle: true, invokable: true }],
+      };
+      if (job.op === "capabilities" && job.args.section === "apps") return {
+        apps: [{ id: "fixture-app", name: "Fixture App", enabled: true, accessible: true, callable: true }], appsAvailable: true,
+      };
+      if (job.op === "capabilities" && job.args.section === "plugins") return {
+        plugins: [], pluginCatalogAvailable: true, marketplaces: [],
+      };
+      if (job.op === "capabilities" && job.args.section === "mcp") return {
+        mcpServers: [], mcpServersAvailable: true,
+      };
       if (job.op === "capabilities") return {
         online: true, ...settings, models: [{ id: settings.model, name: "Fixture Model" }],
         modes: [{ id: settings.mode, name: "Code" }], reasoningLevels: ["low", "medium", "high"],
@@ -533,6 +545,72 @@ test("capabilities are authenticated and session-scoped before reaching the shar
     });
     assert.equal(foreign.status, 403);
     assert.equal(f.calls.filter((call) => call.op === "capabilities").length, 1);
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("skill and app capability sections stay owner-scoped and reject invalid or sessionless requests", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const skills = await fetch(f.origin + `/api/capabilities?sessionId=${allowedSession}&section=skills`, {
+      headers: { origin: f.origin, cookie: login.sessionCookie },
+    });
+    assert.equal(skills.status, 200);
+    assert.deepEqual(await skills.json(), {
+      skills: [{ name: "fixture-skill", description: "Safe plain text", enabled: true, scope: "user", canToggle: true, invokable: true }],
+    });
+    assert.deepEqual(f.calls.at(-1)?.args, { sessionId: allowedSession, section: "skills" });
+
+    const apps = await fetch(f.origin + `/api/capabilities?sessionId=${allowedSession}&section=apps`, {
+      headers: { origin: f.origin, cookie: login.sessionCookie },
+    });
+    assert.equal(apps.status, 200);
+    assert.deepEqual(await apps.json(), {
+      apps: [{ id: "fixture-app", name: "Fixture App", enabled: true, accessible: true, callable: true }], appsAvailable: true,
+    });
+    assert.deepEqual(f.calls.at(-1)?.args, { sessionId: allowedSession, section: "apps" });
+
+    const callCount = f.calls.length;
+    const foreign = await fetch(f.origin + `/api/capabilities?sessionId=${foreignSession}&section=skills`, {
+      headers: { origin: f.origin, cookie: login.sessionCookie },
+    });
+    assert.equal(foreign.status, 403);
+    const invalid = await fetch(f.origin + `/api/capabilities?sessionId=${allowedSession}&section=unknown`, {
+      headers: { origin: f.origin, cookie: login.sessionCookie },
+    });
+    assert.equal(invalid.status, 400);
+    const sessionless = await fetch(f.origin + "/api/capabilities?section=skills", {
+      headers: { origin: f.origin, cookie: login.sessionCookie },
+    });
+    assert.equal(sessionless.status, 400);
+    assert.equal(f.calls.length, callCount);
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("plugin and MCP capability sections are authenticated and restricted to owned sessions", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const plugins = await fetch(f.origin + `/api/capabilities?sessionId=${allowedSession}&section=plugins`, {
+      headers: { origin: f.origin, cookie: login.sessionCookie },
+    });
+    assert.equal(plugins.status, 200);
+    assert.deepEqual(await plugins.json(), { plugins: [], pluginCatalogAvailable: true, marketplaces: [] });
+    assert.deepEqual(f.calls.at(-1)?.args, { sessionId: allowedSession, section: "plugins" });
+
+    const mcp = await fetch(f.origin + `/api/capabilities?sessionId=${allowedSession}&section=mcp`, {
+      headers: { origin: f.origin, cookie: login.sessionCookie },
+    });
+    assert.equal(mcp.status, 200);
+    assert.deepEqual(await mcp.json(), { mcpServers: [], mcpServersAvailable: true });
+    assert.deepEqual(f.calls.at(-1)?.args, { sessionId: allowedSession, section: "mcp" });
+
+    const callCount = f.calls.length;
+    const foreign = await fetch(f.origin + `/api/capabilities?sessionId=${foreignSession}&section=mcp`, {
+      headers: { origin: f.origin, cookie: login.sessionCookie },
+    });
+    assert.equal(foreign.status, 403);
+    assert.equal(f.calls.length, callCount);
   } finally { await cleanup(f.server, f.dataDir); }
 });
 

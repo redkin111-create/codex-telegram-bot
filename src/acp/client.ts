@@ -413,6 +413,26 @@ export class AcpClient extends EventEmitter {
     return { pluginCatalog, installedPlugins, apps, installedApps };
   }
 
+  /** Read only the plugin catalog needed by the mobile settings panel. */
+  async mobilePluginInventory(cwd?: string): Promise<{ pluginCatalog?: unknown; installedPlugins?: unknown }> {
+    const params = cwd ? { cwds: [cwd] } : {};
+    const [pluginCatalog, installedPlugins] = await Promise.all([
+      this.request("plugin/list", params).catch(() => undefined),
+      this.request("plugin/installed", {}).catch(() => undefined),
+    ]);
+    return { pluginCatalog, installedPlugins };
+  }
+
+  /** Read only the app catalog needed by the mobile composer. */
+  async mobileAppInventory(threadId: string): Promise<{ apps?: unknown; installedApps?: unknown }> {
+    const params = { limit: 100, threadId };
+    const [apps, installedApps] = await Promise.all([
+      this.request("app/list", params).catch(() => undefined),
+      this.request("app/installed", {}).catch(() => undefined),
+    ]);
+    return { apps, installedApps };
+  }
+
   /** Add a remote marketplace through Codex's native configuration RPC. */
   async addMobileMarketplace(sourceValue: string, refValue?: string): Promise<{ marketplaceName: string; alreadyAdded: boolean }> {
     const source = validateMobileMarketplaceSource(sourceValue);

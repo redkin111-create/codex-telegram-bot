@@ -507,11 +507,18 @@ export function createMobileServer(options: MobileServerOptions): Server {
     }
     if (path === "/api/capabilities" && method === "GET") {
       const sessionId = url.searchParams.get("sessionId") ?? "";
+      const section = url.searchParams.get("section") ?? undefined;
+      if (section !== undefined && section !== "core" && section !== "skills" && section !== "apps" && section !== "plugins" && section !== "mcp") {
+        json(res, 400, { error: "Неизвестный раздел возможностей Codex" }); return;
+      }
+      if (section && !sessionId) {
+        json(res, 400, { error: "Для этого списка выберите сеанс Codex" }); return;
+      }
       if (sessionId && (!safeSessionId(sessionId) || !await options.agent.canReadSession(sessionId, device.ownerId))) {
         json(res, 403, { error: "Доступ к сеансу запрещён" }); return;
       }
       if (!options.agent.executeMobile) { json(res, 503, { error: "Инвентарь Codex недоступен" }); return; }
-      try { json(res, 200, await options.agent.executeMobile({ op: "capabilities", userId: device.ownerId, args: sessionId ? { sessionId } : {} })); }
+      try { json(res, 200, await options.agent.executeMobile({ op: "capabilities", userId: device.ownerId, args: { ...(sessionId ? { sessionId } : {}), ...(section ? { section } : {}) } })); }
       catch (error) { json(res, 502, { error: safeError(error) }); }
       return;
     }

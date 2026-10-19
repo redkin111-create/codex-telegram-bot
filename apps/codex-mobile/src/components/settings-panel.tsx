@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Activity, Bot, ChevronDown, CircleHelp, Clock3, Download, ExternalLink, Pause, Play, Plug, Puzzle, RefreshCw, ShieldCheck, Sparkles, Target, Trash2, X } from "lucide-react";
-import { completeMcpOAuthCallback, readCapabilities } from "../api.js";
+import { completeMcpOAuthCallback, readAppInventory, readCapabilities, readMcpInventory, readPluginInventory, readSkillInventory } from "../api.js";
 import { AccountsPanel } from "./accounts-panel.js";
 import { McpConfigPanel } from "./mcp-config-panel.js";
 import type { MobileCapabilities, MobileOperation } from "../types.js";
@@ -95,12 +95,27 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
   const [mcpResourceParameters, setMcpResourceParameters] = useState<Record<string, string>>({});
   const [mcpResourceError, setMcpResourceError] = useState("");
   const [mcpResourceResult, setMcpResourceResult] = useState<McpResourceResult>();
+  const [mcpInventoryLoaded, setMcpInventoryLoaded] = useState(false);
+  const [mcpInventoryLoading, setMcpInventoryLoading] = useState(false);
 
   async function reload() {
     setLoading(true);
     setError("");
+    setMcpInventoryLoaded(false);
     try {
-      const next = await readCapabilities(sessionId);
+      const core = await readCapabilities(sessionId, "core");
+      setCapabilities(core);
+      setGoalObjective(core.goal?.objective ?? "");
+      setGoalBudget(core.goal?.tokenBudget ? String(core.goal.tokenBudget) : "");
+      const [skills, apps, plugins] = await Promise.allSettled([
+        readSkillInventory(sessionId), readAppInventory(sessionId), readPluginInventory(sessionId),
+      ]);
+      const additions = {
+        ...(skills.status === "fulfilled" ? skills.value : {}),
+        ...(apps.status === "fulfilled" ? apps.value : {}),
+        ...(plugins.status === "fulfilled" ? plugins.value : {}),
+      };
+      const next = { ...core, ...additions };
       setCapabilities(next);
       setMcpLoginLinks((current) => {
         const pending = { ...current };
@@ -111,15 +126,36 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
         }
         return pending;
       });
-      setGoalObjective(next.goal?.objective ?? "");
-      setGoalBudget(next.goal?.tokenBudget ? String(next.goal.tokenBudget) : "");
-      setError("");
+      if ([skills, apps, plugins].some((result) => result.status === "rejected")) {
+        setError("Часть списков Codex не загрузилась. Основные настройки доступны.");
+      }
     }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось прочитать возможности Codex"); }
     finally { setLoading(false); }
   }
 
   useEffect(() => { void reload(); }, [sessionId]);
+
+  async function loadMcpInventory() {
+    setMcpInventoryLoading(true);
+    setError("");
+    try {
+      const inventory = await readMcpInventory(sessionId);
+      setCapabilities((current) => current ? { ...current, ...inventory } : current);
+      setMcpInventoryLoaded(true);
+      setMcpLoginLinks((current) => {
+        const pending = { ...current };
+        for (const server of inventory.mcpServers) {
+          if (server.status === "connected" && (server.authStatus === "oauth" || server.authStatus === "bearerToken")) {
+            delete pending[server.name];
+          }
+        }
+        return pending;
+      });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Не удалось прочитать MCP-инструменты");
+    } finally { setMcpInventoryLoading(false); }
+  }
 
   async function update(op: "setModel" | "setMode" | "setReasoning", field: string, value: string) {
     setSaving(true);
@@ -341,6 +377,7 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5 sm:px-6">
         {error && <p role="alert" className="rounded-xl border border-[#733b39] bg-[#351f1e] p-3 text-sm text-[#ffc3bd]">{error}</p>}
         {loading && !capabilities ? <p className="text-sm text-muted">Читаю данные текущего Codex…</p> : null}
+        {loading && capabilities && <p className="text-xs text-muted" role="status">Загружаю списки навыков, приложений и плагинов…</p>}
         {capabilities && <>
           <AccountsPanel csrf={csrf} onAccountChanged={onAccountChanged} />
           <div className="flex items-center justify-between gap-3">
@@ -379,7 +416,8 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
           </Card>
           <Card className="space-y-3 p-4">
             <h3 className="flex items-center gap-2 text-sm font-semibold"><Plug size={16} className="text-accent" /> MCP-серверы</h3>
-            {!capabilities.mcpServersAvailable ? <p className="text-xs text-muted">Состояние MCP-серверов для этого сеанса недоступно.</p>
+            {!mcpInventoryLoaded ? <div className="space-y-2"><p className="text-xs leading-relaxed text-muted">Подробный список MCP-инструментов Codex загружается отдельно и не задерживает открытие настроек.</p><Button type="button" variant="outline" className="min-h-10" disabled={mcpInventoryLoading || !capabilities.online} onClick={() => void loadMcpInventory()}>{mcpInventoryLoading ? <><RefreshCw size={14} className="animate-spin" /> Загружаю MCP…</> : "Показать MCP-инструменты"}</Button></div>
+              : !capabilities.mcpServersAvailable ? <p className="text-xs text-muted">Состояние MCP-серверов для этого сеанса недоступно.</p>
               : capabilities.mcpServers.length ? <ul className="space-y-2">{capabilities.mcpServers.map((server) => <li key={server.name} className="rounded-xl border border-border bg-[#111613] p-3">
                 <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="break-words text-sm font-medium">{server.name}</p>{server.serverName && <p className="mt-1 break-words text-[11px] text-muted">{server.serverName}{server.serverVersion ? ` · ${server.serverVersion}` : ""}</p>}</div><Badge>{mcpStatusLabel(server.status)}</Badge></div>
                 <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted"><span>{server.toolCount} инструментов</span><span>{server.resourceCount} ресурсов</span><span>{server.resourceTemplateCount} шаблонов</span>{mcpAuthLabel(server.authStatus) && <span>{mcpAuthLabel(server.authStatus)}</span>}</div>

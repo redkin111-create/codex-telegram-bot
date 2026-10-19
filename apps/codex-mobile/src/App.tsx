@@ -1,8 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FolderOpen, GitBranch, LoaderCircle, Menu, RefreshCw, Shield, ShieldAlert, SlidersHorizontal, Terminal } from "lucide-react";
 import {
-  asLiveEvent, logout, MobileApiError, openEventStream, parseSseBlock, readActivity, readApprovals, readElicitations,
-  readCapabilities, readHistory, readSession, readSnapshot, removeAttachment, resolveApproval, resolveElicitation, runOperation, uploadAttachment,
+  logout, MobileApiError, readActivity, readApprovals, readElicitations,
+  readAppInventory, readHistory, readSession, readSkillInventory, readSnapshot, removeAttachment, resolveApproval, resolveElicitation, runOperation, uploadAttachment,
 } from "./api.js";
 import { coalesceInFlight } from "./single-flight.js";
 import { ApprovalPanel } from "./components/approval-panel.js";
@@ -42,7 +42,7 @@ export default function App() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [activity, setActivity] = useState<MobileActivity>();
   const [queue, setQueue] = useState<MobileQueue>(emptyQueue);
-  const [events, setEvents] = useState<MobileLiveEvent[]>([]);
+  const [events] = useState<MobileLiveEvent[]>([]);
   const [includeTools, setIncludeTools] = useState(false);
   const [loading, setLoading] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -63,9 +63,6 @@ export default function App() {
   const [pendingElicitation, setPendingElicitation] = useState<MobileElicitation>();
   const [elicitationOpen, setElicitationOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const eventCursor = useRef(0);
-  const eventEpoch = useRef("");
-  const eventSession = useRef("");
   const selectedIdRef = useRef("");
   selectedIdRef.current = selectedId;
   const pendingSend = useRef<{ fingerprint: string; requestId: string } | undefined>(undefined);
@@ -88,7 +85,6 @@ export default function App() {
     setHistory([]);
     setActivity(undefined);
     setQueue(emptyQueue);
-    setEvents([]);
     setDevicesOpen(false);
     setSettingsOpen(false);
     setFilesOpen(false);
@@ -108,13 +104,13 @@ export default function App() {
 
   const loadMobileSkills = useCallback(async () => {
     if (!selectedId) return [];
-    try { return (await readCapabilities(selectedId)).skills; }
+    try { return (await readSkillInventory(selectedId)).skills; }
     catch (cause) { handleApiError(cause); throw cause; }
   }, [selectedId, handleApiError]);
 
   const loadMobileApps = useCallback(async () => {
     if (!selectedId) return [];
-    try { return (await readCapabilities(selectedId)).apps; }
+    try { return (await readAppInventory(selectedId)).apps; }
     catch (cause) { handleApiError(cause); throw cause; }
   }, [selectedId, handleApiError]);
 
@@ -174,6 +170,7 @@ export default function App() {
       setHistory([]);
       setActivity(undefined);
       setQueue(emptyQueue);
+      setStreamConnected(false);
       setPendingApproval(undefined);
       setApprovalOpen(false);
       setPendingElicitation(undefined);
@@ -183,16 +180,6 @@ export default function App() {
     setPendingApproval(undefined);
     setPendingElicitation(undefined);
     setElicitationOpen(false);
-    void readApprovals(selectedId).then(({ approvals }) => {
-      const current = approvals[0];
-      setPendingApproval(current);
-      if (current) setApprovalOpen(true);
-    }).catch(handleApiError);
-    void readElicitations(selectedId).then(({ elicitations }) => {
-      const current = elicitations[0];
-      setPendingElicitation(current);
-      if (current) setElicitationOpen(true);
-    }).catch(handleApiError);
     let alive = true;
     const historyRequest: { current?: Promise<void> } = {};
     const load = () => coalesceInFlight(historyRequest, async () => {
@@ -203,9 +190,23 @@ export default function App() {
       } catch (cause) { if (alive) handleApiError(cause); }
       finally { if (alive) setLoading(false); }
       try {
-        const nextActivity = await readActivity(selectedId);
-        if (alive) setActivity(nextActivity);
-      } catch (cause) { if (alive) handleApiError(cause); }
+        const [nextActivity, approvalResult, elicitationResult] = await Promise.all([
+          readActivity(selectedId), readApprovals(selectedId), readElicitations(selectedId),
+        ]);
+        if (alive) {
+          setActivity(nextActivity);
+          setPendingApproval(approvalResult.approvals[0]);
+          setApprovalOpen(approvalResult.approvals.length > 0);
+          setPendingElicitation(elicitationResult.elicitations[0]);
+          setElicitationOpen(elicitationResult.elicitations.length > 0);
+          setStreamConnected(true);
+        }
+      } catch (cause) {
+        if (alive) {
+          setStreamConnected(false);
+          handleApiError(cause);
+        }
+      }
       if (connected) {
         try {
           const nextQueue = await runOperation<MobileQueue>("queue", { sessionId: selectedId }, csrf);
@@ -217,87 +218,6 @@ export default function App() {
     const timer = window.setInterval(() => { void load(); }, 5000);
     return () => { alive = false; window.clearInterval(timer); };
   }, [device, selectedId, includeTools, connected, csrf, handleApiError]);
-
-  useEffect(() => {
-    if (!device || !csrf || !selectedId) { setStreamConnected(false); return; }
-    let stopped = false;
-    let controller: AbortController | undefined;
-    if (eventSession.current !== selectedId) {
-      eventSession.current = selectedId;
-      eventCursor.current = 0;
-      eventEpoch.current = "";
-    }
-    const delay = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
-    const connect = async () => {
-      while (!stopped) {
-        controller = new AbortController();
-        try {
-          const reader = await openEventStream(selectedId, eventCursor.current, eventEpoch.current, csrf, controller.signal);
-          setStreamConnected(true);
-          const decoder = new TextDecoder();
-          let buffer = "";
-          while (!stopped) {
-            const chunk = await reader.read();
-            if (chunk.done) break;
-            buffer += decoder.decode(chunk.value, { stream: true });
-            const blocks = buffer.split(/\r?\n\r?\n/);
-            buffer = blocks.pop() ?? "";
-            for (const block of blocks) {
-              const message = parseSseBlock(block);
-              if (!message) continue;
-              if (message.event === "hello") {
-                try {
-                  const hello = JSON.parse(message.data) as { epoch?: unknown };
-                  if (typeof hello.epoch === "string") eventEpoch.current = hello.epoch;
-                } catch { /* Ignore malformed stream control data. */ }
-              } else if (message.event === "revoked") {
-                expireSession();
-                return;
-              } else {
-                const event = asLiveEvent(message);
-                if (event) {
-                  eventCursor.current = Math.max(eventCursor.current, event.id);
-                  setEvents((current) => [...current.slice(-29), event]);
-                  if (event.kind === "status" || event.kind === "activity") {
-                    void readActivity(selectedId).then(setActivity).catch(handleApiError);
-                  }
-                  if (event.kind === "approval" && event.approval) {
-                    setPendingApproval(event.approval);
-                    setApprovalOpen(true);
-                  } else if (event.kind === "elicitation") {
-                    void readElicitations(selectedId).then(({ elicitations }) => {
-                      if (selectedIdRef.current !== selectedId) return;
-                      const current = elicitations[0];
-                      setPendingElicitation(current);
-                      setElicitationOpen(Boolean(current));
-                    }).catch(handleApiError);
-                  } else if (event.kind === "status") {
-                    void readApprovals(selectedId).then(({ approvals }) => {
-                      const current = approvals[0];
-                      setPendingApproval(current);
-                      if (current) setApprovalOpen(true);
-                      else setApprovalOpen(false);
-                    }).catch(handleApiError);
-                  }
-                }
-              }
-            }
-          }
-        } catch (cause) {
-          if (!stopped && cause instanceof MobileApiError && cause.status === 401) {
-            expireSession();
-            return;
-          }
-        } finally {
-          setStreamConnected(false);
-          controller?.abort();
-        }
-        if (!stopped) await delay(1200);
-      }
-    };
-    void connect();
-    return () => { stopped = true; controller?.abort(); };
-  }, [device, csrf, selectedId, expireSession, handleApiError]);
 
   const operation = useCallback(async <T,>(op: Parameters<typeof runOperation<T>>[0], args: Record<string, unknown>) => {
     setError("");
@@ -505,7 +425,6 @@ export default function App() {
       setHistory([]);
       setActivity(undefined);
       setQueue(emptyQueue);
-      setEvents([]);
     }
     await refreshSnapshot(true);
   }
@@ -639,7 +558,7 @@ export default function App() {
         <div className="min-w-0"><p className="truncate text-sm font-bold tracking-tight">Codex Mobile</p><p className="truncate text-[10px] text-muted">{snapshot.online ? "Локальный Codex runtime" : "Соединение с Codex потеряно"}</p></div>
       </div>
       <div className="flex items-center gap-2">
-        <span className="hidden text-[11px] text-muted sm:inline">{streamConnected ? "Поток активен" : "Переподключение…"}</span>
+        <span className="hidden text-[11px] text-muted sm:inline">{streamConnected ? "Автообновление · 5 с" : "Нет связи с Codex"}</span>
         <Button variant="ghost" className="min-h-10 px-2" aria-label="Обновить" onClick={() => void refreshSnapshot(true)} disabled={refreshing}>{refreshing ? <LoaderCircle size={17} className="animate-spin" /> : <RefreshCw size={17} />}</Button>
         {pendingApproval && <Button variant="outline" className="min-h-10 px-2 text-[#f2c66d]" aria-label="Открыть подтверждение" onClick={() => setApprovalOpen(true)}><ShieldAlert size={17} /></Button>}
         {pendingElicitation && <Button variant="outline" className="min-h-10 px-2 text-accent" aria-label="Открыть запрос MCP" onClick={() => setElicitationOpen(true)}><ShieldAlert size={17} /></Button>}

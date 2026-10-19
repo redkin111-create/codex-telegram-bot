@@ -1135,39 +1135,115 @@ export class MiniAppAgent {
         return pending;
       }
       case "capabilities":{
+        const section=args.section;
+        if(section!==undefined&&section!=="core"&&section!=="skills"&&section!=="apps"&&section!=="plugins"&&section!=="mcp")throw new Error("Неизвестный раздел возможностей Codex");
+        if(section&&!sessionId)throw new Error("Для этого списка выберите сеанс Codex");
         if(sessionId&&!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
-        if(acp.isConnected)await acp.refreshInventories();
         const integrationThread=sessionId?await this.thread(sessionId,chatId).catch(()=>undefined):undefined;
-        let nativeSettings:{model?:string|null;effort?:string|null}|undefined;
-        if(sessionId&&integrationThread&&acp.isConnected&&typeof acp.readMobileThreadSettings==="function"){
-          try{nativeSettings=await acp.readMobileThreadSettings(sessionId);}
-          catch{/* Some app-server versions omit live settings; retain the runtime's known values. */}
+        if(section==="core"){
+          const emptyAccount:Awaited<ReturnType<typeof acp.accountState>>={};
+          const [nativeSettings,goalState,account]=await Promise.all([
+            integrationThread&&acp.isConnected&&typeof acp.readMobileThreadSettings==="function"
+              ? acp.readMobileThreadSettings(sessionId).catch(()=>undefined)
+              : Promise.resolve(undefined),
+            acp.isConnected&&typeof acp.getThreadGoal==="function"?acp.getThreadGoal(sessionId).then(goal=>({goal,available:true})).catch(()=>({goal:undefined,available:false}))
+              : Promise.resolve({goal:undefined,available:false}),
+            acp.isConnected?acp.accountState().catch(()=>emptyAccount):Promise.resolve(emptyAccount),
+          ]);
+          const normalizeWindow=(value:CodexRateLimitWindow|null|undefined)=>value&&Number.isFinite(value.usedPercent)?{
+            usedPercent:Math.max(0,Math.min(100,value.usedPercent)),
+            windowDurationMins:typeof value.windowDurationMins==="number"&&Number.isFinite(value.windowDurationMins)?value.windowDurationMins:undefined,
+            resetsAt:typeof value.resetsAt==="number"&&Number.isFinite(value.resetsAt)?value.resetsAt:undefined,
+          }:undefined;
+          const limits=account.rateLimitsByLimitId?Object.entries(account.rateLimitsByLimitId).map(([id,limit])=>({
+            id:id.slice(0,80),name:typeof limit.limitName==="string"?limit.limitName.slice(0,100):id.slice(0,80),
+            primary:normalizeWindow(limit.primary),secondary:normalizeWindow(limit.secondary),
+          })).slice(0,20):account.rateLimits?[{id:"default",name:"Лимиты Codex",primary:normalizeWindow(account.rateLimits.primary),secondary:normalizeWindow(account.rateLimits.secondary)}]:[];
+          const subagents=acp.currentSubagents().filter(s=>registry.ownerChatForSession(s.sessionId)===chatId).slice(0,30).map(s=>({
+            id:s.sessionId,name:(s.sessionName||s.agentName||"Агент").slice(0,120),status:(s.status?.type||"unknown").slice(0,60),
+          }));
+          const {goal,available:goalAvailable}=goalState;
+          return {
+            online:acp.isConnected,
+            model:nativeSettings&&"model" in nativeSettings?(nativeSettings.model||"default"):runtime?.model||acp.currentModelId||"default",
+            mode:runtime?.agent||acp.currentModeId||"",
+            reasoning:nativeSettings&&"effort" in nativeSettings?(nativeSettings.effort||runtime?.reasoning||"medium"):runtime?.reasoning||"medium",
+            models:acp.availableModels.slice(0,100).map(m=>({id:m.modelId.slice(0,160),name:m.name.slice(0,160),description:m.description?.slice(0,400)})),
+            modes:acp.availableModes.slice(0,60).map(m=>({id:m.id.slice(0,100),name:m.name.slice(0,120),description:m.description?.slice(0,300)})),
+            reasoningLevels:REASONING_LEVELS,skills:[],mcpServersAvailable:false,mcpServers:[],plugins:[],pluginCatalogAvailable:false,
+            marketplaces:[],apps:[],appsAvailable:false,account:account.account?{type:account.account.type,email:account.account.email?.slice(0,200),
+              plan:account.account.planType?.slice(0,100)}:undefined,limits,subagents,checkedAt:Date.now(),goal,goalAvailable,
+          };
         }
-        const rawIntegrations=acp.isConnected&&typeof acp.mobileIntegrationInventory==="function"
-          ? await acp.mobileIntegrationInventory(integrationThread?.cwd,sessionId||undefined).catch(()=>undefined)
-          : undefined;
-        let mcpInventory:unknown=acp.availableMcpServers;
-        let mcpServersAvailable=acp.isConnected;
-        if(acp.isConnected&&integrationThread&&typeof acp.listMobileMcpServers==="function"){
-          try{mcpInventory=await acp.listMobileMcpServers(sessionId);mcpServersAvailable=true;}
-          catch{mcpInventory=[];mcpServersAvailable=false;}
+        if(section==="skills"){
+          const skills=integrationThread?.cwd&&acp.isConnected&&typeof acp.listMobileSkills==="function"
+            ? await acp.listMobileSkills(integrationThread.cwd).catch(()=>acp.availableSkills)
+            : acp.availableSkills;
+          const skillNameCounts=new Map<string,number>();
+          for(const skill of skills)skillNameCounts.set(skill.name,(skillNameCounts.get(skill.name)??0)+1);
+          return {skills:skills.slice(0,100).map(skill=>({name:skill.name.slice(0,160),description:skill.description?.slice(0,500),
+            enabled:skill.enabled!==false,scope:skill.scope,canToggle:(skill.scope==="user"||skill.scope==="repo")&&skillNameCounts.get(skill.name)===1,
+            invokable:skill.enabled!==false&&skillNameCounts.get(skill.name)===1}))};
         }
-        const skills=integrationThread?.cwd&&acp.isConnected&&typeof acp.listMobileSkills==="function"
-          ? await acp.listMobileSkills(integrationThread.cwd).catch(()=>acp.availableSkills)
-          : acp.availableSkills;
+        if(section==="apps"){
+          const rawApps=acp.isConnected&&integrationThread&&typeof acp.mobileAppInventory==="function"
+            ? await acp.mobileAppInventory(sessionId)
+            : acp.isConnected&&integrationThread&&typeof acp.mobileIntegrationInventory==="function"
+              ? await acp.mobileIntegrationInventory(integrationThread.cwd,sessionId)
+              : undefined;
+          const integrations=normalizeMobileIntegrations(undefined,undefined,rawApps?.apps,rawApps?.installedApps);
+          return {apps:integrations.apps,appsAvailable:integrations.appsAvailable};
+        }
+        if(section==="plugins"){
+          const rawPlugins=acp.isConnected&&integrationThread&&typeof acp.mobilePluginInventory==="function"
+            ? await acp.mobilePluginInventory(integrationThread.cwd).catch(()=>undefined)
+            : undefined;
+          const integrations=normalizeMobileIntegrations(rawPlugins?.pluginCatalog,rawPlugins?.installedPlugins,undefined,undefined);
+          return {
+            plugins:integrations.plugins,
+            pluginCatalogAvailable:integrations.pluginCatalogAvailable,
+            marketplaces:normalizeMobileMarketplaces(rawPlugins?.pluginCatalog,rawPlugins?.installedPlugins),
+          };
+        }
+        if(section==="mcp"){
+          if(!acp.isConnected||!integrationThread||typeof acp.listMobileMcpServers!=="function")return {mcpServersAvailable:false,mcpServers:[]};
+          try{
+            const mcpInventory=await acp.listMobileMcpServers(sessionId);
+            const resourceRefs=this.issueMobileMcpResourceRefs(chatId,sessionId,mcpInventory);
+            return {mcpServersAvailable:true,mcpServers:normalizeMobileMcpServers(mcpInventory).map(server=>({
+              ...server,resources:resourceRefs.get(server.name)??[],
+            }))};
+          }catch{return {mcpServersAvailable:false,mcpServers:[]};}
+        }
+        const inventoryRefresh=acp.isConnected?acp.refreshInventories().catch(()=>undefined):Promise.resolve(undefined);
+        const nativeSettingsRead=sessionId&&integrationThread&&acp.isConnected&&typeof acp.readMobileThreadSettings==="function"
+          ? acp.readMobileThreadSettings(sessionId).catch(()=>undefined)
+          : Promise.resolve(undefined);
+        const integrationRead=acp.isConnected&&typeof acp.mobileIntegrationInventory==="function"
+          ? acp.mobileIntegrationInventory(integrationThread?.cwd,sessionId||undefined).catch(()=>undefined)
+          : Promise.resolve(undefined);
+        const mcpRead=acp.isConnected&&integrationThread&&typeof acp.listMobileMcpServers==="function"
+          ? acp.listMobileMcpServers(sessionId).then(inventory=>({inventory,available:true})).catch(()=>({inventory:[],available:false}))
+          : Promise.resolve({inventory:acp.availableMcpServers,available:acp.isConnected});
+        const skillsRead=integrationThread?.cwd&&acp.isConnected&&typeof acp.listMobileSkills==="function"
+          ? acp.listMobileSkills(integrationThread.cwd).catch(()=>acp.availableSkills)
+          : Promise.resolve(acp.availableSkills);
+        const goalRead=sessionId&&acp.isConnected&&typeof acp.getThreadGoal==="function"
+          ? acp.getThreadGoal(sessionId).then(goal=>({goal,available:true})).catch(()=>({goal:undefined,available:false}))
+          : Promise.resolve({goal:undefined,available:false});
+        const emptyAccount:Awaited<ReturnType<typeof acp.accountState>>={};
+        const accountRead=acp.isConnected?acp.accountState().catch(()=>emptyAccount):Promise.resolve(emptyAccount);
+        const [,nativeSettings,rawIntegrations,mcpState,skills,goalState,account]=await Promise.all([
+          inventoryRefresh,nativeSettingsRead,integrationRead,mcpRead,skillsRead,goalRead,accountRead,
+        ]);
+        const {inventory:mcpInventory,available:mcpServersAvailable}=mcpState;
         const skillNameCounts=new Map<string,number>();
         for(const skill of skills)skillNameCounts.set(skill.name,(skillNameCounts.get(skill.name)??0)+1);
         const integrations=normalizeMobileIntegrations(rawIntegrations?.pluginCatalog,rawIntegrations?.installedPlugins,
           rawIntegrations?.apps,rawIntegrations?.installedApps);
         const resourceRefs=this.issueMobileMcpResourceRefs(chatId,sessionId,
           acp.isConnected&&integrationThread&&mcpServersAvailable?mcpInventory:[]);
-        let goal:Awaited<ReturnType<AcpClient["getThreadGoal"]>>;
-        let goalAvailable=false;
-        if(sessionId&&acp.isConnected){
-          try{goal=await acp.getThreadGoal(sessionId);goalAvailable=true;}
-          catch{goal=undefined;}
-        }
-        const account:Awaited<ReturnType<AcpClient["accountState"]>>=acp.isConnected?await acp.accountState().catch(()=>({})):{};
+        const {goal,available:goalAvailable}=goalState;
         const normalizeWindow=(value:CodexRateLimitWindow|null|undefined)=>value&&Number.isFinite(value.usedPercent)?{
           usedPercent:Math.max(0,Math.min(100,value.usedPercent)),
           windowDurationMins:typeof value.windowDurationMins==="number"&&Number.isFinite(value.windowDurationMins)?value.windowDurationMins:undefined,

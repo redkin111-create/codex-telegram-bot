@@ -450,7 +450,7 @@ export function Conversation({
           {fullHistoryLoading ? "Загружаю…" : `Показать старые совпадения (ещё ${fullHistoryResults.nextOffset})`}
         </Button>}
       </div>}
-      <p className="sr-only" role="status">{streamConnected ? "Поток Codex подключён" : "Поток Codex переподключается"}</p>
+      <p className="sr-only" role="status">{streamConnected ? "Автообновление Codex активно" : "Автообновление Codex недоступно"}</p>
     </header>
 
     <div className="min-h-0 flex-1 overflow-y-auto px-3 py-5 sm:px-5 md:px-8">

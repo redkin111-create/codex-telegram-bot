@@ -51,9 +51,29 @@ export function manageAccount(action: MobileAccountAction, csrfToken: string) {
   });
 }
 
-export function readCapabilities(sessionId: string) {
-  const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
-  return jsonRequest<MobileCapabilities>(`/api/capabilities${query}`);
+export function readCapabilities(sessionId: string, section = "core") {
+  const query = new URLSearchParams({ sessionId, section });
+  return jsonRequest<MobileCapabilities>(`/api/capabilities?${query}`);
+}
+
+export function readSkillInventory(sessionId: string) {
+  const query = new URLSearchParams({ sessionId, section: "skills" });
+  return jsonRequest<{ skills: MobileCapabilities["skills"] }>(`/api/capabilities?${query}`);
+}
+
+export function readAppInventory(sessionId: string) {
+  const query = new URLSearchParams({ sessionId, section: "apps" });
+  return jsonRequest<Pick<MobileCapabilities, "apps" | "appsAvailable">>(`/api/capabilities?${query}`);
+}
+
+export function readPluginInventory(sessionId: string) {
+  const query = new URLSearchParams({ sessionId, section: "plugins" });
+  return jsonRequest<Pick<MobileCapabilities, "plugins" | "pluginCatalogAvailable" | "marketplaces">>(`/api/capabilities?${query}`);
+}
+
+export function readMcpInventory(sessionId: string) {
+  const query = new URLSearchParams({ sessionId, section: "mcp" });
+  return jsonRequest<Pick<MobileCapabilities, "mcpServers" | "mcpServersAvailable">>(`/api/capabilities?${query}`);
 }
 
 export function readApprovals(sessionId: string) {
