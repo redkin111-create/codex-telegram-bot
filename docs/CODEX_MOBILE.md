@@ -159,8 +159,17 @@ claim to display the new summary. See the [app-server item schema](https://githu
 
 ## Verification checkpoint (2026-10-20)
 
-- Root TypeScript check: passed; full root test suite: 403/403 passed.
+- Root TypeScript check: passed; full root test suite: 407/407 passed.
 - Mobile production build and its TypeScript check: passed.
+- Mobile prompt routing now recognizes a `$skill` marker on its own line after
+  introductory text. The Mobile send integration test confirms
+  `$browser-skill` reaches the shared runtime as a selected skill; the ACP test
+  verifies that Codex resolves it to an explicit skill input using its own
+  current inventory. Pixel 7 Browser Skill checks used the isolated fixture;
+  no test prompt was sent to a live Codex session.
+- After loading the current branch, the service listened on `127.0.0.1:3301`
+  and `127.0.0.1:3302`; the existing Funnel routes still pointed `443` to
+  `3301` and `8443` to `3302`. No Tailscale setting changed.
 - Browser skill on the live public Mobile page at Pixel 7 size (412×915): ran
   `Get-Location` from the project terminal and confirmed the Windows path keeps
   Cyrillic characters; ran `cmd /d /c exit 7` and confirmed the UI reports exit
