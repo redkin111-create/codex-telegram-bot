@@ -1,6 +1,8 @@
+import { normalizeMobileMcpInputSchema, type MobileMcpInputSchema } from "../acp/mobile-mcp.js";
+
 type JsonRecord = Record<string, unknown>;
 
-import { normalizeMobileMcpInputSchema, type MobileMcpInputSchema } from "../acp/mobile-mcp.js";
+const MOBILE_PLUGIN_INVENTORY_LIMIT = 1000;
 
 export interface MobilePluginSummary {
   id: string;
@@ -107,7 +109,7 @@ function flattenPlugins(value: unknown, installedIds: Set<string>): MobilePlugin
     const marketplaceName = safeText(marketplace?.name, 120);
     if (!marketplaceName) continue;
     for (const rawPlugin of list(marketplace?.plugins)) {
-      if (result.length >= 300) return result;
+      if (result.length >= MOBILE_PLUGIN_INVENTORY_LIMIT) return result;
       const plugin = record(rawPlugin);
       const id = safeText(plugin?.id, 200);
       const name = safeText(plugin?.name, 160);
@@ -207,7 +209,7 @@ export function normalizeMobileIntegrations(
   return {
     pluginCatalogAvailable: Array.isArray(pluginCatalogRecord?.marketplaces) || Array.isArray(installedPluginCatalogRecord?.marketplaces),
     appsAvailable: Array.isArray(appCatalogRecord?.data) || appsInstalled.size > 0,
-    plugins: [...plugins.values()].slice(0, 300),
+    plugins: [...plugins.values()].slice(0, MOBILE_PLUGIN_INVENTORY_LIMIT),
     apps: [...appsById.values()].slice(0, 200),
   };
 }

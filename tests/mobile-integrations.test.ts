@@ -67,6 +67,28 @@ test("mobile integration inventory drops local paths and unsafe URLs while keepi
   assert.doesNotMatch(JSON.stringify(result), /C:\\\\Users|C:\\\\secret|private\\\\plugin|track\.invalid|plugin\.git/);
 });
 
+test("mobile integration inventory keeps every plugin in a 500-entry marketplace", () => {
+  const plugins = Array.from({ length: 500 }, (_, index) => ({
+    id: `plugin-${index + 1}@large`,
+    name: `Plugin ${index + 1}`,
+    source: { type: "remote" },
+    installed: false,
+    enabled: true,
+    installPolicy: "AVAILABLE",
+    availability: "AVAILABLE",
+  }));
+
+  const result = normalizeMobileIntegrations(
+    { marketplaces: [{ name: "large", path: "C:\\fixture\\catalog.json", plugins }] },
+    undefined,
+    undefined,
+    undefined,
+  );
+
+  assert.equal(result.plugins.length, 500);
+  assert.equal(result.plugins[499]?.id, "plugin-500@large");
+});
+
 test("remote plugin installation only resolves an available catalog entry without a local path", () => {
   const catalog = { marketplaces: [{ name: "official", path: null, plugins: [
     { id: "safe@official", name: "safe", source: { type: "remote" }, installed: false,

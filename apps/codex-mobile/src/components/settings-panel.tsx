@@ -3,6 +3,7 @@ import { Activity, Bot, ChevronDown, CircleHelp, Clock3, Download, ExternalLink,
 import { completeMcpOAuthCallback, readAppInventory, readCapabilities, readMcpInventory, readPluginInventory, readSkillInventory } from "../api.js";
 import { isCapabilitySectionResponse } from "../capability-compat.js";
 import { loadCapabilitySections } from "../lib/capability-loading.js";
+import { filterPluginCatalog, mobilePluginPageSize, paginatePluginCatalog } from "../lib/plugin-catalog.js";
 import { AccountsPanel } from "./accounts-panel.js";
 import { McpConfigPanel } from "./mcp-config-panel.js";
 import type { MobileCapabilities, MobileOperation } from "../types.js";
@@ -82,6 +83,8 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
   const [goalBudget, setGoalBudget] = useState("");
   const [pluginAction, setPluginAction] = useState<PluginAction>();
   const [pluginNotice, setPluginNotice] = useState<PluginInstallNotice>();
+  const [pluginSearch, setPluginSearch] = useState("");
+  const [pluginPage, setPluginPage] = useState(1);
   const [skillAction, setSkillAction] = useState<SkillAction>();
   const [marketplaceSource, setMarketplaceSource] = useState("");
   const [marketplaceRef, setMarketplaceRef] = useState("");
@@ -390,6 +393,8 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
   const usable = Boolean(capabilities?.online && connected && !saving);
   const selectedPlugin = capabilities?.plugins.find((entry) => entry.id === pluginAction?.pluginId);
   const selectedSkill = capabilities?.skills.find((entry) => entry.name === skillAction?.name);
+  const filteredPlugins = filterPluginCatalog(capabilities?.plugins ?? [], pluginSearch);
+  const pluginPageData = paginatePluginCatalog(filteredPlugins, pluginPage, mobilePluginPageSize);
 
   return <div className="fixed inset-0 z-50 flex justify-end bg-black/65" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section role="dialog" aria-modal="true" aria-labelledby="mobile-settings-title" className="safe-area-top safe-area-bottom flex h-full max-h-[100svh] w-full max-w-xl flex-col border-l border-border bg-background shadow-soft">
@@ -469,13 +474,24 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
           <McpConfigPanel sessionId={sessionId} canChange={capabilities.online} onOperation={onOperation} onRestarted={reload} />
           <Card className="space-y-3 p-4">
             <h3 className="flex items-center gap-2 text-sm font-semibold"><Puzzle size={16} className="text-accent" /> Плагины Codex</h3>
-            {!inventoryLoaded.plugins && !capabilities.plugins.length ? <p role="status" className="text-xs text-muted">Загружаю каталог плагинов…</p> : !capabilities.pluginCatalogAvailable ? <p className="text-xs leading-relaxed text-muted">Эта версия Codex не предоставляет каталог плагинов.</p> : capabilities.plugins.length ? <ul className="space-y-3">{capabilities.plugins.slice(0, 80).map((plugin) => <li key={`${plugin.marketplace}:${plugin.id}`} className="rounded-xl border border-border bg-[#111613] p-3">
+            {!inventoryLoaded.plugins && !capabilities.plugins.length ? <p role="status" className="text-xs text-muted">Загружаю каталог плагинов…</p> : !capabilities.pluginCatalogAvailable ? <p className="text-xs leading-relaxed text-muted">Эта версия Codex не предоставляет каталог плагинов.</p> : capabilities.plugins.length ? <>
+              <label className="block space-y-1.5">
+                <span className="sr-only">Поиск плагинов</span>
+                <Input aria-label="Поиск плагинов" value={pluginSearch} onChange={(event) => { setPluginSearch(event.target.value); setPluginPage(1); }} placeholder="Название, описание или каталог" maxLength={120} />
+              </label>
+              {pluginPageData.total ? <ul className="space-y-3">{pluginPageData.items.map((plugin) => <li key={`${plugin.marketplace}:${plugin.id}`} className="rounded-xl border border-border bg-[#111613] p-3">
               <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{plugin.name}</p><p className="mt-1 truncate text-[11px] text-muted">{plugin.marketplace}</p></div><Badge>{plugin.installed ? plugin.enabled ? "Установлен" : "Отключён" : plugin.installable ? "Доступен" : "Недоступен"}</Badge></div>
               {plugin.description && <p className="mt-2 text-xs leading-relaxed text-muted">{plugin.description}</p>}
               {plugin.mustShowInstallationInterstitial && plugin.capabilities.length > 0 && <p className="mt-2 text-[11px] text-muted">Возможности: {plugin.capabilities.join(", ")}</p>}
               <div className="mt-3 flex justify-end gap-2">{plugin.installed && plugin.canToggle && <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label={`${plugin.enabled ? "Отключить" : "Включить"} плагин ${plugin.name}`} disabled={!usable} onClick={() => setPluginAction({ kind: plugin.enabled ? "disable" : "enable", pluginId: plugin.id })}>{plugin.enabled ? <Pause size={14} /> : <Play size={14} />}{plugin.enabled ? "Отключить" : "Включить"}</Button>}{plugin.installed ? <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label={`Удалить плагин ${plugin.name}`} disabled={!usable} onClick={() => setPluginAction({ kind: "uninstall", pluginId: plugin.id })}><Trash2 size={14} /> Удалить</Button>
                 : plugin.installable ? <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label={`Установить плагин ${plugin.name}`} disabled={!usable} onClick={() => setPluginAction({ kind: "install", pluginId: plugin.id })}><Download size={14} /> Установить</Button> : null}</div>
-            </li>)}</ul> : <p className="text-xs text-muted">Каталог плагинов пуст.</p>}
+            </li>)}</ul> : <p className="text-xs text-muted">Плагины по этому запросу не найдены.</p>}
+              <div className="flex items-center justify-between gap-2" aria-label="Страницы каталога плагинов">
+                <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label="Предыдущая страница плагинов" disabled={pluginPageData.page <= 1} onClick={() => setPluginPage((page) => Math.max(1, page - 1))}>Назад</Button>
+                <p role="status" className="text-center text-[11px] text-muted">{pluginPageData.total} плагинов · {pluginPageData.page}/{pluginPageData.pageCount}</p>
+                <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label="Следующая страница плагинов" disabled={pluginPageData.page >= pluginPageData.pageCount} onClick={() => setPluginPage((page) => Math.min(pluginPageData.pageCount, page + 1))}>Дальше</Button>
+              </div>
+            </> : <p className="text-xs text-muted">Каталог плагинов пуст.</p>}
             <p className="text-[11px] leading-relaxed text-muted">Установка и удаление меняют настройки Codex на этом компьютере. Включение и отключение меняет глобальную настройку пользователя и может повлиять на другие проекты и сеансы. Политика администратора имеет приоритет.</p>
             {pluginNotice && <div role="status" className="rounded-xl border border-border bg-[#111613] p-3 text-xs leading-relaxed">
               {pluginNotice.length ? <><p className="font-semibold">Чтобы завершить настройку плагина, подключите сервис:</p><ul className="mt-2 space-y-2">{pluginNotice.map((app) => <li key={app.name}>{app.installUrl && safeLinkHost(app.installUrl) ? <a className="inline-flex items-center gap-1 text-accent underline" href={app.installUrl} target="_blank" rel="noopener noreferrer">{app.name} · {safeLinkHost(app.installUrl)}<ExternalLink size={12} /></a> : <span>{app.name} · откройте Codex на компьютере для авторизации</span>}</li>)}</ul></> : <p>Изменение плагинов передано Codex.</p>}
