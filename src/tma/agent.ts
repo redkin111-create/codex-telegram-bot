@@ -209,6 +209,10 @@ export class MiniAppAgent {
     expiresAt: number;
     value: Promise<CodexThreadSummary[]>;
   }>();
+  private readonly mobileProjectCatalogues = new Map<number, {
+    expiresAt: number;
+    value: Promise<CodexProjectSummary[]>;
+  }>();
   private readonly archivedThreads = new Map<number,Map<string,CodexThreadSummary>>();
   private readonly ownThreads = new Map<string,CodexThreadSummary>();
   /** Stable last-known authorized session references, eliminating an ACP
@@ -391,6 +395,65 @@ export class MiniAppAgent {
     try{return await value;}
     catch(error){this.archivedCatalogues.delete(userId);throw error;}
   }
+  private async mobileProjectsFor(userId:number):Promise<CodexProjectSummary[]>{
+    const cached=this.mobileProjectCatalogues.get(userId);
+    if(cached&&cached.expiresAt>Date.now())return cached.value;
+    const value=this.deps.acp.listProjects().catch(()=>[] as CodexProjectSummary[]);
+    this.mobileProjectCatalogues.set(userId,{expiresAt:Date.now()+30_000,value});
+    return value;
+  }
+  private async mobileProject(path:string,userId:number):Promise<{name:string;cwd:string}>{
+    const projects=await this.mobileProjectsFor(userId);
+    const matched=projects.find(project=>project.roots?.some(root=>(typeof root==="string"?root:root.path??root.root)===path));
+    const known=[...(this.knownThreads.get(userId)?.values()??[]),...(this.archivedThreads.get(userId)?.values()??[])].some(thread=>thread.cwd===path);
+    const allowed=this.deps.cfg.projectRoots.includes(path)||path===this.deps.cfg.workspace;
+    if(!matched&&!known&&!allowed)throw new Error("Папка проекта не разрешена");
+    return {name:matched?.name||basename(path),cwd:path};
+  }
+  private async mobileThreadPage(userId:number,options:{archived:boolean;cursor?:string;cwd?:string}):Promise<{threads:CodexThreadSummary[];nextCursor?:string}>{
+    const {archived,cursor,cwd}=options;
+    // Older TMA adapters and test doubles expose only listThreads/listAllThreads.
+    // Keep those callers working; the real AcpClient uses the bounded native page.
+    const page=typeof this.deps.acp.listThreadsPage==="function"
+      ? await this.deps.acp.listThreadsPage({
+        limit:100,sortKey:"recency_at",sortDirection:"desc",
+        sourceKinds:["cli","vscode","appServer"],
+        ...(archived?{archived:true}:{}),...(cursor?{cursor}:{}),...(cwd?{cwd}:{}),
+      })
+      : {threads:(archived?await this.archivedCatalogue(userId):(await this.catalogue(userId)).threads).slice(0,500)};
+    const visible=page.threads.filter(thread=>{
+      const owner=this.telegramSessions.getOwner(thread.id);
+      return !thread.ephemeral&&(!owner||owner.chatId===userId)&&["cli","vscode","appServer"].includes(threadSourceKind(thread)??"");
+    });
+    const remembered=archived?this.archivedThreads.get(userId)??new Map<string,CodexThreadSummary>():this.knownThreads.get(userId)??new Map<string,CodexThreadSummary>();
+    if(!cursor&&!archived){
+      for(const thread of remembered.values()){
+        if((!cwd||thread.cwd===cwd)&&!visible.some(current=>current.id===thread.id))visible.unshift(thread);
+      }
+      for(const thread of this.ownThreads.values()){
+        const owner=this.telegramSessions.getOwner(thread.id)?.chatId;
+        if((owner===userId||remembered.has(thread.id))&&(!cwd||thread.cwd===cwd)&&!visible.some(current=>current.id===thread.id))visible.unshift(thread);
+      }
+    }
+    for(const thread of [...visible].reverse()){
+      remembered.delete(thread.id);
+      remembered.set(thread.id,thread);
+      if(archived)this.knownThreads.get(userId)?.delete(thread.id);
+      else this.archivedThreads.get(userId)?.delete(thread.id);
+    }
+    while(remembered.size>500){
+      const oldest=remembered.keys().next().value;
+      if(oldest===undefined)break;
+      if(!archived&&oldest===this.selected.get(userId)){
+        const selected=remembered.get(oldest);
+        remembered.delete(oldest);
+        if(selected)remembered.set(oldest,selected);
+      }else remembered.delete(oldest);
+    }
+    if(archived)this.archivedThreads.set(userId,remembered);
+    else this.knownThreads.set(userId,remembered);
+    return {threads:visible,nextCursor:page.nextCursor};
+  }
   private async thread(id:string,userId:number):Promise<CodexThreadSummary>{
     const registered=this.telegramSessions.getOwner(id);
     if(registered && registered.chatId!==userId)throw new Error("Доступ к переписке запрещён");
@@ -569,18 +632,39 @@ export class MiniAppAgent {
         return {sessions,nextCursor:page.nextCursor};
       }
       case "listMoreThreads":{
-        const offset=args.offset;
-        if(typeof offset!=="number"||!Number.isSafeInteger(offset)||offset<0||offset>100_000)throw new Error("Неверное место продолжения списка сеансов");
+        const archived=args.archived===true;
+        // Keep older already-open web clients working during a rolling restart.
+        if(args.cursor===undefined&&args.offset!==undefined){
+          const offset=args.offset;
+          if(typeof offset!=="number"||!Number.isSafeInteger(offset)||offset<0||offset>100_000)throw new Error("Неверное место продолжения списка сеансов");
+          let legacyCwd:string|undefined;
+          if(args.cwd!==undefined){
+            if(typeof args.cwd!=="string"||args.cwd.length>700)throw new Error("Неверная папка проекта для списка сеансов");
+            if(args.cwd.trim())legacyCwd=(await this.project(args.cwd.trim(),chatId)).cwd;
+          }
+          const legacyThreads=archived?await this.archivedCatalogue(chatId):(await this.catalogue(chatId)).threads;
+          const legacyVisible=legacyThreads.filter(thread=>!legacyCwd||thread.cwd===legacyCwd);
+          const legacyPage=legacyVisible.slice(offset,offset+100);
+          const legacySessions=legacyPage.map(thread=>{
+            const current=archived?undefined:registry.runtimeForSession(chatId,thread.id);
+            return {
+              id:thread.id,title:(thread.name||thread.preview||(archived?"Без названия":"Новый сеанс")).slice(0,180),cwd:thread.cwd||"",
+              updatedAt:thread.recencyAt||thread.updatedAt||thread.createdAt||0,
+              source:threadSourceKind(thread)||"unknown",archived,busy:Boolean(current?.isBusy),
+              queue:current?.queueLength||0,liveStatus:"unknown",liveLabel:"Статус неизвестен",section:mobileThreadSection(thread.section),
+            };
+          });
+          const nextOffset=offset+legacyPage.length;
+          return {sessions:legacySessions,...(nextOffset<legacyVisible.length?{nextOffset}:{})};
+        }
+        const cursor=args.cursor===undefined?undefined:argumentString(args,"cursor",2048);
         let cwd:string|undefined;
         if(args.cwd!==undefined){
           if(typeof args.cwd!=="string"||args.cwd.length>700)throw new Error("Неверная папка проекта для списка сеансов");
-          if(args.cwd.trim())cwd=(await this.project(args.cwd.trim(),chatId)).cwd;
+          if(args.cwd.trim())cwd=(await this.mobileProject(args.cwd.trim(),chatId)).cwd;
         }
-        const archived=args.archived===true;
-        const threads=archived?await this.archivedCatalogue(chatId):(await this.catalogue(chatId)).threads;
-        const visible=threads.filter(thread=>!cwd||thread.cwd===cwd);
-        const page=visible.slice(offset,offset+100);
-        const sessions=page.map(thread=>{
+        const page=await this.mobileThreadPage(chatId,{archived,cursor,cwd});
+        const sessions=page.threads.map(thread=>{
           const current=archived?undefined:registry.runtimeForSession(chatId,thread.id);
           return {
             id:thread.id,title:(thread.name||thread.preview||(archived?"Без названия":"Новый сеанс")).slice(0,180),cwd:thread.cwd||"",
@@ -589,8 +673,7 @@ export class MiniAppAgent {
             queue:current?.queueLength||0,liveStatus:"unknown",liveLabel:"Статус неизвестен",section:mobileThreadSection(thread.section),
           };
         });
-        const nextOffset=offset+page.length;
-        return {sessions,...(nextOffset<visible.length?{nextOffset}:{})};
+        return {sessions,...(page.nextCursor?{nextCursor:page.nextCursor}:{})};
       }
       case "searchHistory":{
         await this.thread(sessionId,chatId);
@@ -2302,21 +2385,17 @@ export class MiniAppAgent {
         };
       }
       case "snapshot":{
-        const {projects,threads}=await this.catalogue(chatId);
-        let archivedSessions:CodexThreadSummary[]=[];
+        const [projects,page]=await Promise.all([
+          this.mobileProjectsFor(chatId),
+          this.mobileThreadPage(chatId,{archived:false}),
+        ]);
+        const threads=page.threads;
         let sections:Awaited<ReturnType<AcpClient["listThreadSections"]>>=[];
         let sectionsAvailable=false;
-        let archiveAvailable=acp.isConnected;
+        const archiveAvailable=acp.isConnected;
         if(acp.isConnected&&typeof acp.listThreadSections==="function"){
           try{sections=await acp.listThreadSections();sectionsAvailable=true;}
           catch(error){log.warn("Could not read Codex thread sections:",(error as Error).message);}
-        }
-        if(archiveAvailable){
-          try{archivedSessions=await this.archivedCatalogue(chatId);}
-          catch(error){
-            archiveAvailable=false;
-            log.warn("Could not read Codex archive:",(error as Error).message);
-          }
         }
         const controlled=controller.list();
         const active=registry.get(chatId);
@@ -2330,25 +2409,23 @@ export class MiniAppAgent {
         for(const t of threads)if(t.cwd&&!projectMap.has(t.cwd))projectMap.set(t.cwd,basename(t.cwd));
         for(const path of cfg.projectRoots)if(!projectMap.has(path))projectMap.set(path,basename(path));
         if(!projectMap.size)projectMap.set(cfg.workspace,basename(cfg.workspace));
+        const sessions=threads.map(t=>({
+          id:t.id,title:(t.name||t.preview||"Новый сеанс").slice(0,180),
+          cwd:t.cwd||"",updatedAt:t.recencyAt||t.updatedAt||t.createdAt||0,
+          source:threadSourceKind(t)||"unknown",
+          archived:false,
+          ephemeral:t.ephemeral===true,
+          parentThreadId:t.parentThreadId,
+          section:mobileThreadSection(t.section),
+          busy:controlled.some(c=>c.sessionId===t.id&&c.busy),
+          queue:controlled.find(c=>c.sessionId===t.id)?.queueLength||0,
+          progress:controlled.find(c=>c.sessionId===t.id)?.progress,
+        }));
         return {
           projects:[...projectMap].map(([path,name])=>({path,name})),
-          sessions:threads.slice(0,500).map(t=>({
-            id:t.id,title:(t.name||t.preview||"Новый сеанс").slice(0,180),
-            cwd:t.cwd||"",updatedAt:t.recencyAt||t.updatedAt||t.createdAt||0,
-            source:threadSourceKind(t)||"unknown",
-            archived:false,
-            ephemeral:t.ephemeral===true,
-            parentThreadId:t.parentThreadId,
-            section:mobileThreadSection(t.section),
-            busy:controlled.some(c=>c.sessionId===t.id&&c.busy),
-            queue:controlled.find(c=>c.sessionId===t.id)?.queueLength||0,
-            progress:controlled.find(c=>c.sessionId===t.id)?.progress,
-          })),
-          archivedSessions:archiveAvailable?archivedSessions.slice(0,500).map(t=>({
-            id:t.id,title:(t.name||t.preview||"Без названия").slice(0,180),
-            cwd:t.cwd||"",updatedAt:t.recencyAt||t.updatedAt||t.createdAt||0,
-            source:threadSourceKind(t)||"unknown",archived:true,busy:false,queue:0,section:mobileThreadSection(t.section),
-          })):[],
+          sessions,
+          sessionsNextCursor:page.nextCursor,
+          archivedSessions:[],
           sectionsAvailable,
           sections:sectionsAvailable?[
             {id:CODEX_PINNED_THREAD_SECTION_ID,name:"Закреплённые",builtIn:true},

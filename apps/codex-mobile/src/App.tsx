@@ -4,6 +4,7 @@ import {
   asLiveEvent, logout, MobileApiError, openEventStream, parseSseBlock, readActivity, readApprovals, readElicitations,
   readCapabilities, readHistory, readSession, readSnapshot, removeAttachment, resolveApproval, resolveElicitation, runOperation, uploadAttachment,
 } from "./api.js";
+import { coalesceInFlight } from "./single-flight.js";
 import { ApprovalPanel } from "./components/approval-panel.js";
 import { ElicitationPanel } from "./components/elicitation-panel.js";
 import { Conversation, type FollowUpMode, type PromptImage } from "./components/conversation.js";
@@ -22,7 +23,7 @@ import { Button } from "./components/ui/primitives.js";
 const TerminalPanel = lazy(() => import("./components/terminal-panel.js").then((module) => ({ default: module.TerminalPanel })));
 
 const emptyQueue: MobileQueue = { items: [], busy: false, paused: false };
-type SessionPage = { sessions: MobileSession[]; nextOffset?: number; loaded: boolean; loading: boolean };
+type SessionPage = { sessions: MobileSession[]; nextCursor?: string; loaded: boolean; loading: boolean };
 
 export default function App() {
   const [device, setDevice] = useState<MobileDevice>();
@@ -70,6 +71,7 @@ export default function App() {
   const pendingSend = useRef<{ fingerprint: string; requestId: string } | undefined>(undefined);
   const searchGeneration = useRef(0);
   const sessionPageRequests = useRef(new Set<string>());
+  const snapshotRequest = useRef<Promise<void> | undefined>(undefined);
 
   const expireSession = useCallback(() => {
     setDevice(undefined);
@@ -116,16 +118,18 @@ export default function App() {
     catch (cause) { handleApiError(cause); throw cause; }
   }, [selectedId, handleApiError]);
 
-  const refreshSnapshot = useCallback(async (showSpinner = false) => {
-    if (showSpinner) setRefreshing(true);
-    try {
-      const next = await readSnapshot();
-      setSnapshot(next);
-      setSelectedProject((current) => current || next.projects[0]?.path || "");
-      setSelectedId((current) => current || next.selected || "");
-      setError("");
-    } catch (cause) { handleApiError(cause); }
-    finally { if (showSpinner) setRefreshing(false); }
+  const refreshSnapshot = useCallback((showSpinner = false) => {
+    if (showSpinner && !snapshotRequest.current) setRefreshing(true);
+    return coalesceInFlight(snapshotRequest, async () => {
+      try {
+        const next = await readSnapshot();
+        setSnapshot(next);
+        setSelectedProject((current) => current || next.projects[0]?.path || "");
+        setSelectedId((current) => current || next.selected || "");
+        setError("");
+      } catch (cause) { handleApiError(cause); }
+      finally { if (showSpinner) setRefreshing(false); }
+    });
   }, [handleApiError]);
 
   useEffect(() => {
@@ -143,7 +147,7 @@ export default function App() {
   useEffect(() => {
     if (!device) return;
     void refreshSnapshot();
-    const timer = window.setInterval(() => { void refreshSnapshot(); }, 5000);
+    const timer = window.setInterval(() => { void refreshSnapshot(); }, 30_000);
     return () => window.clearInterval(timer);
   }, [device, refreshSnapshot]);
 
@@ -190,7 +194,8 @@ export default function App() {
       if (current) setElicitationOpen(true);
     }).catch(handleApiError);
     let alive = true;
-    const load = async () => {
+    const historyRequest: { current?: Promise<void> } = {};
+    const load = () => coalesceInFlight(historyRequest, async () => {
       setLoading(true);
       try {
         const result = await readHistory(selectedId, includeTools);
@@ -207,7 +212,7 @@ export default function App() {
           if (alive) setQueue(nextQueue);
         } catch (cause) { if (alive) handleApiError(cause); }
       } else setQueue(emptyQueue);
-    };
+    });
     void load();
     const timer = window.setInterval(() => { void load(); }, 5000);
     return () => { alive = false; window.clearInterval(timer); };
@@ -366,13 +371,13 @@ export default function App() {
   async function loadMoreSessions() {
     if (!device || !snapshot || search.trim().length >= 2 || sessionPageRequests.current.has(sessionPageKey)) return;
     const page = sessionPages[sessionPageKey];
-    if (page?.loaded && page.nextOffset === undefined) return;
-    const offset = page?.nextOffset ?? baseProjectSessions.length + (page?.sessions.length ?? 0);
+    if (page?.loaded && page.nextCursor === undefined) return;
+    const cursor = page?.nextCursor ?? (!showArchived && !selectedProject ? snapshot.sessionsNextCursor : undefined);
     sessionPageRequests.current.add(sessionPageKey);
     setSessionPages((current) => ({ ...current, [sessionPageKey]: { ...(current[sessionPageKey] ?? { sessions: [], loaded: false }), loading: true } }));
     try {
-      const result = await operation<{ sessions: MobileSession[]; nextOffset?: number }>("listMoreThreads", {
-        offset, archived: showArchived, ...(selectedProject ? { cwd: selectedProject } : {}),
+      const result = await operation<{ sessions: MobileSession[]; nextCursor?: string }>("listMoreThreads", {
+        ...(cursor ? { cursor } : {}), archived: showArchived, ...(selectedProject ? { cwd: selectedProject } : {}),
       });
       setSessionPages((current) => {
         const previous = current[sessionPageKey] ?? { sessions: [], loaded: false, loading: false };
@@ -381,7 +386,7 @@ export default function App() {
           ...current,
           [sessionPageKey]: {
             sessions: [...previous.sessions, ...result.sessions.filter((session) => !known.has(session.id))],
-            nextOffset: result.nextOffset,
+            nextCursor: result.nextCursor,
             loaded: true,
             loading: false,
           },
@@ -649,7 +654,9 @@ export default function App() {
       <Workspace snapshot={snapshot} selectedProject={selectedProject} search={search} searchResults={searchResults}
         searchCursor={searchCursor} searchLoading={searchLoading} searchMoreLoading={searchMoreLoading}
         extraSessions={currentSessionPage?.sessions ?? []} sessionsMoreLoading={currentSessionPage?.loading ?? false}
-        sessionsHasMore={!currentSessionPage?.loaded || currentSessionPage.nextOffset !== undefined}
+        sessionsHasMore={currentSessionPage?.loaded
+          ? currentSessionPage.nextCursor !== undefined
+          : showArchived ? Boolean(snapshot?.archiveAvailable) : Boolean(snapshot?.sessionsNextCursor)}
         onLoadMoreSessions={() => void loadMoreSessions()}
         showArchived={showArchived} onArchivedChange={setShowArchived} onLoadMore={() => void loadMoreSearch()} selectedId={selectedId}
         open={workspaceOpen} connectedIds={connectedIds} onProjectChange={setSelectedProject} onSearchChange={setSearch}

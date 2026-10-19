@@ -70,6 +70,7 @@ export interface MobileSession {
 export interface MobileSnapshot {
   projects: MobileProject[];
   sessions: MobileSession[];
+  sessionsNextCursor?: string;
   archivedSessions?: MobileSession[];
   archiveAvailable?: boolean;
   sections?: MobileThreadSection[];
