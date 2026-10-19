@@ -30,3 +30,20 @@ test("mobile screenshot gallery renders one page at a time", () => {
   assert.match(html, /Показать более старые/);
   assert.doesNotMatch(html, /Показать более новые/);
 });
+
+test("mobile screenshot gallery collapses Windows paths that differ only by repeated separators", () => {
+  const paths = [
+    "C:/Users/Owner/Remote/capture.png",
+    "C://Users//Owner//Remote//capture.png",
+    "C:////Users////Owner////Remote////capture.png",
+  ];
+  const images = paths.map((path, index) => ({ path, name: "capture.png", mtimeMs: index, size: 68 }));
+  const html = renderToStaticMarkup(React.createElement(ScreenshotsGallery, {
+    sessionId: "11111111-1111-4111-8111-111111111111",
+    images,
+    onLoadOlder: async () => ({ images: [] }),
+    onOpenImage: () => undefined,
+  }));
+
+  assert.equal((html.match(/aria-label="Открыть скриншот capture\.png"/g) ?? []).length, 1);
+});

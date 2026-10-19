@@ -6,6 +6,14 @@ import { Button } from "./ui/primitives.js";
 
 const SCREENSHOTS_PER_PAGE = 80;
 
+function screenshotIdentity(path: string): string {
+  const drivePath = /^[a-z]:[\\/]/i.test(path);
+  const uncPath = /^[\\/]{2}[^\\/]/.test(path);
+  const normalized = path.replace(/[\\/]+/g, "/");
+  const withUncRoot = uncPath ? `/${normalized.replace(/^\/+/, "")}` : normalized;
+  return drivePath ? withUncRoot.toLocaleLowerCase("en-US") : withUncRoot;
+}
+
 export function ScreenshotsGallery({
   sessionId,
   images,
@@ -30,7 +38,7 @@ export function ScreenshotsGallery({
 
   const pages = useMemo(() => {
     const recent = new Map<string, ScreenshotRef>();
-    for (const image of images) recent.set(image.path, image);
+    for (const image of images) recent.set(screenshotIdentity(image.path), image);
     const sorted = [...recent.values()].sort((left, right) => left.mtimeMs - right.mtimeMs || left.path.localeCompare(right.path));
     const result: ScreenshotRef[][] = [];
     for (let end = sorted.length; end > 0; end -= SCREENSHOTS_PER_PAGE) {
@@ -39,8 +47,9 @@ export function ScreenshotsGallery({
     const seen = new Set(recent.keys());
     for (const page of olderPages) {
       const unique = page.filter((image) => {
-        if (seen.has(image.path)) return false;
-        seen.add(image.path);
+        const identity = screenshotIdentity(image.path);
+        if (seen.has(identity)) return false;
+        seen.add(identity);
         return true;
       });
       if (unique.length) result.push(unique);
@@ -86,10 +95,11 @@ export function ScreenshotsGallery({
     try {
       const page = await onLoadOlder(targetSessionId, cursor);
       if (request !== requestId.current || activeSessionId.current !== targetSessionId) return;
-      const known = new Set([...images.map((image) => image.path), ...olderPages.flatMap((items) => items.map((image) => image.path))]);
+      const known = new Set([...images.map((image) => screenshotIdentity(image.path)), ...olderPages.flatMap((items) => items.map((image) => screenshotIdentity(image.path)))]);
       const unique = page.images.filter((image) => {
-        if (known.has(image.path)) return false;
-        known.add(image.path);
+        const identity = screenshotIdentity(image.path);
+        if (known.has(identity)) return false;
+        known.add(identity);
         return true;
       });
       if (unique.length) {
@@ -121,7 +131,7 @@ export function ScreenshotsGallery({
       </div>
     </div>
     {imageCount > 0 && <p className="mb-2 text-[11px] text-muted">Страница {pageOffset + 1} из {pages.length}{complete ? "" : "+"} · {visibleImages.length} снимков</p>}
-    {visibleImages.length > 0 ? <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">{visibleImages.map((image) => <button type="button" key={image.path} onClick={() => onOpenImage({ path: image.path, name: image.name })} aria-label={"Открыть скриншот " + image.name} className="overflow-hidden rounded-xl border border-border bg-panel text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"><img src={imageUrl(sessionId, image.path)} alt={image.name} loading="lazy" className="aspect-video w-full object-cover" /><span className="block truncate px-2 py-1.5 text-xs text-muted">{image.name}</span></button>)}</div> : complete ? <p className="rounded-xl border border-dashed border-border p-4 text-center text-sm text-muted">В этом сеансе скриншоты не найдены.</p> : null}
+    {visibleImages.length > 0 ? <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">{visibleImages.map((image) => <button type="button" key={screenshotIdentity(image.path)} onClick={() => onOpenImage({ path: image.path, name: image.name })} aria-label={"Открыть скриншот " + image.name} className="overflow-hidden rounded-xl border border-border bg-panel text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"><img src={imageUrl(sessionId, image.path)} alt={image.name} loading="lazy" className="aspect-video w-full object-cover" /><span className="block truncate px-2 py-1.5 text-xs text-muted">{image.name}</span></button>)}</div> : complete ? <p className="rounded-xl border border-dashed border-border p-4 text-center text-sm text-muted">В этом сеансе скриншоты не найдены.</p> : null}
     {complete && imageCount > 0 && <p className="mt-2 text-[11px] text-muted">Все доступные снимки загружены</p>}
     {error && <p className="mt-2 rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd]" role="alert">{error}</p>}
   </section>;

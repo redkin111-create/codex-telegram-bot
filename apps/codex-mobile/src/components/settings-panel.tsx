@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Activity, Bot, ChevronDown, CircleHelp, Clock3, Download, ExternalLink, Pause, Play, Plug, Puzzle, RefreshCw, ShieldCheck, Sparkles, Target, Trash2, X } from "lucide-react";
 import { completeMcpOAuthCallback, readAppInventory, readCapabilities, readMcpInventory, readPluginInventory, readSkillInventory } from "../api.js";
 import { isCapabilitySectionResponse } from "../capability-compat.js";
+import { loadCapabilitySections } from "../lib/capability-loading.js";
 import { AccountsPanel } from "./accounts-panel.js";
 import { McpConfigPanel } from "./mcp-config-panel.js";
 import type { MobileCapabilities, MobileOperation } from "../types.js";
@@ -74,6 +75,7 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
 }) {
   const [capabilities, setCapabilities] = useState<MobileCapabilities>();
   const [loading, setLoading] = useState(true);
+  const [inventoryLoaded, setInventoryLoaded] = useState({ skills: false, apps: false, plugins: false });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [goalObjective, setGoalObjective] = useState("");
@@ -103,6 +105,7 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
     setLoading(true);
     setError("");
     setMcpInventoryLoaded(false);
+    setInventoryLoaded({ skills: false, apps: false, plugins: false });
     try {
       const core = await readCapabilities(sessionId, "core");
       setCapabilities(core);
@@ -110,6 +113,7 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
       setGoalBudget(core.goal?.tokenBudget ? String(core.goal.tokenBudget) : "");
       if (!isCapabilitySectionResponse(core, "core")) {
         setMcpInventoryLoaded(true);
+        setInventoryLoaded({ skills: true, apps: true, plugins: true });
         setMcpLoginLinks((current) => {
           const pending = { ...current };
           for (const server of core.mcpServers) {
@@ -121,26 +125,24 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
         });
         return;
       }
-      const [skills, apps, plugins] = await Promise.allSettled([
-        readSkillInventory(sessionId), readAppInventory(sessionId), readPluginInventory(sessionId),
-      ]);
-      const additions = {
-        ...(skills.status === "fulfilled" ? skills.value : {}),
-        ...(apps.status === "fulfilled" ? apps.value : {}),
-        ...(plugins.status === "fulfilled" ? plugins.value : {}),
-      };
-      const next = { ...core, ...additions };
-      setCapabilities(next);
+      const failedSections = await loadCapabilitySections([
+        { section: "skills", load: () => readSkillInventory(sessionId) },
+        { section: "apps", load: () => readAppInventory(sessionId) },
+        { section: "plugins", load: () => readPluginInventory(sessionId) },
+      ], (section, inventory) => {
+        setInventoryLoaded((current) => ({ ...current, [section]: true }));
+        if (inventory) setCapabilities((current) => current ? { ...current, ...inventory } : current);
+      });
       setMcpLoginLinks((current) => {
         const pending = { ...current };
-        for (const server of next.mcpServers) {
+        for (const server of core.mcpServers) {
           if (server.status === "connected" && (server.authStatus === "oauth" || server.authStatus === "bearerToken")) {
             delete pending[server.name];
           }
         }
         return pending;
       });
-      if ([skills, apps, plugins].some((result) => result.status === "rejected")) {
+      if (failedSections.length) {
         setError("Часть списков Codex не загрузилась. Основные настройки доступны.");
       }
     }
@@ -464,7 +466,7 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
           <McpConfigPanel sessionId={sessionId} canChange={capabilities.online} onOperation={onOperation} onRestarted={reload} />
           <Card className="space-y-3 p-4">
             <h3 className="flex items-center gap-2 text-sm font-semibold"><Puzzle size={16} className="text-accent" /> Плагины Codex</h3>
-            {!capabilities.pluginCatalogAvailable ? <p className="text-xs leading-relaxed text-muted">Эта версия Codex не предоставляет каталог плагинов.</p> : capabilities.plugins.length ? <ul className="space-y-3">{capabilities.plugins.slice(0, 80).map((plugin) => <li key={`${plugin.marketplace}:${plugin.id}`} className="rounded-xl border border-border bg-[#111613] p-3">
+            {!inventoryLoaded.plugins && !capabilities.plugins.length ? <p role="status" className="text-xs text-muted">Загружаю каталог плагинов…</p> : !capabilities.pluginCatalogAvailable ? <p className="text-xs leading-relaxed text-muted">Эта версия Codex не предоставляет каталог плагинов.</p> : capabilities.plugins.length ? <ul className="space-y-3">{capabilities.plugins.slice(0, 80).map((plugin) => <li key={`${plugin.marketplace}:${plugin.id}`} className="rounded-xl border border-border bg-[#111613] p-3">
               <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{plugin.name}</p><p className="mt-1 truncate text-[11px] text-muted">{plugin.marketplace}</p></div><Badge>{plugin.installed ? plugin.enabled ? "Установлен" : "Отключён" : plugin.installable ? "Доступен" : "Недоступен"}</Badge></div>
               {plugin.description && <p className="mt-2 text-xs leading-relaxed text-muted">{plugin.description}</p>}
               {plugin.mustShowInstallationInterstitial && plugin.capabilities.length > 0 && <p className="mt-2 text-[11px] text-muted">Возможности: {plugin.capabilities.join(", ")}</p>}
@@ -490,7 +492,7 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
           </Card>
           <Card className="space-y-3 p-4">
             <h3 className="flex items-center gap-2 text-sm font-semibold"><Plug size={16} className="text-accent" /> Приложения и подключения</h3>
-            {!capabilities.appsAvailable ? <p className="text-xs leading-relaxed text-muted">Эта версия Codex не предоставляет список приложений.</p> : capabilities.apps.length ? <ul className="space-y-3">{capabilities.apps.slice(0, 80).map((app) => <li key={app.id} className="rounded-xl border border-border bg-[#111613] p-3">
+            {!inventoryLoaded.apps && !capabilities.apps.length ? <p role="status" className="text-xs text-muted">Загружаю список приложений…</p> : !capabilities.appsAvailable ? <p className="text-xs leading-relaxed text-muted">Эта версия Codex не предоставляет список приложений.</p> : capabilities.apps.length ? <ul className="space-y-3">{capabilities.apps.slice(0, 80).map((app) => <li key={app.id} className="rounded-xl border border-border bg-[#111613] p-3">
               <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{app.name}</p>{app.description && <p className="mt-1 text-xs leading-relaxed text-muted">{app.description}</p>}</div><Badge>{!app.enabled ? "Отключено" : app.callable ? "Подключено" : app.accessible ? "Доступно" : "Требует входа"}</Badge></div>
               {app.installUrl && !app.accessible && safeLinkHost(app.installUrl) && <a className="mt-2 inline-flex min-h-9 items-center gap-1 text-xs text-accent underline" href={app.installUrl} target="_blank" rel="noopener noreferrer">Подключить · {safeLinkHost(app.installUrl)}<ExternalLink size={12} /></a>}
             </li>)}</ul> : <p className="text-xs text-muted">Приложения не найдены.</p>}
@@ -501,7 +503,7 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
             {capabilities.skills.length ? <ul className="space-y-3">{capabilities.skills.map((skill, index) => <li key={`${skill.name}:${skill.scope ?? "unknown"}:${index}`} className="rounded-xl border border-border bg-[#111613] p-3">
               <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="break-words text-sm font-medium">{skill.name}</p>{skill.description && <p className="mt-1 text-xs leading-relaxed text-muted">{skill.description}</p>}</div><Badge>{skill.enabled ? "Включён" : "Отключён"}</Badge></div>
               <div className="mt-3 flex items-center justify-between gap-2"><p className="text-[11px] text-muted">Область: {skill.scope ?? "неизвестна"}</p>{skill.canToggle && <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label={`${skill.enabled ? "Отключить" : "Включить"} навык ${skill.name}`} disabled={!usable} onClick={() => setSkillAction({ name: skill.name, enabled: !skill.enabled })}>{skill.enabled ? "Отключить" : "Включить"}</Button>}</div>
-            </li>)}</ul> : <p className="text-xs text-muted">Навыки не найдены.</p>}
+            </li>)}</ul> : !inventoryLoaded.skills ? <p role="status" className="text-xs text-muted">Загружаю навыки и агентов…</p> : <p className="text-xs text-muted">Навыки не найдены.</p>}
             <p className="text-[11px] leading-relaxed text-muted">Изменение сохраняется в настройках Codex на этом компьютере и может повлиять на другие сеансы. Администраторские и встроенные навыки здесь не меняются.</p>
             {capabilities.subagents.length > 0 && <div className="border-t border-border pt-3"><p className="mb-2 text-xs font-semibold text-muted">Подагенты текущего владельца</p><ul className="space-y-2">{capabilities.subagents.map((agent) => <li key={agent.id} className="flex items-center justify-between gap-3 text-sm"><span className="truncate">{agent.name}</span><Badge>{agent.status}</Badge></li>)}</ul></div>}
           </Card>

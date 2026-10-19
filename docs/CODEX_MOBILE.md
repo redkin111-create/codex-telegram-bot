@@ -60,21 +60,30 @@ The requested scope is full phone control for chat, MCP, skills (including brows
 
 ## Readiness for the requested phone workflow
 
-The requested chat, MCP, skills, plugin installation/removal, terminal and full
-history screenshot flows are implemented in this branch and checked in Browser
-skill against an isolated fake Codex runtime. This is not yet ready for actual
-Android access: the service listens only on `127.0.0.1`, and no private Tailscale
-Serve route has been configured. The phone can now relay an MCP OAuth callback
-only when Codex exposes one exact loopback `redirect_uri` in its authorization
-URL. After provider approval, the user pastes the browser's final callback URL;
-the server checks the paired device, Origin, CSRF token, owned session, loopback
-host, exact port/path and OAuth state when present, then forwards the request
-once to that existing local Codex listener. URLs and authorization codes are
-not saved or returned. Providers that hide the redirect URI behind PAR remain
-unavailable from the phone. The Browser-skill run used a fake callback and did
-not contact a real provider or run a real Browser skill task. Plugin
-install/removal and marketplace management work; a true per-thread plugin
-disable switch is not supported by the current Codex app-server.
+The branch serves the requested chat, MCP, skills, plugins, terminal and
+screenshot flows through the existing Codex runtime. The Mobile HTTP listener
+stays on `127.0.0.1:3302`; for the current manual session, the public Tailscale
+Funnel on HTTPS port `8443` proxies to it. The existing `443` route to port
+`3301` is unchanged, and this branch is not registered for autostart.
+
+The Browser Skill was selected in a Mobile-created Codex task and ran through
+the laptop's `bsk` CLI and connected Chrome extension. A separate smoke task
+opened `example.com`; a Search Console task reached Google's sign-in page, where
+Google required the account owner to confirm their identity. That is an account
+verification step, not evidence that the Browser Skill or local browser tools
+were missing. Actual Android pairing and use still need to be checked on the
+owner's phone.
+
+The phone can relay an MCP OAuth callback only when Codex exposes one exact
+loopback `redirect_uri` in its authorization URL. After provider approval, the
+user pastes the browser's final callback URL; the server checks the paired
+device, Origin, CSRF token, owned session, loopback host, exact port/path and
+OAuth state when present, then forwards the request once to that existing local
+Codex listener. URLs and authorization codes are not saved or returned.
+Providers that hide the redirect URI behind PAR remain unavailable from the
+phone. Real provider outcomes still need testing. Plugin install/removal and
+marketplace management work; a true per-thread plugin disable switch is not
+supported by the current Codex app-server.
 
 The MCP settings panel can also add a local stdio command or a streamable HTTP
 server to the selected project's `.codex/config.toml`, or to Codex's global
