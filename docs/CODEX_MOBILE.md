@@ -175,19 +175,24 @@ claim to display the new summary. See the [app-server item schema](https://githu
   introductory text. The Mobile send integration test confirms
   `$browser-skill` reaches the shared runtime as a selected skill; the ACP test
   verifies that Codex resolves it to an explicit skill input using its own
-  current inventory. Pixel 7 Browser Skill checks used the isolated fixture;
-  no test prompt was sent to a live Codex session.
+  current inventory. A live Pixel 7 check at 412×915 sent `$browser-skill`
+  through the public page into a new shared-runtime session; Codex started a
+  BSK session, opened only `https://example.com/`, returned the page title and
+  HTTP 200 for the main document, and stopped the BSK session. No files or
+  settings were changed.
 - Natural-language requests such as “use browser skill” now resolve against
   Codex's live project skill inventory and reach the shared runtime as skill
   selections. Sending stops with a clear error when `browser-skill` is absent
   or disabled, so Codex cannot silently receive the task without that skill.
-  Unit tests cover these cases, and the Pixel 7 Browser Skill fixture at 412×915
-  showed the natural-language request and fixture-only skill response in chat.
-  The fixture did not run Codex or open a real browser page.
-- The failed remote browser-skill attempt's saved tool list shows failed
-  `cua_repl` calls and no `bsk` invocation. Its tool error payload was not
-  retained, so the reply's claim that the Mobile runtime lacked its Code Mode
-  host could not be confirmed from those logs.
+  Unit tests cover these cases. On the live Pixel 7 page, `$mobile-responsive`
+  and `$mobile-ux-optimizer:mobile-ux-optimizer` were also selected in the
+  shared runtime; each returned the first three headings from its skill
+  instructions without changing project files or settings.
+- The failed branch `01a1540b` log records `failed to spawn code-mode host`
+  for Codex CLI build `2e5e…` because its companion executable was missing.
+  The current Mobile app-server uses build `896a…`, whose companion host is
+  present; a live Mobile chat then successfully started BSK and returned the
+  actual page title and HTTP 200.
 - After loading the current branch, the service listened on `127.0.0.1:3301`
   and `127.0.0.1:3302`; the existing Funnel routes still pointed `443` to
   `3301` and `8443` to `3302`. No Tailscale setting changed.
