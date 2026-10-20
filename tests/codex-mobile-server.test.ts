@@ -39,6 +39,7 @@ async function startFixture(extensions: Record<string, unknown> = {}) {
   const feed = new FixtureFeed();
   const calls: Array<{ op: string; userId: number; args: Record<string, unknown>; attachments?: unknown[] }> = [];
   let failNext = false;
+  let mobileSendLookup: (ownerId: number, args: Record<string, unknown>) => { found: boolean; result?: unknown } = () => ({ found: false });
   let downloadValue: unknown = { name: "release.zip", size: 4, bytes: Buffer.from([0x50, 0x4b, 0x03, 0x04]) };
   let readImageValue: unknown = { name: "pixel.png", mime: "image/png", data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString("base64") };
   const settings = { model: "fixture-model", mode: "code", reasoning: "medium" };
@@ -70,6 +71,7 @@ async function startFixture(extensions: Record<string, unknown> = {}) {
   } as unknown as MobileAccountController;
   const agent = {
     async canReadSession(id: string, ownerId: number) { return (id === allowedSession || id === secondOwnedSession) && ownerId === 101; },
+    lookupMobileSend(ownerId: number, args: Record<string, unknown>) { return mobileSendLookup(ownerId, args); },
     async execute(job: { op: string; userId: number; args: Record<string, unknown> }, attachments?: unknown[]) {
       calls.push({ ...job, ...(attachments ? { attachments } : {}) });
       if (failNext) { failNext = false; throw new Error("Codex runtime unavailable"); }
@@ -146,6 +148,7 @@ async function startFixture(extensions: Record<string, unknown> = {}) {
   assert.ok(address && typeof address !== "string");
   const origin = `http://127.0.0.1:${address.port}`;
   return { server, auth, feed, calls, approvalDecisions, approvalId, accountCalls, dataDir, origin, failNext: () => { failNext = true; },
+    setMobileSendLookup: (lookup: typeof mobileSendLookup) => { mobileSendLookup = lookup; },
     setMobileOAuthResult: (value: unknown) => { mobileOAuthResult = value; },
     setDownloadValue: (value: unknown) => { downloadValue = value; }, setReadImageValue: (value: unknown) => { readImageValue = value; } };
 }
@@ -450,6 +453,20 @@ test("mobile document uploads require CSRF and an owned session, then attach ser
     assert.equal(prepared.text, bytes);
     assert.equal(prepared.path, undefined);
 
+    const retried = await fetch(f.origin + "/api/operations", {
+      method: "POST",
+      headers: {
+        origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ op: "send", args: {
+        sessionId: allowedSession, text: "Проверь файл", requestId: "mobile-file-request-0001", attachmentIds: [descriptor.id],
+      } }),
+    });
+    assert.equal(retried.status, 200, "retrying after attachment consumption should reach send deduplication");
+    assert.equal((f.calls.at(-1)?.attachments?.[0] as { id: string; text?: string }).id, descriptor.id);
+    assert.equal((f.calls.at(-1)?.attachments?.[0] as { id: string; text?: string }).text, "", "a completed request only needs safe attachment metadata for journal replay");
+
     const disposable = await upload({ cookie: login.sessionCookie, "x-csrf-token": login.csrfToken });
     const disposableDescriptor = await disposable.json() as { id: string };
     const removed = await fetch(`${f.origin}/api/attachments/${disposableDescriptor.id}?sessionId=${allowedSession}`, {
@@ -458,6 +475,30 @@ test("mobile document uploads require CSRF and an owned session, then attach ser
     });
     assert.equal(removed.status, 200);
     assert.deepEqual(await removed.json(), { removed: true });
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("a durable attachment send replay is checked before resolving expired upload IDs", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const attachmentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    f.setMobileSendLookup((ownerId, args) => {
+      assert.equal(ownerId, 101);
+      assert.equal(args.requestId, "mobile-restart-request-01");
+      assert.deepEqual(args.attachmentIds, [attachmentId]);
+      return { found: true, result: { result: "already-sent" } };
+    });
+    const response = await fetch(f.origin + "/api/operations", {
+      method: "POST",
+      headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ op: "send", args: {
+        sessionId: allowedSession, text: "Проверь файл", requestId: "mobile-restart-request-01", attachmentIds: [attachmentId],
+      } }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { result: "already-sent" });
+    assert.equal(f.calls.some((call) => call.op === "send"), false, "a replay must return before missing upload IDs can block or resend it");
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
@@ -2012,6 +2053,32 @@ test("authenticated event stream resumes its cursor and closes when the client d
     const first = await reader.read();
     assert.match(new TextDecoder().decode(first.value), /event: hello/);
     assert.deepEqual(f.feed.cursors, [7]);
+    await reader.cancel();
+    controller.abort();
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("mobile event stream sends replay gaps as sync_required events", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    f.feed.replay.push({ id: 8, sessionId: allowedSession, kind: "sync", at: 1 });
+    const controller = new AbortController();
+    const response = await fetch(f.origin + "/api/events", {
+      method: "POST", signal: controller.signal,
+      headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: allowedSession, after: 7, epoch: f.feed.epoch }),
+    });
+    assert.equal(response.status, 200);
+    const reader = response.body!.getReader();
+    let frame = "";
+    for (let index = 0; index < 4 && !frame.includes("event: sync_required"); index++) {
+      const part = await reader.read();
+      if (part.done) break;
+      frame += new TextDecoder().decode(part.value);
+    }
+    assert.match(frame, /id: 8\nevent: sync_required\ndata: \{\}/);
+    assert.doesNotMatch(frame, /"kind":"sync"/, "the client needs the named recovery event, not an ordinary rejected event");
     await reader.cancel();
     controller.abort();
   } finally { await cleanup(f.server, f.dataDir); }

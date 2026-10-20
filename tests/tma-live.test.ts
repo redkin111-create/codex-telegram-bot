@@ -3,7 +3,7 @@ import test from "node:test";
 import { createHmac } from "node:crypto";
 import { EventEmitter, once } from "node:events";
 import { startGateway } from "../src/tma/gateway.js";
-import { TmaLiveFeed } from "../src/tma/live.js";
+import { normalizeThreadStatus, TmaLiveFeed } from "../src/tma/live.js";
 import type { AcpClient } from "../src/acp/client.js";
 
 const sid="01234567-89ab-7cde-8123-456789abcdef";
@@ -34,6 +34,61 @@ test("live feed publishes safe tool names and confirmed turn/approval statuses",
     const replay:number[]=[];
     const unsub=feed.subscribe(sid,3,e=>replay.push(e.id));
     assert.deepEqual(replay,[4,5,6]);unsub();
+  }finally{stop();feed.dispose();}
+});
+
+test("thread/status/changed gives current thread state without treating idle as completed",()=>{
+  const acp=new EventEmitter() as AcpClient;
+  const feed=new TmaLiveFeed(acp);
+  const received:Array<{status?:string;label?:string}>=[];
+  const stop=feed.subscribe(sid,0,event=>{if(event.kind==="status")received.push(event);});
+  try{
+    acp.emit("notification","thread/status/changed",{threadId:sid,status:{type:"active",activeFlags:[]}});
+    acp.emit("notification","thread/status/changed",{threadId:sid,status:{type:"active",activeFlags:["waitingOnApproval"]}});
+    acp.emit("notification","thread/status/changed",{threadId:sid,status:{type:"active",activeFlags:["waitingOnUserInput"]}});
+    acp.emit("notification","thread/status/changed",{threadId:sid,status:{type:"idle"}});
+    acp.emit("notification","thread/status/changed",{threadId:sid,status:{type:"systemError"}});
+    acp.emit("notification","thread/status/changed",{threadId:sid,status:{type:"notLoaded"}});
+    assert.deepEqual(received.map(({status,label})=>({status,label})),[
+      {status:"working",label:"Codex выполняет задание"},
+      {status:"approval",label:"Codex ожидает подтверждения"},
+      {status:"observing",label:"Codex ожидает ответа"},
+      {status:"observing",label:"Codex готов к работе"},
+      {status:"failed",label:"Ошибка состояния Codex"},
+      {status:"observing",label:"Сеанс не загружен в Codex"},
+    ]);
+    assert.equal(received.some(event=>event.status==="completed"),false);
+    assert.equal(feed.getStatus(sid)?.status,"observing");
+  }finally{stop();feed.dispose();}
+});
+
+test("initial thread status mapping keeps unknown states neutral",()=>{
+  assert.deepEqual(normalizeThreadStatus({type:"active",activeFlags:[]}),{status:"working",label:"Codex выполняет задание"});
+  assert.deepEqual(normalizeThreadStatus({type:"active",activeFlags:["waitingOnApproval"]}),{status:"approval",label:"Codex ожидает подтверждения"});
+  assert.deepEqual(normalizeThreadStatus({type:"idle"}),{status:"observing",label:"Codex готов к работе"});
+  assert.equal(normalizeThreadStatus({type:"futureState"}),undefined);
+});
+
+test("live feed reports retained-event gaps without assuming global event ids are contiguous",()=>{
+  const acp=new EventEmitter() as AcpClient;
+  const feed=new TmaLiveFeed(acp);
+  const allEvents:Array<{id:number;kind:string}>=[];
+  const collect=feed.subscribe(sid,0,event=>allEvents.push({id:event.id,kind:event.kind}));
+  feed.publish(sid,{kind:"activity",label:"first"});
+  const firstId=allEvents[0]!.id;
+  for(let index=0;index<162;index++){
+    if(index%2===0)feed.publish("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",{kind:"activity",label:"other session"});
+    feed.publish(sid,{kind:"activity",label:`event ${index}`});
+  }
+  collect();
+  const replay:Array<{id:number;kind:string}>=[];
+  const stop=feed.subscribe(sid,firstId,event=>replay.push({id:event.id,kind:event.kind}));
+  try{
+    assert.equal(replay[0]?.kind,"sync");
+    assert.ok(replay[0]!.id>firstId);
+    assert.equal(replay.length,161);
+    assert.ok(replay.slice(1).every((event)=>event.kind==="activity"&&event.id>replay[0]!.id));
+    assert.ok(allEvents.slice(1).some((event,index)=>event.id-allEvents[index]!.id>1),"other-session events make per-session ids sparse");
   }finally{stop();feed.dispose();}
 });
 

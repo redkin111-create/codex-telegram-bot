@@ -2,24 +2,28 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
 import { FileText, GitFork, ImagePlus, LoaderCircle, MessageSquare, Minimize2, Paperclip, Pencil, Play, Plug, Search, Send, Sparkles, Square, Trash2, Wrench, X } from "lucide-react";
 import "../../../../apps/mini-app/public/photo-input.js";
-import type { HistoryEntry, MobileActivity, MobileAttachment, MobileCapabilities, MobileEditableTurn, MobileEditableTurns, MobileHistorySearch, MobileLiveEvent, MobileQueue, MobileScreenshotPage, MobileSession } from "../types.js";
+import type { FollowUpMode, HistoryEntry, MobileActivity, MobileAttachment, MobileCapabilities, MobileEditableTurn, MobileEditableTurns, MobileHistorySearch, MobileLiveEvent, MobileQueue, MobileScreenshotPage, MobileSession, PromptImage } from "../types.js";
 import { imageUrl } from "../api.js";
 import { filterCatalogEntries } from "../lib/plugin-catalog.js";
 import { splitCodeReviewComments } from "../lib/review-comments.js";
+import { MobileSubmissionLock } from "../lib/session-state.js";
 import { SafeMarkdown } from "../markdown.js";
 import { isMobileSkillNameSafe, prependMobileSkill } from "../skill-prompt.js";
 import { ScreenshotsGallery } from "./screenshots-gallery.js";
 import { Badge, Button, Input, Textarea } from "./ui/primitives.js";
 
-export interface PromptImage { name: string; mimeType: string; data: string; preview: string; }
-export type FollowUpMode = "queue" | "steer";
+export type { FollowUpMode, PromptImage } from "../types.js";
 
 export function Conversation({
-  session, history, activity, events, queue, connected, connecting, loading, streamConnected,
+  session, draftText, onDraftTextChange, onClearDraft, sessionSwitchNotice, history, activity, events, queue, connected, connecting, loading, streamConnected,
   error, includeTools, onToggleTools, onConnect, onCancel, onFork, forking, onCreateSideChat, sideChatting, onReturnToParent, onCompact, compacting, onSend, onQueueRemove, onQueueResume, onQueueOpen, onLoadSkills, onLoadApps,
   onLoadEditableTurns, onEditAndRetry, onUploadAttachment, onRemoveAttachment, onOpenReviewLocation, onSearchHistory, onLoadOlderScreenshots,
 }: {
   session?: MobileSession;
+  draftText: string;
+  sessionSwitchNotice: string;
+  onDraftTextChange: (sessionId: string, text: string) => void;
+  onClearDraft: (sessionId: string, sentText: string) => void;
   history: HistoryEntry[];
   activity?: MobileActivity;
   events: MobileLiveEvent[];
@@ -52,15 +56,19 @@ export function Conversation({
   onRemoveAttachment: (sessionId: string, id: string) => Promise<{ removed: boolean }>;
   onOpenReviewLocation: (location: { path: string; line?: number }) => void;
   onSearchHistory: (query: string, beforeOffset?: number, revision?: string) => Promise<MobileHistorySearch>;
-  onLoadOlderScreenshots: (sessionId: string, beforeOffset?: number) => Promise<MobileScreenshotPage>;
+  onLoadOlderScreenshots: (sessionId: string, cursor?: string) => Promise<MobileScreenshotPage>;
 }) {
   const activeSessionId = useRef(session?.id);
   activeSessionId.current = session?.id;
+  const mounted = useRef(true);
+  const submitting = useRef(new MobileSubmissionLock());
+  const removeAttachment = useRef(onRemoveAttachment);
+  removeAttachment.current = onRemoveAttachment;
   const editLoadRequest = useRef(0);
   const editOlderLoadInFlight = useRef<number | undefined>(undefined);
-  const [text, setText] = useState("");
   const [images, setImages] = useState<PromptImage[]>([]);
   const [attachments, setAttachments] = useState<MobileAttachment[]>([]);
+  const attachmentSnapshot = useRef(attachments);
   const [imageError, setImageError] = useState("");
   const [attachmentError, setAttachmentError] = useState("");
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
@@ -94,6 +102,7 @@ export function Conversation({
   const [editText, setEditText] = useState("");
   const [editError, setEditError] = useState("");
   const [editNotice, setEditNotice] = useState("");
+  const [sending, setSending] = useState(false);
   const [historySearchOpen, setHistorySearchOpen] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
   const [fullHistoryQuery, setFullHistoryQuery] = useState("");
@@ -101,6 +110,7 @@ export function Conversation({
   const [fullHistoryLoading, setFullHistoryLoading] = useState(false);
   const [fullHistoryError, setFullHistoryError] = useState("");
   const fullHistoryRequest = useRef(0);
+  attachmentSnapshot.current = attachments;
   const usesFullHistory = Boolean(fullHistoryResults && fullHistoryQuery === historySearch.trim());
   const callableApps = useMemo(() => availableApps.filter((app) => app.enabled && app.accessible && app.callable), [availableApps]);
   const filteredCallableApps = useMemo(() => filterCatalogEntries(callableApps, appSearch), [callableApps, appSearch]);
@@ -110,6 +120,17 @@ export function Conversation({
     if (!query) return history;
     return history.filter((entry) => entry.text.toLowerCase().includes(query));
   }, [history, historySearch, usesFullHistory, fullHistoryResults]);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      const sessionId = activeSessionId.current;
+      if (sessionId && !submitting.current) {
+        for (const file of attachmentSnapshot.current) void removeAttachment.current(sessionId, file.id).catch(() => undefined);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     editLoadRequest.current++;
@@ -306,22 +327,30 @@ export function Conversation({
 
   async function toggleSkillPicker() {
     if (skillPickerOpen) { setSkillPickerOpen(false); return; }
+    const targetSessionId = activeSessionId.current;
     setSkillPickerOpen(true);
     setSkillPickerLoading(true);
     setSkillPickerError("");
-    try { setAvailableSkills(await onLoadSkills()); }
-    catch (cause) { setSkillPickerError(cause instanceof Error ? cause.message : "Не удалось загрузить навыки Codex"); }
-    finally { setSkillPickerLoading(false); }
+    try {
+      const skills = await onLoadSkills();
+      if (mounted.current && activeSessionId.current === targetSessionId) setAvailableSkills(skills);
+    } catch (cause) {
+      if (mounted.current && activeSessionId.current === targetSessionId) setSkillPickerError(cause instanceof Error ? cause.message : "Не удалось загрузить навыки Codex");
+    } finally { if (mounted.current && activeSessionId.current === targetSessionId) setSkillPickerLoading(false); }
   }
 
   async function toggleAppPicker() {
     if (appPickerOpen) { setAppPickerOpen(false); return; }
+    const targetSessionId = activeSessionId.current;
     setAppPickerOpen(true);
     setAppPickerLoading(true);
     setAppPickerError("");
-    try { setAvailableApps(await onLoadApps()); }
-    catch (cause) { setAppPickerError(cause instanceof Error ? cause.message : "Не удалось загрузить приложения Codex"); }
-    finally { setAppPickerLoading(false); }
+    try {
+      const apps = await onLoadApps();
+      if (mounted.current && activeSessionId.current === targetSessionId) setAvailableApps(apps);
+    } catch (cause) {
+      if (mounted.current && activeSessionId.current === targetSessionId) setAppPickerError(cause instanceof Error ? cause.message : "Не удалось загрузить приложения Codex");
+    } finally { if (mounted.current && activeSessionId.current === targetSessionId) setAppPickerLoading(false); }
   }
 
   function toggleSelectedApp(id: string) {
@@ -337,8 +366,9 @@ export function Conversation({
   }
 
   function chooseSkill(name: string) {
+    if (!session) return;
     try {
-      setText((current) => prependMobileSkill(current, name));
+      onDraftTextChange(session.id, prependMobileSkill(draftText, name));
       setSkillPickerOpen(false);
       setSkillPickerError("");
     } catch (cause) { setSkillPickerError(cause instanceof Error ? cause.message : "Не удалось выбрать навык"); }
@@ -346,16 +376,20 @@ export function Conversation({
 
   async function attach(files: FileList | null) {
     if (!files?.length) return;
+    const targetSessionId = activeSessionId.current;
     setPreparing(true);
     setImageError("");
     try {
       const room = Math.max(0, window.CodexPhotos.max - images.length);
       if (files.length > room) throw new Error("Можно прикрепить не больше трёх изображений");
       const prepared: PromptImage[] = [];
-      for (const file of Array.from(files)) prepared.push(await window.CodexPhotos.prepare(file));
+      for (const file of Array.from(files)) {
+        prepared.push(await window.CodexPhotos.prepare(file));
+        if (!mounted.current || activeSessionId.current !== targetSessionId) return;
+      }
       setImages((current) => [...current, ...prepared]);
-    } catch (cause) { setImageError(cause instanceof Error ? cause.message : "Не удалось подготовить изображение"); }
-    finally { setPreparing(false); }
+    } catch (cause) { if (mounted.current && activeSessionId.current === targetSessionId) setImageError(cause instanceof Error ? cause.message : "Не удалось подготовить изображение"); }
+    finally { if (mounted.current && activeSessionId.current === targetSessionId) setPreparing(false); }
   }
 
   async function attachDocuments(files: FileList | null) {
@@ -368,44 +402,62 @@ export function Conversation({
       if (attachments.length + selected.length > 5) throw new Error("Можно прикрепить не больше пяти файлов");
       for (const file of selected) {
         const prepared = await onUploadAttachment(targetSessionId, file);
-        if (activeSessionId.current !== targetSessionId) {
+        if (!mounted.current || activeSessionId.current !== targetSessionId) {
           await onRemoveAttachment(targetSessionId, prepared.id).catch(() => undefined);
           return;
         }
         setAttachments((current) => [...current, prepared]);
       }
     } catch (cause) {
-      setAttachmentError(cause instanceof Error ? cause.message : "Не удалось прикрепить файл");
-    } finally { setUploadingAttachments(false); }
+      if (mounted.current && activeSessionId.current === targetSessionId) setAttachmentError(cause instanceof Error ? cause.message : "Не удалось прикрепить файл");
+    } finally { if (mounted.current && activeSessionId.current === targetSessionId) setUploadingAttachments(false); }
   }
 
   async function removeDocument(id: string) {
     if (!session) return;
+    const targetSessionId = session.id;
     setAttachmentError("");
     try {
-      const result = await onRemoveAttachment(session.id, id);
+      const result = await onRemoveAttachment(targetSessionId, id);
       if (!result.removed) throw new Error("Файл уже отправлен или истёк. Обновите сеанс.");
-      setAttachments((current) => current.filter((file) => file.id !== id));
+      if (mounted.current && activeSessionId.current === targetSessionId) setAttachments((current) => current.filter((file) => file.id !== id));
     } catch (cause) {
-      setAttachmentError(cause instanceof Error ? cause.message : "Не удалось удалить вложение");
+      if (mounted.current && activeSessionId.current === targetSessionId) setAttachmentError(cause instanceof Error ? cause.message : "Не удалось удалить вложение");
     }
   }
 
   async function submit() {
-    if (!text.trim() && images.length === 0 && attachments.length === 0) return;
-    if (followUpMode === "steer" && turnBusy && attachments.length > 0) {
+    const targetSessionId = session?.id;
+    if (!targetSessionId) return;
+    const submittedDraft = draftText;
+    const submittedText = submittedDraft.trim();
+    const submittedImages = [...images];
+    const submittedAttachments = [...attachments];
+    const submittedAttachmentIds = new Set(submittedAttachments.map((file) => file.id));
+    const submittedApps = [...selectedAppIds];
+    const submittedMode = followUpMode;
+    if (!submittedText && submittedImages.length === 0 && submittedAttachments.length === 0) return;
+    if (submittedMode === "steer" && turnBusy && submittedAttachments.length > 0) {
       setAttachmentError("Файлы можно отправить в очередь. Для активной задачи используйте режим «В очередь».");
       return;
     }
+    if (!submitting.current.tryAcquire()) return;
+    setSending(true);
     try {
-      await onSend(text.trim(), images, attachments, followUpMode, selectedAppIds);
-      setText("");
-      setImages([]);
-      setAttachments([]);
-      setSelectedAppIds([]);
-      setAttachmentError("");
-      setFollowUpMode("queue");
+      await onSend(submittedText, submittedImages, submittedAttachments, submittedMode, submittedApps);
+      onClearDraft(targetSessionId, submittedDraft);
+      if (mounted.current && activeSessionId.current === targetSessionId) {
+        setImages((current) => current.filter((image) => !submittedImages.includes(image)));
+        setAttachments((current) => current.filter((file) => !submittedAttachmentIds.has(file.id)));
+        setSelectedAppIds((current) => current.length === submittedApps.length && current.every((id, index) => id === submittedApps[index]) ? [] : current);
+        setAttachmentError("");
+        setFollowUpMode((current) => current === submittedMode ? "queue" : current);
+      }
     } catch { /* Keep the draft available after a rejected or uncertain request. */ }
+    finally {
+      submitting.current.release();
+      if (mounted.current) setSending(false);
+    }
   }
 
   function submitOnEnter(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -462,6 +514,7 @@ export function Conversation({
           Редактировать запрос
         </Button>}
       </div>
+      {sessionSwitchNotice && <p className="mt-2 rounded-lg border border-[#46533d] bg-[#20291b] px-3 py-2 text-xs leading-5 text-[#d5f49c]" role="status">{sessionSwitchNotice}</p>}
       {toolEvents.length > 0 && <div className="mt-3 flex gap-2 overflow-x-auto pb-0.5" aria-label="Текущие события Codex">
         {toolEvents.map((event) => <span key={`${event.id}-${event.kind}`} className="flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-panel px-2.5 py-1 text-[11px] text-muted">{event.kind === "tool" ? <Wrench size={12} className="text-accent" /> : null}{event.label || event.status || "Событие"}</span>)}
       </div>}
@@ -578,8 +631,8 @@ export function Conversation({
           <span className="sr-only">Прикрепить текстовый файл, PDF или ZIP</span>
           <input type="file" className="sr-only" accept=".txt,.md,.markdown,.json,.json5,.jsonl,.csv,.tsv,.log,.xml,.yaml,.yml,.toml,.ini,.cfg,.conf,.ts,.tsx,.js,.jsx,.mjs,.py,.go,.rs,.java,.kt,.html,.css,.sql,.sh,.ps1,.patch,.diff,.pdf,.zip,text/*,application/pdf,application/zip" multiple disabled={!connected || attachments.length >= 5 || uploadingAttachments} onChange={(event) => { void attachDocuments(event.target.files); event.target.value = ""; }} />
         </label>
-        <div className="min-w-0 flex-1"><Textarea value={text} onChange={(event) => setText(event.target.value)} onKeyDown={submitOnEnter} placeholder={!connected ? "Подключите сеанс, чтобы отправить задачу" : turnBusy && followUpMode === "steer" ? "Направление для текущей задачи…" : turnBusy ? "Следующая задача в очереди…" : "Задача для Codex…"} disabled={!connected} rows={2} className="min-h-[48px] max-h-40 resize-none py-3" aria-label="Сообщение Codex" /></div>
-        <Button type="submit" className="min-h-12 w-12 shrink-0 px-0" disabled={!connected || (!text.trim() && images.length === 0 && attachments.length === 0) || preparing || uploadingAttachments || (followUpMode === "steer" && turnBusy && attachments.length > 0)} aria-label={followUpMode === "steer" && turnBusy ? "Направить текущую задачу" : "Отправить задачу"}>{preparing || uploadingAttachments ? <LoaderCircle className="animate-spin" size={18} /> : <Send size={18} />}</Button>
+        <div className="min-w-0 flex-1"><Textarea value={draftText} onChange={(event) => onDraftTextChange(session.id, event.target.value)} onKeyDown={submitOnEnter} placeholder={!connected ? "Подключите сеанс, чтобы отправить задачу" : turnBusy && followUpMode === "steer" ? "Направление для текущей задачи…" : turnBusy ? "Следующая задача в очереди…" : "Задача для Codex…"} disabled={!connected} rows={2} className="min-h-[48px] max-h-40 resize-none py-3" aria-label="Сообщение Codex" /></div>
+        <Button type="submit" className="min-h-12 w-12 shrink-0 px-0" disabled={!connected || (!draftText.trim() && images.length === 0 && attachments.length === 0) || preparing || uploadingAttachments || sending || (followUpMode === "steer" && turnBusy && attachments.length > 0)} aria-label={sending ? "Отправка запроса" : followUpMode === "steer" && turnBusy ? "Направить текущую задачу" : "Отправить задачу"}>{preparing || uploadingAttachments || sending ? <LoaderCircle className="animate-spin" size={18} /> : <Send size={18} />}</Button>
       </div>
       <div className="mx-auto mt-2 flex max-w-4xl items-center justify-between text-[10px] text-[#758077]">
         <span>{connected ? "Enter отправляет · Shift+Enter переносит строку" : "История доступна без подключения"}</span>

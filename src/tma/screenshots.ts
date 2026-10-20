@@ -7,6 +7,8 @@
  * remembers recent references while it follows new records, and never sends
  * file data or untrusted tool output.
  */
+import { createReadStream } from "node:fs";
+import { createInterface } from "node:readline";
 import { lstat, open, realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, normalize, relative, sep } from "node:path";
@@ -18,7 +20,7 @@ export interface ScreenshotRef {
   mtimeMs:number;
   size:number;
 }
-type Cursor={path:string;cwd:string;offset:number;partial:string;references:string[];images:ScreenshotRef[]};
+type Cursor={path:string;cwd:string;endByteOffset?:number;offset:number;partial:string;references:string[];images:ScreenshotRef[]};
 const MAX_SCAN=8*1024*1024;
 const MAX_LINE=4*1024*1024;
 const MAX_REFERENCES=256;
@@ -58,23 +60,26 @@ export class TmaScreenshotIndex {
   private readonly sessions=new Map<string,Cursor>();
   private readonly pending=new Map<string,Promise<ScreenshotRef[]>>();
 
-  async scan(id:string,jsonl:string,cwd:string,allowBrowserTemp=false):Promise<ScreenshotRef[]> {
-    const pendingKey=id+(allowBrowserTemp?":mobile":":tma");
+  async scan(id:string,jsonl:string,cwd:string,allowBrowserTemp=false,endByteOffset?:number):Promise<ScreenshotRef[]> {
+    const pendingKey=id+(allowBrowserTemp?":mobile":":tma")+(endByteOffset===undefined?":full":`:end:${endByteOffset}`);
     const running=this.pending.get(pendingKey);
     if(running)return running;
-    const promise=this.scanOnce(id,jsonl,cwd,allowBrowserTemp);
+    const promise=this.scanOnce(id,jsonl,cwd,allowBrowserTemp,endByteOffset);
     this.pending.set(pendingKey,promise);
     try{return await promise;}
     finally{if(this.pending.get(pendingKey)===promise)this.pending.delete(pendingKey);}
   }
 
-  private async scanOnce(id:string,jsonl:string,cwd:string,allowBrowserTemp:boolean):Promise<ScreenshotRef[]>{
-    let fileSize=0;
-    try{fileSize=(await stat(jsonl)).size;}catch{return [];}
-    let current=this.sessions.get(id);
-    if(!current||current.path!==jsonl||current.cwd!==cwd||current.offset>fileSize){
-      current={path:jsonl,cwd,offset:0,partial:"",references:[],images:[]};
-      this.sessions.delete(id);this.sessions.set(id,current);
+  private async scanOnce(id:string,jsonl:string,cwd:string,allowBrowserTemp:boolean,endByteOffset?:number):Promise<ScreenshotRef[]>{
+    let actualSize=0;
+    try{actualSize=(await stat(jsonl)).size;}catch{return [];}
+    if(endByteOffset!==undefined&&(!Number.isSafeInteger(endByteOffset)||endByteOffset<0))throw new Error("Некорректная граница истории скриншотов");
+    const fileSize=endByteOffset===undefined?actualSize:Math.min(actualSize,endByteOffset);
+    const cursorId=id+(endByteOffset===undefined?":full":`:end:${endByteOffset}`);
+    let current=this.sessions.get(cursorId);
+    if(!current||current.path!==jsonl||current.cwd!==cwd||current.endByteOffset!==endByteOffset||current.offset>fileSize){
+      current={path:jsonl,cwd,endByteOffset,offset:0,partial:"",references:[],images:[]};
+      this.sessions.delete(cursorId);this.sessions.set(cursorId,current);
       if(this.sessions.size>60)this.sessions.delete(this.sessions.keys().next().value!);
     }
     if(current.offset<fileSize){
@@ -121,21 +126,44 @@ export class TmaScreenshotIndex {
     return [...current.images];
   }
 
-  async authorized(id:string,jsonl:string,cwd:string,path:string,allowBrowserTemp=false):Promise<ScreenshotRef|undefined>{
-    const images=await this.scan(id,jsonl,cwd,allowBrowserTemp);
+  async authorized(id:string,jsonl:string,cwd:string,path:string,allowBrowserTemp=false,endByteOffset?:number):Promise<ScreenshotRef|undefined>{
+    const images=await this.scan(id,jsonl,cwd,allowBrowserTemp,endByteOffset);
     const identity=pathIdentity(path);
-    return images.find(img=>pathIdentity(img.path)===identity);
+    const recent=images.find(img=>pathIdentity(img.path)===identity);
+    if(recent)return recent;
+    if(!await this.referencedInRollout(jsonl,cwd,path,endByteOffset))return undefined;
+    return (await this.validate([path],cwd,allowBrowserTemp))[0];
+  }
+
+  private async referencedInRollout(jsonl:string,cwd:string,path:string,endByteOffset?:number):Promise<boolean>{
+    let actualSize:number;
+    try{actualSize=(await stat(jsonl)).size;}catch{return false;}
+    const limit=endByteOffset===undefined?actualSize:Math.min(actualSize,endByteOffset);
+    if(limit<=0)return false;
+    const input=createReadStream(jsonl,{start:0,end:limit-1,highWaterMark:64*1024});
+    const lines=createInterface({input,crlfDelay:Infinity});
+    const identity=pathIdentity(path);
+    try{
+      for await(const line of lines){
+        if(line.length>MAX_LINE)continue;
+        if(watchImagePathsFromEvents([line],cwd).some(candidate=>pathIdentity(candidate)===identity))return true;
+      }
+      return false;
+    }catch{return false;}
+    finally{input.destroy();}
   }
 
   /** Return older authorized images without retaining an unbounded index. */
-  async olderPage(id:string,jsonl:string,cwd:string,beforeOffset?:number,allowBrowserTemp=false):Promise<ScreenshotPage>{
-    let fileSize:number;
-    try{fileSize=(await stat(jsonl)).size;}catch{return {images:[]};}
+  async olderPage(id:string,jsonl:string,cwd:string,beforeOffset?:number,allowBrowserTemp=false,endByteOffset?:number):Promise<ScreenshotPage>{
+    let actualSize:number;
+    try{actualSize=(await stat(jsonl)).size;}catch{return {images:[]};}
+    if(endByteOffset!==undefined&&(!Number.isSafeInteger(endByteOffset)||endByteOffset<0))throw new Error("Некорректная граница истории скриншотов");
+    const fileSize=endByteOffset===undefined?actualSize:Math.min(actualSize,endByteOffset);
     const limit=beforeOffset??fileSize;
     if(!Number.isSafeInteger(limit)||limit<0||limit>fileSize)throw new Error("Некорректный указатель страницы скриншотов");
     if(limit===0)return {images:[]};
 
-    const recent=await this.scan(id,jsonl,cwd,allowBrowserTemp);
+    const recent=await this.scan(id,jsonl,cwd,allowBrowserTemp,endByteOffset);
     const known=new Set(recent.map(image=>pathIdentity(image.path)));
     const groups:Array<{offset:number;paths:string[]}>=[];
     const retained=new Set<string>();

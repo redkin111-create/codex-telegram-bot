@@ -65,3 +65,20 @@ test("mobile event stream ignores duplicate and foreign-session events and recog
   assert.equal(state.requestCursor.after, 8);
   assert.equal(await consumeMobileEventStream(reader(["event: revoked\ndata: {}\n\n"]), state, { onEvent: () => undefined }), "revoked");
 });
+
+test("mobile event stream requests a full state sync when the server buffer reports a gap", async () => {
+  const state = new MobileEventBuffer(sessionId);
+  const oldEvent = JSON.stringify({ id: 7, sessionId, kind: "tool", label: "Old event", at: 100 });
+  await consumeMobileEventStream(reader([`event: hello\ndata: ${JSON.stringify({ epoch: firstEpoch })}\n\nid: 7\ndata: ${oldEvent}\n\n`]), state, { onEvent: () => undefined });
+
+  let syncRequested = false;
+  const nextEvent = JSON.stringify({ id: 12, sessionId, kind: "status", status: "working", label: "Codex выполняет задание", at: 101 });
+  await consumeMobileEventStream(reader([`id: 10\nevent: sync_required\ndata: {}\n\nid: 12\ndata: ${nextEvent}\n\n`]), state, {
+    onEvent: () => undefined,
+    onSyncRequired: () => { syncRequested = true; },
+  });
+
+  assert.equal(syncRequested, true);
+  assert.equal(state.requestCursor.after, 12);
+  assert.deepEqual(state.events.map((event) => event.id), [12]);
+});

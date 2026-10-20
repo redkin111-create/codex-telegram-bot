@@ -29,7 +29,7 @@ export class MobileEventBuffer {
     return true;
   }
 
-  accept(message: ParsedSseMessage): { event?: MobileLiveEvent; epochChanged?: boolean; revoked?: boolean } {
+  accept(message: ParsedSseMessage): { event?: MobileLiveEvent; epochChanged?: boolean; revoked?: boolean; syncRequired?: boolean } {
     if (message.event === "hello") {
       let epoch = "";
       try {
@@ -46,6 +46,13 @@ export class MobileEventBuffer {
       return { epochChanged: changed };
     }
     if (message.event === "revoked") return { revoked: true };
+    if (message.event === "sync_required") {
+      const id = message.id === undefined ? undefined : Number(message.id);
+      if (id === undefined || !Number.isSafeInteger(id) || id <= this.after) return {};
+      this.after = id;
+      this.buffered = this.buffered.filter((event) => event.id > id);
+      return { syncRequired: true };
+    }
     if (message.event !== "message") return {};
 
     const event = asLiveEvent(message);
@@ -66,6 +73,7 @@ export async function consumeMobileEventStream(
   handlers: {
     onEvent: (event: MobileLiveEvent) => void;
     onEpochChanged?: () => void;
+    onSyncRequired?: () => void;
   },
   signal?: AbortSignal,
 ): Promise<"closed" | "revoked"> {
@@ -76,6 +84,7 @@ export async function consumeMobileEventStream(
     if (!message) return false;
     const result = buffer.accept(message);
     if (result.epochChanged) handlers.onEpochChanged?.();
+    if (result.syncRequired) handlers.onSyncRequired?.();
     if (result.event) handlers.onEvent(result.event);
     return result.revoked === true;
   };

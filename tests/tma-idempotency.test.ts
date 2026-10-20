@@ -40,27 +40,34 @@ test("same prompt request ID is executed exactly once across simultaneous and re
       "shared-secret-more-than-thirty-two-characters");
     const photo=Buffer.from([255,216,255,224,0,16,74,70,73,70,0,1,2,3,4,5]);
     const image={mimeType:"image/jpeg",data:photo.toString("base64")};
+    const attachment={id:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",name:"notes.txt",mimeType:"text/plain",size:14,text:"safe file text"};
     const job:TmaJob={id:"abcdef0123456789abcdef01",op:"send",userId:101,
-      args:{sessionId,text:"Fix it",images:[image],requestId:"client_0123456789abcdef"}};
-    const [a,b]=await Promise.all([agent.execute(job),agent.execute(job)]);
-    const c=await agent.execute(job);
+      args:{sessionId,text:"Fix it",images:[image],attachmentIds:[attachment.id],requestId:"client_0123456789abcdef"}};
+    const [a,b]=await Promise.all([
+      agent.execute(job,[attachment],{surface:"mobile"}),
+      agent.execute(job,[attachment],{surface:"mobile"}),
+    ]);
+    const c=await agent.execute(job,[attachment],{surface:"mobile"});
     assert.deepEqual([a,b,c],[{result:"ran"},{result:"ran"},{result:"ran"}]);
     assert.equal(submits,1);
     // Simulate a bot process restart: the new agent must replay the same
     // acknowledgement from disk without submitting the Codex task again.
     const restarted=new MiniAppAgent({cfg,acp,registry},"http://127.0.0.1:3301",
       "shared-secret-more-than-thirty-two-characters");
-    assert.deepEqual(await restarted.execute(job),{result:"ran"});
+    assert.deepEqual(restarted.lookupMobileSend(101,job.args),{found:true,result:{result:"ran"}},
+      "the journal can identify the same attachment send without loading its expired upload data");
+    assert.throws(()=>restarted.lookupMobileSend(101,{...job.args,text:"Different text"}),/ID задания уже использован/);
+    assert.deepEqual(await restarted.execute(job,[attachment],{surface:"mobile"}),{result:"ran"});
     assert.equal(submits,1,"restarting the bot must not duplicate file edits");
     restarted.stop();
     assert.equal(submitted?.images.length,1);
     assert.equal(submitted?.images[0]?.mimeType,"image/jpeg");
-    await assert.rejects(()=>agent.execute({...job,args:{...job.args,text:"Different text"}}),
+    await assert.rejects(()=>agent.execute({...job,args:{...job.args,text:"Different text"}},[attachment],{surface:"mobile"}),
       /Нельзя переиспользовать/);
     const edited=Buffer.from(photo);edited[15]=7;
     await assert.rejects(()=>agent.execute({...job,args:{
       ...job.args,images:[{mimeType:"image/jpeg",data:edited.toString("base64")}],
-    }}),/Нельзя переиспользовать/);
+    }},[attachment],{surface:"mobile"}),/Нельзя переиспользовать/);
     agent.stop();
   }finally{rmSync(dir,{recursive:true,force:true});}
 });

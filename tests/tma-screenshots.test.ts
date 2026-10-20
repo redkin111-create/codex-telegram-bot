@@ -275,3 +275,102 @@ test("older screenshot pages include every image beyond the recent 256-image win
     await assert.rejects(index.olderPage(sid,file,cwd,-1),/указатель страницы скриншотов/);
   }finally{rmSync(dir,{recursive:true,force:true});}
 });
+
+test("fork screenshots stay within the parent's recorded byte boundary and older pages remain openable",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"tma-fork-screens-"));
+  const home=join(dir,"sessions"),cwd=join(dir,"workspace");
+  mkdirSync(home);mkdirSync(cwd);
+  const parentId="11111111-1111-4111-8111-111111111111";
+  const childId="22222222-2222-4222-8222-222222222222";
+  const parentPath=join(home,`rollout-2026-10-20-${parentId}.jsonl`);
+  const childPath=join(home,`rollout-2026-10-20-${childId}.jsonl`);
+  const images=Array.from({length:260},(_,index)=>join(cwd,`fork-${String(index).padStart(3,"0")}.png`));
+  const afterFork=join(cwd,"after-fork.png");
+  try{
+    let parentLog=JSON.stringify({type:"session_meta",payload:{id:parentId,cwd}})+"\n";
+    for(const path of images){
+      writeFileSync(path,screenshot);
+      parentLog+=record(path);
+    }
+    const forkBoundary=Buffer.byteLength(parentLog);
+    writeFileSync(afterFork,screenshot);
+    parentLog+=record(afterFork);
+    writeFileSync(parentPath,parentLog);
+    writeFileSync(childPath,JSON.stringify({type:"session_meta",payload:{
+      id:childId,cwd,history_base:{thread_id:parentId,end_byte_offset:forkBoundary},
+    }})+"\n"+JSON.stringify({type:"response_item",payload:{type:"message",role:"user",content:[{type:"input_text",text:"child prompt"}]}})+"\n");
+
+    const cfg={token:"test:token",sessionsDir:home,dataDir:join(dir,"data"),workspace:cwd,
+      projectRoots:[cwd],allowedUsers:new Set(["101"])} as AppConfig;
+    const acp=Object.assign(new EventEmitter(),{
+      listProjects:async()=>[{id:"project",name:"workspace",roots:[cwd]}],
+      listThreads:async()=>[
+        {id:childId,cwd,name:"Fork child",source:"cli",recencyAt:2,parentThreadId:parentId},
+        {id:parentId,cwd,name:"Fork parent",source:"cli",recencyAt:1},
+      ],
+      availableModels:[],currentModelId:"test",isConnected:true,
+    }) as unknown as AcpClient;
+    const registry={controller:()=>({list:()=>[]}),runtimeForSession:()=>undefined,get:()=>({sessionId:childId})} as unknown as RuntimeRegistry;
+    const agent=new MiniAppAgent({cfg,acp,registry},"http://127.0.0.1:3301","secret-with-more-than-thirty-two-characters");
+    try{
+      await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
+      const history=await agent.execute({id:"abcdef0123456789abcdef02",op:"history",userId:101,args:{sessionId:childId}}) as {images:Array<{path:string}>};
+      assert.equal(history.images.length,256);
+      assert.deepEqual(history.images.map(image=>image.path),images.slice(4));
+      assert.equal(history.images.some(image=>image.path===afterFork),false,"post-fork parent screenshots must stay hidden");
+
+      const first=await agent.executeMobile({op:"listOlderScreenshots",userId:101,args:{sessionId:childId}}) as {images:Array<{path:string}>;nextCursor?:string};
+      assert.deepEqual(first.images,[]);
+      assert.ok(first.nextCursor,"the page cursor should continue from the child rollout into its parent");
+      const older=await agent.executeMobile({op:"listOlderScreenshots",userId:101,args:{sessionId:childId,cursor:first.nextCursor}}) as {images:Array<{path:string}>;nextCursor?:string};
+      assert.deepEqual(older.images.map(image=>image.path),images.slice(0,4));
+      assert.equal(older.nextCursor,undefined);
+      const loaded=await agent.execute({id:"abcdef0123456789abcdef03",op:"image",userId:101,args:{sessionId:childId,path:images[0]}}) as {mime:string;data:string};
+      assert.equal(loaded.mime,"image/png");
+      assert.deepEqual(Buffer.from(loaded.data,"base64"),screenshot);
+      await assert.rejects(agent.execute({id:"abcdef0123456789abcdef04",op:"image",userId:101,args:{sessionId:childId,path:afterFork}}),/Изображение не относится/);
+    }finally{agent.stop();}
+  }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+test("older screenshot paging reaches the ninth source in the deepest supported fork chain",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"tma-deep-fork-screens-"));
+  const home=join(dir,"sessions"),cwd=join(dir,"workspace");
+  mkdirSync(home);mkdirSync(cwd);
+  const ids=Array.from({length:9},(_,index)=>`33333333-3333-4333-8333-${String(index+1).padStart(12,"0")}`);
+  const logs=new Array<string>(ids.length);
+  const sourceImages=ids.map((_,sourceIndex)=>Array.from({length:sourceIndex===8?260:1},(_,imageIndex)=>
+    join(cwd,`source-${sourceIndex}-${String(imageIndex).padStart(3,"0")}.png`)));
+  try{
+    for(let index=ids.length-1;index>=0;index--){
+      for(const imagePath of sourceImages[index]!)writeFileSync(imagePath,screenshot);
+      const historyBase=index+1<ids.length?{history_base:{thread_id:ids[index+1],end_byte_offset:Buffer.byteLength(logs[index+1]!)}}:{};
+      const meta=JSON.stringify({type:"session_meta",payload:{id:ids[index],cwd,...historyBase}})+"\n";
+      logs[index]=meta+sourceImages[index]!.map(record).join("");
+      writeFileSync(join(home,`rollout-2026-10-20-${ids[index]}.jsonl`),logs[index]!);
+    }
+
+    const cfg={token:"test:token",sessionsDir:home,dataDir:join(dir,"data"),workspace:cwd,
+      projectRoots:[cwd],allowedUsers:new Set(["101"])} as AppConfig;
+    const acp=Object.assign(new EventEmitter(),{
+      listProjects:async()=>[{id:"project",name:"workspace",roots:[cwd]}],
+      listThreads:async()=>ids.map((id,index)=>({id,cwd,name:`Fork ${index}`,source:"cli",recencyAt:ids.length-index,parentThreadId:ids[index+1]})),
+      availableModels:[],currentModelId:"test",isConnected:true,
+    }) as unknown as AcpClient;
+    const registry={controller:()=>({list:()=>[]}),runtimeForSession:()=>undefined,get:()=>({sessionId:ids[0]})} as unknown as RuntimeRegistry;
+    const agent=new MiniAppAgent({cfg,acp,registry},"http://127.0.0.1:3301","secret-with-more-than-thirty-two-characters");
+    try{
+      await agent.execute({id:"abcdef0123456789abcdef11",op:"snapshot",userId:101,args:{}});
+      let cursor:string|undefined;
+      const found:string[]=[];
+      for(let index=0;index<ids.length;index++){
+        const page=await agent.executeMobile({op:"listOlderScreenshots",userId:101,args:{sessionId:ids[0],...(cursor?{cursor}:{})}}) as {images:Array<{path:string}>;nextCursor?:string};
+        found.push(...page.images.map(image=>image.path));
+        cursor=page.nextCursor;
+        if(cursor===undefined)break;
+      }
+      assert.deepEqual(found,sourceImages[8]!.slice(0,4));
+      assert.equal(cursor,undefined);
+    }finally{agent.stop();}
+  }finally{rmSync(dir,{recursive:true,force:true});}
+});

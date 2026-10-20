@@ -151,25 +151,7 @@ export async function readConversationHistoryAsync(
   if (maxEntries <= 0 || maxBytes <= 0) return [];
   if (!resolveParentPath) return (await readConversationFileAsync(jsonlPath, maxEntries, maxBytes, includeToolOutputs)).entries;
 
-  // Codex forks keep the earlier transcript in the parent rollout and record
-  // the exact byte boundary in the child's session_meta. Follow only parents
-  // that the caller explicitly resolves, and never read past that boundary.
-  const sources: Array<{ path: string; endByteOffset?: number }> = [{ path: jsonlPath }];
-  const seenIds = new Set<string>();
-  const seenPaths = new Set<string>([jsonlPath]);
-  let currentPath = jsonlPath;
-  for (let depth = 0; depth < 8; depth++) {
-    const meta = readHistoryBase(currentPath);
-    if (!meta?.id || !meta.parentId || meta.endByteOffset === undefined) break;
-    seenIds.add(meta.id);
-    if (seenIds.has(meta.parentId)) break;
-    let parentPath: string | undefined;
-    try { parentPath = await resolveParentPath(meta.parentId); } catch { break; }
-    if (!parentPath || seenPaths.has(parentPath)) break;
-    sources.push({ path: parentPath, endByteOffset: meta.endByteOffset });
-    seenPaths.add(parentPath);
-    currentPath = parentPath;
-  }
+  const sources = await conversationHistorySources(jsonlPath, resolveParentPath);
 
   const chunks: HistoryEntry[][] = [];
   let bytesLeft = maxBytes;
@@ -185,6 +167,43 @@ export async function readConversationHistoryAsync(
     bytesLeft -= read.bytesRead;
   }
   return chunks.reverse().flat().slice(-maxEntries);
+}
+
+export interface ConversationHistorySource {
+  path: string;
+  threadId?: string;
+  endByteOffset?: number;
+}
+
+export const MAX_CONVERSATION_HISTORY_SOURCES = 9;
+
+/** Resolve the validated rollout chain and fork byte limits for one session. */
+export async function conversationHistorySources(
+  jsonlPath: string,
+  resolveParentPath: (threadId: string) => Promise<string | undefined>,
+): Promise<ConversationHistorySource[]> {
+
+  // Codex forks keep the earlier transcript in the parent rollout and record
+  // the exact byte boundary in the child's session_meta. Follow only parents
+  // that the caller explicitly resolves, and never read past that boundary.
+  const rootMeta = readHistoryBase(jsonlPath);
+  const sources: ConversationHistorySource[] = [{ path: jsonlPath, ...(rootMeta?.id ? { threadId: rootMeta.id } : {}) }];
+  const seenIds = new Set<string>();
+  const seenPaths = new Set<string>([jsonlPath]);
+  let currentPath = jsonlPath;
+  for (let depth = 0; depth < MAX_CONVERSATION_HISTORY_SOURCES - 1; depth++) {
+    const meta = readHistoryBase(currentPath);
+    if (!meta?.id || !meta.parentId || meta.endByteOffset === undefined) break;
+    seenIds.add(meta.id);
+    if (seenIds.has(meta.parentId)) break;
+    let parentPath: string | undefined;
+    try { parentPath = await resolveParentPath(meta.parentId); } catch { break; }
+    if (!parentPath || seenPaths.has(parentPath)) break;
+    sources.push({ path: parentPath, threadId: meta.parentId, endByteOffset: meta.endByteOffset });
+    seenPaths.add(parentPath);
+    currentPath = parentPath;
+  }
+  return sources;
 }
 
 function readHistoryBase(path: string): { id?: string; parentId?: string; endByteOffset?: number } | undefined {

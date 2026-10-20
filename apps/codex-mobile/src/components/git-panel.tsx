@@ -249,7 +249,9 @@ export function GitPanel({ sessionId, connected, sessionBusy, onClose, onOperati
       {success && <p role="status" className="mx-4 mt-3 text-sm text-[#c7e89a] sm:mx-6">{success}</p>}
       <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
         {loading && !status ? <p className="text-sm text-muted">Читаю статус Git…</p> : status && <>
-          <Card className="p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs text-muted">Текущая ветка</p><p className="mt-1 break-all font-mono text-sm">{status.branch || "не определена"}</p></div><Badge className={status.clean ? "border-[#3d5630] text-[#c7e89a]" : "text-[#f2c66d]"}>{status.clean ? "Чисто" : `${status.changes.length} изменений`}</Badge></div>
+          <Card className="p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs text-muted">Текущая ветка</p><p className="mt-1 break-all font-mono text-sm">{status.branch || "не определена"}</p></div><Badge className={status.clean ? "border-[#3d5630] text-[#c7e89a]" : "text-[#f2c66d]"}>{status.clean ? "Чисто" : status.hasHiddenChanges ? `${status.changes.length} видимых · ${status.hiddenChangeCount} скрытых` : `${status.changes.length} изменений`}</Badge></div>
+            {status.hasHiddenStagedChanges && <p role="alert" className="mt-3 rounded-lg border border-[#735c35] bg-[#302719] p-2 text-xs leading-relaxed text-[#f0d995]">Есть добавленные в индекс изменения скрытых или служебных файлов. Коммит с телефона заблокирован, потому что их содержимое здесь не показывается.</p>}
+            {status.hasHiddenChanges && !status.hasHiddenStagedChanges && <p role="status" className="mt-3 rounded-lg border border-border bg-[#111613] p-2 text-xs leading-relaxed text-muted">В репозитории есть изменения в скрытых или служебных файлах. Они не показаны, но учитываются при проверке чистоты.</p>}
             {status.changes.length > 0 && <ul className="mt-4 divide-y divide-border">{status.changes.map((change, index) => {
               const conflict = isUnmergedGitChange(change);
               const needsStage = !conflict && (change.code === "??" || (change.worktreeStatus !== " " && change.worktreeStatus !== "?"));
@@ -298,7 +300,7 @@ export function GitPanel({ sessionId, connected, sessionBusy, onClose, onOperati
           <Card className="mt-2 min-h-48 overflow-hidden"><DiffViewer patch={patch} loading={Boolean(loadingDiffPath)} emptyMessage={status.clean ? "Нет незакоммиченных изменений." : "Git не создал текстовый diff для этих изменений."} focusLine={focusedReviewLine} /></Card>
           <form className="mt-4 flex flex-col gap-2 sm:flex-row" onSubmit={(event) => { event.preventDefault(); void mutate("gitCommit", { message: commitMessage }, "Изменения сохранены коммитом"); }}>
             <Input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder="Сообщение коммита" aria-label="Сообщение коммита" maxLength={200} />
-            <Button type="submit" className="min-h-10 shrink-0" disabled={!connected || stagedCount === 0 || !commitMessage.trim() || Boolean(busyAction)}><GitCommit size={16} />{busyAction === "gitCommit" ? "Сохраняю" : `Коммит (${stagedCount})`}</Button>
+            <Button type="submit" className="min-h-10 shrink-0" disabled={!connected || stagedCount === 0 || status.hasHiddenStagedChanges || !commitMessage.trim() || Boolean(busyAction)}><GitCommit size={16} />{busyAction === "gitCommit" ? "Сохраняю" : `Коммит (${stagedCount})`}</Button>
           </form>
           <form className="mt-3 flex flex-col gap-2 sm:flex-row" onSubmit={(event) => { event.preventDefault(); void mutate("gitCreateBranch", { name: branchName }, "Ветка создана и выбрана"); }}>
             <Input value={branchName} onChange={(event) => setBranchName(event.target.value)} placeholder="Имя новой ветки" aria-label="Имя новой ветки" maxLength={120} />

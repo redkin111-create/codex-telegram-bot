@@ -3,7 +3,7 @@ import test from "node:test";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ReasoningEffort } from "../src/app/types.js";
@@ -754,6 +754,7 @@ test("Windows Mini App agent lists existing Codex projects and sessions",async()
   const acp=Object.assign(new EventEmitter(),{
     listProjects:async()=>[{id:"p1",name:"toy",roots:[project],createdAt:1,updatedAt:1,recencyAt:1}],
     listThreads:async()=>[{id:"session-a",name:"Yupland NFT work",cwd:project,source:"cli",createdAt:1,updatedAt:2,recencyAt:2}],
+    isConnected:true,
     availableModels:[{modelId:"test",name:"Test Model"}],
     currentModelId:"test",
   }) as unknown as AcpClient;
@@ -777,6 +778,31 @@ test("Windows Mini App agent lists existing Codex projects and sessions",async()
     assert.equal(result.sessions[0]?.id,"session-a");
     assert.equal(result.selected,"session-a");
     assert.equal(result.online,true);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("mobile snapshot reports a disconnected Codex app-server as offline",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-tma-offline-snapshot-"));
+  const project=join(dir,"toy");
+  const sessionId="12121212-1212-4212-8212-121212121212";
+  const acp=Object.assign(new EventEmitter(),{
+    listProjects:async()=>[{id:"p1",name:"toy",roots:[project]}],
+    listThreads:async()=>[{id:sessionId,name:"Offline thread",cwd:project,source:"cli",status:{type:"idle"},recencyAt:1}],
+    isConnected:false,availableModels:[],currentModelId:"test",
+  }) as unknown as AcpClient;
+  const active={sessionId,isBusy:false};
+  const registry={controller:()=>({list:()=>[],foreground:()=>active}),get:()=>active} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101"])} as AppConfig;
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    const result=await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}}) as {
+      online:boolean;sessions:Array<{id:string;busy:boolean;liveStatus:string;liveLabel:string}>;
+    };
+    assert.equal(result.online,false);
+    assert.equal(result.sessions[0]?.id,sessionId);
+    assert.equal(result.sessions[0]?.busy,false);
+    assert.equal(result.sessions[0]?.liveStatus,"observing");
+    assert.equal(result.sessions[0]?.liveLabel,"Codex готов к работе");
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 
@@ -1820,9 +1846,11 @@ test("mobile delete removes owned files and recursively deletes only a confirmed
   const project=join(dir,"project");mkdirSync(join(project,"empty-folder"),{recursive:true});mkdirSync(join(project,"full-folder"),{recursive:true});
   writeFileSync(join(project,"remove.txt"),"remove this file\n");writeFileSync(join(project,"full-folder","keep.txt"),"keep this file\n");
   const outside=join(dir,"outside.txt");writeFileSync(outside,"outside project must survive\n");
-  try{symlinkSync(outside,join(project,"full-folder","outside-link.txt"),"file");}catch{/* Symlink creation can be disabled by the host OS. */}
+  let outsideFileLinkCreated=false;
+  try{symlinkSync(outside,join(project,"full-folder","outside-link.txt"),"file");outsideFileLinkCreated=true;}catch{/* Symlink creation can be disabled by the host OS. */}
   const outsideDirectory=join(dir,"outside-directory");mkdirSync(outsideDirectory);writeFileSync(join(outsideDirectory,"keep.txt"),"outside directory must survive\n");
-  try{symlinkSync(outsideDirectory,join(project,"full-folder","outside-directory-link"),"junction");}catch{/* Junction creation can be disabled by the host OS. */}
+  let outsideDirectoryLinkCreated=false;
+  try{symlinkSync(outsideDirectory,join(project,"full-folder","outside-directory-link"),"junction");outsideDirectoryLinkCreated=true;}catch{/* Junction creation can be disabled by the host OS. */}
   const sessionId="27272727-2727-4272-8272-272727272727";
   const runtime={sessionId,isBusy:false};
   const acp=Object.assign(new EventEmitter(),{
@@ -1851,6 +1879,8 @@ test("mobile delete removes owned files and recursively deletes only a confirmed
     const removedFullFolder=await agent.executeMobile({op:"deleteProjectEntry",userId:101,args:{sessionId,path:"full-folder",expectedKind:"directory",expectedMtimeMs:full.mtimeMs,confirmationName:"full-folder"}});
     assert.deepEqual(removedFullFolder,{path:"full-folder",kind:"directory"});
     assert.equal(existsSync(join(project,"full-folder")),false);
+    if(outsideFileLinkCreated)assert.equal(existsSync(join(project,"full-folder","outside-link.txt")),false);
+    if(outsideDirectoryLinkCreated)assert.equal(existsSync(join(project,"full-folder","outside-directory-link")),false);
     assert.equal(readFileSync(outside,"utf8"),"outside project must survive\n");
     assert.equal(readFileSync(join(outsideDirectory,"keep.txt"),"utf8"),"outside directory must survive\n");
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
@@ -1898,13 +1928,17 @@ test("mobile Git view reads bounded branch status and safe staged and unstaged d
   writeFileSync(join(project,"main.ts"),"export const answer = 1;\n");
   writeFileSync(join(project,"move.me"),"rename fixture\n");
   writeFileSync(join(project,".env"),"TOKEN=fixture-secret-before\n");
+  mkdirSync(join(project,"settings"));
+  writeFileSync(join(project,"settings",".env"),"TOKEN=nested-fixture-secret-before\n");
   run("add","main.ts");
   run("add","move.me");
   run("add",".env");
+  run("add","settings/.env");
   run("commit","-m","fixture base");
   run("mv","move.me","renamed résumé.md");
   writeFileSync(join(project,"main.ts"),"export const answer = 2;\n");
   writeFileSync(join(project,".env"),"TOKEN=fixture-secret-after\n");
+  writeFileSync(join(project,"settings",".env"),"TOKEN=nested-fixture-secret-after\n");
   run("add","main.ts");
   writeFileSync(join(project,"main.ts"),"export const answer = 3;\n");
   writeFileSync(join(project,"notes.txt"),"untracked note\n");
@@ -1968,6 +2002,27 @@ test("mobile Git view reads bounded branch status and safe staged and unstaged d
     assert.equal(commit.message,"mobile fixture commit");
     assert.ok(commit.commit.length>=7);
     assert.equal(execFileSync("git",["-C",project,"log","-1","--pretty=%s"],{encoding:"utf8",windowsHide:true}).trim(),"mobile fixture commit");
+    run("checkout","--","main.ts");
+    unlinkSync(join(project,"résumé file.txt"));
+    assert.equal(existsSync(join(project,"résumé file.txt")),false);
+    const hiddenOnly=await agent.executeMobile({op:"gitStatus",userId:101,args:{sessionId}}) as {
+      clean:boolean;changes:Array<{path:string}>;hasHiddenChanges?:boolean;hasHiddenStagedChanges?:boolean;
+    };
+    assert.equal(hiddenOnly.clean,false,"hidden tracked changes must keep the real working tree dirty");
+    assert.deepEqual(hiddenOnly.changes,[],"hidden filenames must stay out of the mobile file list");
+    assert.equal(hiddenOnly.hasHiddenChanges,true);
+    assert.doesNotMatch(JSON.stringify(hiddenOnly),/fixture-secret/);
+    await assert.rejects(agent.executeMobile({op:"gitStage",userId:101,args:{sessionId,path:"settings"}}),/папк|каталог|скрыт/i);
+    run("add",".env");
+    const hiddenStaged=await agent.executeMobile({op:"gitStatus",userId:101,args:{sessionId}}) as {
+      clean:boolean;hasHiddenStagedChanges?:boolean;
+    };
+    assert.equal(hiddenStaged.clean,false);
+    assert.equal(hiddenStaged.hasHiddenStagedChanges,true);
+    const headBeforeHiddenCommit=execFileSync("git",["-C",project,"rev-parse","HEAD"],{encoding:"utf8",windowsHide:true}).trim();
+    await assert.rejects(agent.executeMobile({op:"gitCommit",userId:101,args:{sessionId,message:"hidden fixture"}}),/скрыт|недоступн/i);
+    assert.equal(execFileSync("git",["-C",project,"rev-parse","HEAD"],{encoding:"utf8",windowsHide:true}).trim(),headBeforeHiddenCommit);
+    run("reset","--quiet","--",".env");
     await assert.rejects(agent.executeMobile({op:"gitCreateBranch",userId:101,args:{sessionId,name:"bad branch"}}),/not a valid branch name/i);
     const branch=await agent.executeMobile({op:"gitCreateBranch",userId:101,args:{sessionId,name:"phone-flow"}}) as {branch:string};
     assert.equal(branch.branch,"phone-flow");

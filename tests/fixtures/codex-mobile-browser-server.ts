@@ -281,6 +281,7 @@ const agent = {
   async canReadSession(sessionId: string, id: number) {
     return id === ownerId && (sessions.some((session) => session.id === sessionId) || archivedSessions.some((session) => session.id === sessionId));
   },
+  lookupMobileSend() { return { found: false }; },
   async execute(job: TmaJob, attachments: readonly MobilePromptAttachment[] = []): Promise<unknown> {
     const args = job.args;
     if (job.op === "snapshot") {

@@ -25,6 +25,7 @@ const MOBILE_READ_OPERATIONS = new Set<MobileLocalOperation>(["listOlderScreensh
 
 export interface MobileAgent {
   canReadSession(id: string, userId: number): Promise<boolean>;
+  lookupMobileSend(userId: number, args: Record<string, unknown>): { found: boolean; result?: unknown };
   execute(job: TmaJob, attachments?: readonly MobilePromptAttachment[], context?: { surface: "mobile" }): Promise<unknown>;
   executeMobile?(job: MobileLocalJob): Promise<unknown>;
 }
@@ -462,8 +463,8 @@ export function createMobileServer(options: MobileServerOptions): Server {
           return {
             ...session,
             ...(typeof session.id === "string" && readStates.has(session.id) ? { readState: readStates.get(session.id) } : {}),
-            liveStatus: live?.status ?? (session.busy === true ? "working" : "unknown"),
-            liveLabel: live?.label ?? (session.busy === true ? "Codex работает" : "Статус неизвестен"),
+            liveStatus: live?.status ?? (typeof session.liveStatus === "string" ? session.liveStatus : session.busy === true ? "working" : "unknown"),
+            liveLabel: live?.label ?? (typeof session.liveLabel === "string" ? session.liveLabel : session.busy === true ? "Codex выполняет задание" : "Статус неизвестен"),
           };
         });
         json(res, 200, { ...snapshot, sessions, ...(Array.isArray(snapshot.archivedSessions) ? { archivedSessions: archivedSessions.map(withReadState) } : {}) });
@@ -640,8 +641,8 @@ export function createMobileServer(options: MobileServerOptions): Server {
         const live = options.feed.getStatus(sessionId);
         json(res, 200, {
           ...activityValue,
-          liveStatus: live?.status ?? (activityValue.busy === true ? "working" : "unknown"),
-          liveLabel: live?.label ?? (activityValue.busy === true ? "Codex работает" : "Статус неизвестен"),
+          liveStatus: live?.status ?? (typeof activityValue.liveStatus === "string" ? activityValue.liveStatus : activityValue.busy === true ? "working" : "unknown"),
+          liveLabel: live?.label ?? (typeof activityValue.liveLabel === "string" ? activityValue.liveLabel : activityValue.busy === true ? "Codex выполняет задание" : "Статус неизвестен"),
         });
       }
       catch (error) { json(res, 502, { error: safeError(error) }); }
@@ -697,6 +698,12 @@ export function createMobileServer(options: MobileServerOptions): Server {
         if (attachmentIds.length > 0) {
           if (typeof args.sessionId !== "string" || typeof args.requestId !== "string") {
             json(res, 400, { error: "Для вложения нужен выбранный сеанс и идентификатор запроса" }); return;
+          }
+          if (body.op === "send") {
+            try {
+              const replay = options.agent.lookupMobileSend(device.ownerId, { ...args, attachmentIds });
+              if (replay.found) { json(res, 200, replay.result); return; }
+            } catch (error) { json(res, 409, { error: safeError(error) }); return; }
           }
           try {
             promptAttachments = await attachments.resolveForPrompt(
@@ -792,7 +799,10 @@ export function createMobileServer(options: MobileServerOptions): Server {
       res.once("close", close);
       const push = (event: LiveEvent) => {
         if (stopped || res.destroyed || res.writableEnded) return;
-        if (!res.write(`id: ${event.id}\ndata: ${JSON.stringify(event)}\n\n`)) end();
+        const frame = event.kind === "sync"
+          ? `id: ${event.id}\nevent: sync_required\ndata: {}\n\n`
+          : `id: ${event.id}\ndata: ${JSON.stringify(event)}\n\n`;
+        if (!res.write(frame)) end();
       };
       const cursor = epoch === options.feed.epoch ? after : 0;
       unsubscribe = options.feed.subscribe(sessionId, cursor, push);

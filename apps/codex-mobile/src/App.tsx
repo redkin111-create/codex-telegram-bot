@@ -5,6 +5,7 @@ import {
   readAppInventory, readHistory, readSession, readSkillInventory, readSnapshot, removeAttachment, resolveApproval, resolveElicitation, runOperation, uploadAttachment,
 } from "./api.js";
 import { coalesceInFlight } from "./single-flight.js";
+import { clearSessionDraftIfUnchanged, isCurrentMobileAuthScope, isCurrentMobileSessionSync, mobileDraftKey, PendingMobileSendIds, mobileSendFingerprint, setSessionDraft, updateCurrentSessionState, type MobileAuthScope } from "./lib/session-state.js";
 import { consumeMobileEventStream, MobileEventBuffer } from "./lib/event-stream.js";
 import { ApprovalPanel } from "./components/approval-panel.js";
 import { ElicitationPanel } from "./components/elicitation-panel.js";
@@ -25,6 +26,22 @@ const TerminalPanel = lazy(() => import("./components/terminal-panel.js").then((
 
 const emptyQueue: MobileQueue = { items: [], busy: false, paused: false };
 type SessionPage = { sessions: MobileSession[]; nextCursor?: string; loaded: boolean; loading: boolean };
+interface MobileSessionView {
+  history: HistoryEntry[];
+  activity?: MobileActivity;
+  queue: MobileQueue;
+  events: MobileLiveEvent[];
+  loading: boolean;
+  streamConnected: boolean;
+  pendingApproval?: MobileApproval;
+  approvalOpen: boolean;
+  pendingElicitation?: MobileElicitation;
+  elicitationOpen: boolean;
+}
+const emptySessionView = (): MobileSessionView => ({
+  history: [], activity: undefined, queue: emptyQueue, events: [], loading: false, streamConnected: false,
+  pendingApproval: undefined, approvalOpen: false, pendingElicitation: undefined, elicitationOpen: false,
+});
 
 export default function App() {
   const [device, setDevice] = useState<MobileDevice>();
@@ -40,17 +57,15 @@ export default function App() {
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchMoreLoading, setSearchMoreLoading] = useState(false);
   const [sessionPages, setSessionPages] = useState<Record<string, SessionPage>>({});
-  const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const [activity, setActivity] = useState<MobileActivity>();
-  const [queue, setQueue] = useState<MobileQueue>(emptyQueue);
-  const [events, setEvents] = useState<MobileLiveEvent[]>([]);
+  const [draftsBySession, setDraftsBySession] = useState<Record<string, string>>({});
+  const [draftScopeEpoch, setDraftScopeEpoch] = useState(0);
+  const [sessionSwitchNotice, setSessionSwitchNotice] = useState("");
+  const [sessionViewState, setSessionViewState] = useState<{ sessionId: string; value: MobileSessionView }>({ sessionId: "", value: emptySessionView() });
   const [includeTools, setIncludeTools] = useState(false);
-  const [loading, setLoading] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [forking, setForking] = useState(false);
   const [sideChatting, setSideChatting] = useState(false);
   const [compacting, setCompacting] = useState(false);
-  const [streamConnected, setStreamConnected] = useState(false);
   const [error, setError] = useState("");
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [devicesOpen, setDevicesOpen] = useState(false);
@@ -59,23 +74,57 @@ export default function App() {
   const [gitOpen, setGitOpen] = useState(false);
   const [gitReviewLocation, setGitReviewLocation] = useState<{ sessionId: string; path: string; line?: number }>();
   const [terminalOpen, setTerminalOpen] = useState(false);
-  const [pendingApproval, setPendingApproval] = useState<MobileApproval>();
-  const [approvalOpen, setApprovalOpen] = useState(false);
-  const [pendingElicitation, setPendingElicitation] = useState<MobileElicitation>();
-  const [elicitationOpen, setElicitationOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const selectedIdRef = useRef("");
   selectedIdRef.current = selectedId;
-  const pendingSend = useRef<{ fingerprint: string; requestId: string } | undefined>(undefined);
+  const sessionSelection = useRef({ sessionId: "", generation: 0 });
+  if (sessionSelection.current.sessionId !== selectedId) {
+    sessionSelection.current = { sessionId: selectedId, generation: sessionSelection.current.generation + 1 };
+  }
+  const lastSelectedSessionId = useRef("");
+  const pendingSend = useRef(new PendingMobileSendIds());
   const searchGeneration = useRef(0);
-  const sessionPageRequests = useRef(new Set<string>());
+  const sessionPageRequests = useRef(new Map<string, object>());
+  const sessionPagesGeneration = useRef(0);
   const snapshotRequest = useRef<Promise<void> | undefined>(undefined);
+  const authScope = useRef({ generation: 0, deviceId: "" });
+  const syncRequestGeneration = useRef(0);
+  const liveEventRevision = useRef(0);
+  const includeToolsRef = useRef(includeTools);
+  includeToolsRef.current = includeTools;
   const eventBuffer = useRef<MobileEventBuffer | undefined>(undefined);
+  const sessionView = sessionViewState.sessionId === selectedId ? sessionViewState.value : { ...emptySessionView(), loading: Boolean(selectedId) };
+  const { history, activity, queue, events, loading, streamConnected, pendingApproval, approvalOpen, pendingElicitation, elicitationOpen } = sessionView;
+
+  useEffect(() => {
+    if (!selectedId) {
+      setSessionSwitchNotice("");
+      return;
+    }
+    const previous = lastSelectedSessionId.current;
+    lastSelectedSessionId.current = selectedId;
+    if (!previous || previous === selectedId) return;
+    setSessionSwitchNotice("Текстовый черновик остаётся в прошлом сеансе. Прикреплённые файлы, изображения и выбранные apps очищены.");
+    const timeout = setTimeout(() => setSessionSwitchNotice(""), 8_000);
+    return () => clearTimeout(timeout);
+  }, [selectedId]);
+
+  const patchSessionView = useCallback((targetSessionId: string, update: (current: MobileSessionView) => MobileSessionView) => {
+    setSessionViewState((current) => updateCurrentSessionState(
+      current, selectedIdRef.current, targetSessionId, emptySessionView(), update,
+    ));
+  }, []);
 
   const expireSession = useCallback(() => {
+    authScope.current = { generation: authScope.current.generation + 1, deviceId: "" };
+    snapshotRequest.current = undefined;
+    setRefreshing(false);
+    setDraftsBySession({});
+    setDraftScopeEpoch((epoch) => epoch + 1);
     setDevice(undefined);
     setCsrf("");
     setSnapshot(undefined);
+    setSelectedProject("");
     setSelectedId("");
     setSelectedSearchSession(undefined);
     setSearchResults(undefined);
@@ -83,20 +132,18 @@ export default function App() {
     setSearchMoreLoading(false);
     setSearchLoading(false);
     setSessionPages({});
+    sessionPagesGeneration.current++;
     sessionPageRequests.current.clear();
-    setHistory([]);
-    setActivity(undefined);
-    setQueue(emptyQueue);
+    setSessionViewState({ sessionId: "", value: emptySessionView() });
     setDevicesOpen(false);
     setSettingsOpen(false);
     setFilesOpen(false);
     setGitOpen(false);
     setTerminalOpen(false);
-    setPendingApproval(undefined);
-    setApprovalOpen(false);
   }, []);
 
-  const handleApiError = useCallback((cause: unknown) => {
+  const handleApiError = useCallback((cause: unknown, requestScope?: MobileAuthScope) => {
+    if (requestScope && !isCurrentMobileAuthScope(authScope.current, requestScope.generation, requestScope.deviceId)) return;
     if (cause instanceof MobileApiError && cause.status === 401) {
       expireSession();
       return;
@@ -106,38 +153,52 @@ export default function App() {
 
   const loadMobileSkills = useCallback(async () => {
     if (!selectedId) return [];
+    const requestScope = authScope.current;
     try { return (await readSkillInventory(selectedId)).skills; }
-    catch (cause) { handleApiError(cause); throw cause; }
+    catch (cause) { handleApiError(cause, requestScope); throw cause; }
   }, [selectedId, handleApiError]);
 
   const loadMobileApps = useCallback(async () => {
     if (!selectedId) return [];
+    const requestScope = authScope.current;
     try { return (await readAppInventory(selectedId)).apps; }
-    catch (cause) { handleApiError(cause); throw cause; }
+    catch (cause) { handleApiError(cause, requestScope); throw cause; }
   }, [selectedId, handleApiError]);
 
   const refreshSnapshot = useCallback((showSpinner = false) => {
+    const requestScope = authScope.current;
+    const requestGeneration = requestScope.generation;
+    const requestDeviceId = requestScope.deviceId;
     if (showSpinner && !snapshotRequest.current) setRefreshing(true);
     return coalesceInFlight(snapshotRequest, async () => {
       try {
         const next = await readSnapshot();
+        if (!isCurrentMobileAuthScope(authScope.current, requestGeneration, requestDeviceId)) return;
         setSnapshot(next);
         setSelectedProject((current) => current || next.projects[0]?.path || "");
         setSelectedId((current) => current || next.selected || "");
         setError("");
-      } catch (cause) { handleApiError(cause); }
-      finally { if (showSpinner) setRefreshing(false); }
+      } catch (cause) {
+        if (isCurrentMobileAuthScope(authScope.current, requestGeneration, requestDeviceId)) handleApiError(cause, requestScope);
+      }
+      finally {
+        if (showSpinner && isCurrentMobileAuthScope(authScope.current, requestGeneration, requestDeviceId)) setRefreshing(false);
+      }
     });
   }, [handleApiError]);
 
   useEffect(() => {
     let alive = true;
+    const requestGeneration = authScope.current.generation;
     void readSession().then((value) => {
-      if (!alive) return;
+      if (!alive || authScope.current.generation !== requestGeneration) return;
+      authScope.current = { generation: authScope.current.generation + 1, deviceId: value.device?.id ?? "" };
       setDevice(value.device);
       setCsrf(value.csrfToken);
     }).catch((cause: unknown) => {
-      if (alive && !(cause instanceof MobileApiError && cause.status === 401)) handleApiError(cause);
+      if (alive && authScope.current.generation === requestGeneration && !(cause instanceof MobileApiError && cause.status === 401)) {
+        handleApiError(cause, { generation: requestGeneration, deviceId: authScope.current.deviceId });
+      }
     });
     return () => { alive = false; };
   }, [handleApiError]);
@@ -170,84 +231,75 @@ export default function App() {
 
   useEffect(() => {
     if (!device || !selectedId) {
-      setHistory([]);
-      setActivity(undefined);
-      setQueue(emptyQueue);
-      setStreamConnected(false);
-      setEvents([]);
+      setSessionViewState({ sessionId: "", value: emptySessionView() });
       eventBuffer.current?.setSession("");
-      setPendingApproval(undefined);
-      setApprovalOpen(false);
-      setPendingElicitation(undefined);
-      setElicitationOpen(false);
       return;
     }
-    setPendingApproval(undefined);
-    setPendingElicitation(undefined);
-    setElicitationOpen(false);
+    patchSessionView(selectedId, (current) => ({ ...current, loading: true, streamConnected: false, events: [], pendingApproval: undefined, approvalOpen: false, pendingElicitation: undefined, elicitationOpen: false }));
     let alive = true;
+    const requestScope = authScope.current;
     const historyRequest: { current?: Promise<void> } = {};
     const load = () => coalesceInFlight(historyRequest, async () => {
-      setLoading(true);
+      patchSessionView(selectedId, (current) => ({ ...current, loading: true }));
       try {
         const result = await readHistory(selectedId, includeTools);
-        if (alive) setHistory(result.entries);
-      } catch (cause) { if (alive) handleApiError(cause); }
-      finally { if (alive) setLoading(false); }
+        if (alive) patchSessionView(selectedId, (current) => ({ ...current, history: result.entries }));
+      } catch (cause) { if (alive) handleApiError(cause, requestScope); }
+      finally { if (alive) patchSessionView(selectedId, (current) => ({ ...current, loading: false })); }
       const [approvalResult, elicitationResult] = await Promise.allSettled([
         readApprovals(selectedId), readElicitations(selectedId),
       ]);
       if (alive) {
         if (approvalResult.status === "fulfilled") {
-          setPendingApproval(approvalResult.value.approvals[0]);
-          setApprovalOpen(approvalResult.value.approvals.length > 0);
-        } else handleApiError(approvalResult.reason);
+          patchSessionView(selectedId, (current) => ({ ...current, pendingApproval: approvalResult.value.approvals[0], approvalOpen: approvalResult.value.approvals.length > 0 }));
+        } else handleApiError(approvalResult.reason, requestScope);
         if (elicitationResult.status === "fulfilled") {
-          setPendingElicitation(elicitationResult.value.elicitations[0]);
-          setElicitationOpen(elicitationResult.value.elicitations.length > 0);
-        } else handleApiError(elicitationResult.reason);
+          patchSessionView(selectedId, (current) => ({ ...current, pendingElicitation: elicitationResult.value.elicitations[0], elicitationOpen: elicitationResult.value.elicitations.length > 0 }));
+        } else handleApiError(elicitationResult.reason, requestScope);
         }
       if (connected) {
         try {
           const nextQueue = await runOperation<MobileQueue>("queue", { sessionId: selectedId }, csrf);
-          if (alive) setQueue(nextQueue);
-        } catch (cause) { if (alive) handleApiError(cause); }
-      } else setQueue(emptyQueue);
+          if (alive) patchSessionView(selectedId, (current) => ({ ...current, queue: nextQueue }));
+        } catch (cause) { if (alive) handleApiError(cause, requestScope); }
+      } else if (alive) patchSessionView(selectedId, (current) => ({ ...current, queue: emptyQueue }));
     });
     void load();
     const timer = window.setInterval(() => { void load(); }, 5000);
     return () => { alive = false; window.clearInterval(timer); };
-  }, [device, selectedId, includeTools, connected, csrf, handleApiError]);
+  }, [device, selectedId, includeTools, connected, csrf, handleApiError, patchSessionView]);
 
   useEffect(() => {
     if (!device || !selectedId) return;
     let alive = true;
+    const requestScope = authScope.current;
     let inFlight = false;
     const refresh = async () => {
       if (inFlight) return;
       inFlight = true;
       try {
         const next = await readActivity(selectedId);
-        if (alive) setActivity(next);
+        if (alive) patchSessionView(selectedId, (current) => ({ ...current, activity: next }));
       } catch (cause) {
-        if (alive) handleApiError(cause);
+        if (alive) handleApiError(cause, requestScope);
       } finally { inFlight = false; }
     };
     void refresh();
     const timer = window.setInterval(() => { void refresh(); }, activityBusy ? 5_000 : 30_000);
     return () => { alive = false; window.clearInterval(timer); };
-  }, [device, selectedId, activityBusy, handleApiError]);
+  }, [device, selectedId, activityBusy, handleApiError, patchSessionView]);
 
   useEffect(() => {
     if (!device || !selectedId) return;
+    const requestScope = authScope.current;
     const buffer = eventBuffer.current ?? (eventBuffer.current = new MobileEventBuffer(selectedId));
-    if (buffer.setSession(selectedId)) setEvents([]);
+    if (buffer.setSession(selectedId)) patchSessionView(selectedId, (current) => ({ ...current, events: [] }));
     const controller = new AbortController();
     let alive = true;
     let retryDelay = 500;
     let retryTimer: number | undefined;
     let activeReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-    setStreamConnected(false);
+    patchSessionView(selectedId, (current) => ({ ...current, streamConnected: false }));
 
     const connect = async (): Promise<void> => {
       let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
@@ -257,48 +309,49 @@ export default function App() {
         activeReader = reader;
         if (!alive) { await reader.cancel(); return; }
         retryDelay = 500;
-        setStreamConnected(true);
+        patchSessionView(selectedId, (current) => ({ ...current, streamConnected: true }));
         const result = await consumeMobileEventStream(reader, buffer, {
-          onEpochChanged: () => { if (alive) setEvents(buffer.events); },
+          onEpochChanged: () => {
+            if (!alive) return;
+            patchSessionView(selectedId, (current) => ({ ...current, events: buffer.events }));
+            void syncSessionState(selectedId);
+          },
+          onSyncRequired: () => { if (alive) void syncSessionState(selectedId); },
           onEvent: (event) => {
             if (!alive) return;
-            setEvents(buffer.events);
+            liveEventRevision.current++;
+            patchSessionView(selectedId, (current) => ({ ...current, events: buffer.events }));
             if (event.kind === "approval" && event.approval) {
-              setPendingApproval(event.approval);
-              setApprovalOpen(true);
+              patchSessionView(selectedId, (current) => ({ ...current, pendingApproval: event.approval, approvalOpen: true }));
             } else if (event.kind === "elicitation") {
               void readElicitations(selectedId).then((value) => {
                 if (!alive) return;
-                setPendingElicitation(value.elicitations[0]);
-                setElicitationOpen(value.elicitations.length > 0);
-              }).catch((cause: unknown) => { if (alive) handleApiError(cause); });
+                patchSessionView(selectedId, (current) => ({ ...current, pendingElicitation: value.elicitations[0], elicitationOpen: value.elicitations.length > 0 }));
+              }).catch((cause: unknown) => { if (alive) handleApiError(cause, requestScope); });
             } else if (event.kind === "status" && event.status) {
               const busy = event.status === "working" || event.status === "approval";
-              setActivity((current) => ({
-                busy,
-                queue: current?.queue ?? 0,
-                images: current?.images ?? [],
-                liveStatus: event.status!,
-                liveLabel: event.label ?? "Статус неизвестен",
-              }));
+              patchSessionView(selectedId, (current) => ({ ...current, activity: {
+                busy, queue: current.activity?.queue ?? 0, images: current.activity?.images ?? [],
+                liveStatus: event.status!, liveLabel: event.label ?? "Статус неизвестен",
+              } }));
               if (!busy) {
-                void readActivity(selectedId).then((value) => { if (alive) setActivity(value); })
-                  .catch((cause: unknown) => { if (alive) handleApiError(cause); });
+                void readActivity(selectedId).then((value) => { if (alive) patchSessionView(selectedId, (current) => ({ ...current, activity: value })); })
+                  .catch((cause: unknown) => { if (alive) handleApiError(cause, requestScope); });
                 void refreshSnapshot();
               }
             }
           },
         }, controller.signal);
         if (result === "revoked") {
-          if (alive) expireSession();
+          if (alive && isCurrentMobileAuthScope(authScope.current, requestScope.generation, requestScope.deviceId)) expireSession();
           return;
         }
         throw new Error("Поток событий Codex закрылся");
       } catch (cause) {
         if (!alive || controller.signal.aborted) return;
-        setStreamConnected(false);
+        patchSessionView(selectedId, (current) => ({ ...current, streamConnected: false }));
         if (cause instanceof MobileApiError && (cause.status === 401 || cause.status === 403)) {
-          handleApiError(cause);
+          handleApiError(cause, requestScope);
           return;
         }
         retryTimer = window.setTimeout(() => { void connect(); }, retryDelay);
@@ -316,19 +369,73 @@ export default function App() {
       controller.abort();
       void activeReader?.cancel().catch(() => undefined);
     };
-  }, [device, selectedId, csrf, expireSession, handleApiError, refreshSnapshot]);
+  }, [device, selectedId, csrf, expireSession, handleApiError, refreshSnapshot, patchSessionView]);
 
   const operation = useCallback(async <T,>(op: Parameters<typeof runOperation<T>>[0], args: Record<string, unknown>) => {
     setError("");
+    const requestAuthGeneration = authScope.current.generation;
+    const requestDeviceId = authScope.current.deviceId;
     try {
       const result = await runOperation<T>(op, args, csrf);
+      if (!isCurrentMobileAuthScope(authScope.current, requestAuthGeneration, requestDeviceId)) {
+        throw new DOMException("Операция отменена после смены устройства", "AbortError");
+      }
       if (op === "create" || op === "forkThread" || op === "archiveThread" || op === "unarchiveThread" || op === "renameThread" || op === "deleteThread" || op === "createWorktree") {
+        sessionPagesGeneration.current++;
         setSessionPages({});
+        sessionPageRequests.current.clear();
       }
       if (!op.startsWith("terminal") && op !== "listMoreThreads" && op !== "searchThreads" && op !== "searchHistory" && op !== "updateThreadReadState") void refreshSnapshot();
       return result;
-    } catch (cause) { handleApiError(cause); throw cause; }
+    } catch (cause) { handleApiError(cause, { generation: requestAuthGeneration, deviceId: requestDeviceId }); throw cause; }
   }, [csrf, handleApiError, refreshSnapshot]);
+
+  async function syncSessionState(targetSessionId: string) {
+    const requestGeneration = ++syncRequestGeneration.current;
+    const selectionGeneration = sessionSelection.current.generation;
+    const requestedSync = { sessionId: targetSessionId, selectionGeneration, requestGeneration };
+    const eventRevision = liveEventRevision.current;
+    const toolsSetting = includeToolsRef.current;
+    const requestAuthGeneration = authScope.current.generation;
+    const requestDeviceId = authScope.current.deviceId;
+    const [historyResult, activityResult, queueResult, approvalResult, elicitationResult] = await Promise.allSettled([
+      readHistory(targetSessionId, toolsSetting),
+      readActivity(targetSessionId),
+      runOperation<MobileQueue>("queue", { sessionId: targetSessionId }, csrf),
+      readApprovals(targetSessionId),
+      readElicitations(targetSessionId),
+    ]);
+    if (!isCurrentMobileSessionSync({
+      sessionId: selectedIdRef.current,
+      selectionGeneration: sessionSelection.current.generation,
+      requestGeneration: syncRequestGeneration.current,
+    }, requestedSync) ||
+        !isCurrentMobileAuthScope(authScope.current, requestAuthGeneration, requestDeviceId)) return;
+    const liveEventsArrived = liveEventRevision.current !== eventRevision;
+    const historySettingStillMatches = includeToolsRef.current === toolsSetting;
+    patchSessionView(targetSessionId, (current) => ({
+      ...current,
+      ...(historySettingStillMatches && historyResult.status === "fulfilled" ? { history: historyResult.value.entries } : {}),
+      ...(!liveEventsArrived && activityResult.status === "fulfilled" ? { activity: activityResult.value } : {}),
+      ...(!liveEventsArrived && queueResult.status === "fulfilled" ? { queue: queueResult.value } : {}),
+      ...(!liveEventsArrived && approvalResult.status === "fulfilled" ? {
+        pendingApproval: approvalResult.value.approvals[0],
+        approvalOpen: approvalResult.value.approvals.length > 0,
+      } : {}),
+      ...(!liveEventsArrived && elicitationResult.status === "fulfilled" ? {
+        pendingElicitation: elicitationResult.value.elicitations[0],
+        elicitationOpen: elicitationResult.value.elicitations.length > 0,
+      } : {}),
+    }));
+    const requestScope = { generation: requestAuthGeneration, deviceId: requestDeviceId };
+    if (historySettingStillMatches && historyResult.status === "rejected") handleApiError(historyResult.reason, requestScope);
+    if (!liveEventsArrived) {
+      for (const result of [activityResult, queueResult, approvalResult, elicitationResult]) {
+        if (result.status === "rejected") { handleApiError(result.reason, requestScope); break; }
+      }
+    }
+    void refreshSnapshot();
+  }
 
   const updateSessionReadState = useCallback(async (sessionId: string, expectedRevision: string, readOperation: "read" | "unread") => {
     try {
@@ -392,12 +499,15 @@ export default function App() {
     const page = sessionPages[sessionPageKey];
     if (page?.loaded && page.nextCursor === undefined) return;
     const cursor = page?.nextCursor ?? (!showArchived && !selectedProject ? snapshot.sessionsNextCursor : undefined);
-    sessionPageRequests.current.add(sessionPageKey);
+    const requestToken = {};
+    const requestGeneration = sessionPagesGeneration.current;
+    sessionPageRequests.current.set(sessionPageKey, requestToken);
     setSessionPages((current) => ({ ...current, [sessionPageKey]: { ...(current[sessionPageKey] ?? { sessions: [], loaded: false }), loading: true } }));
     try {
       const result = await operation<{ sessions: MobileSession[]; nextCursor?: string }>("listMoreThreads", {
         ...(cursor ? { cursor } : {}), archived: showArchived, ...(selectedProject ? { cwd: selectedProject } : {}),
       });
+      if (sessionPageRequests.current.get(sessionPageKey) !== requestToken || requestGeneration !== sessionPagesGeneration.current) return;
       setSessionPages((current) => {
         const previous = current[sessionPageKey] ?? { sessions: [], loaded: false, loading: false };
         const known = new Set([...baseProjectSessions, ...previous.sessions].map((session) => session.id));
@@ -412,9 +522,11 @@ export default function App() {
         };
       });
     } catch {
-      setSessionPages((current) => ({ ...current, [sessionPageKey]: { ...(current[sessionPageKey] ?? { sessions: [], loaded: false }), loading: false } }));
+      if (sessionPageRequests.current.get(sessionPageKey) === requestToken && requestGeneration === sessionPagesGeneration.current) {
+        setSessionPages((current) => ({ ...current, [sessionPageKey]: { ...(current[sessionPageKey] ?? { sessions: [], loaded: false }), loading: false } }));
+      }
     } finally {
-      sessionPageRequests.current.delete(sessionPageKey);
+      if (sessionPageRequests.current.get(sessionPageKey) === requestToken) sessionPageRequests.current.delete(sessionPageKey);
     }
   }
 
@@ -521,9 +633,7 @@ export default function App() {
     if (selectedId === sessionId) {
       setSelectedId("");
       setSelectedSearchSession(undefined);
-      setHistory([]);
-      setActivity(undefined);
-      setQueue(emptyQueue);
+      setSessionViewState({ sessionId: "", value: emptySessionView() });
     }
     await refreshSnapshot(true);
   }
@@ -549,24 +659,17 @@ export default function App() {
   }
 
   async function send(text: string, images: PromptImage[], attachments: MobileAttachment[], mode: FollowUpMode, appIds: string[]) {
-    if (!selectedId) return;
+    const targetSessionId = selectedId;
+    if (!targetSessionId) return;
     if (mode === "steer" && attachments.length) throw new Error("Файлы можно отправить в очередь, но не добавить к активному ходу");
-    const fingerprint = JSON.stringify([selectedId, mode, text, images.map((image) => [image.name, image.mimeType, image.data.length]), attachments.map((file) => file.id), appIds]);
-    if (!pendingSend.current || pendingSend.current.fingerprint !== fingerprint) {
-      pendingSend.current = { fingerprint, requestId: crypto.randomUUID() };
-    }
-    if (mode === "steer") {
-      await operation("steer", {
-        sessionId: selectedId, text, images: images.map(({ name, mimeType, data }) => ({ name, mimeType, data })),
-        attachmentIds: attachments.map((file) => file.id), appIds, requestId: pendingSend.current.requestId,
-      });
-    } else {
-      await operation("send", {
-        sessionId: selectedId, text, images: images.map(({ name, mimeType, data }) => ({ name, mimeType, data })),
-        attachmentIds: attachments.map((file) => file.id), appIds, requestId: pendingSend.current.requestId,
-      });
-    }
-    pendingSend.current = undefined;
+    const payload = { sessionId: targetSessionId, text, images, attachments, mode, appIds };
+    const fingerprint = mobileSendFingerprint(payload);
+    const requestId = pendingSend.current.getOrCreate(fingerprint, () => crypto.randomUUID());
+    await operation(mode === "steer" ? "steer" : "send", {
+      sessionId: targetSessionId, text, images: images.map(({ name, mimeType, data }) => ({ name, mimeType, data })),
+      attachmentIds: attachments.map((file) => file.id), appIds, requestId,
+    });
+    pendingSend.current.complete(fingerprint, requestId);
     setTimeout(() => { void refreshSnapshot(); }, 500);
   }
 
@@ -579,11 +682,9 @@ export default function App() {
     const targetSession = selectedId;
     if (!targetSession) throw new Error("Сначала выберите сеанс Codex");
     await operation("editAndRetry", { sessionId: targetSession, turnId, expectedLatestTurnId, text, requestId: crypto.randomUUID() });
-    pendingSend.current = undefined;
     const [nextHistory, nextActivity] = await Promise.all([readHistory(targetSession, includeTools), readActivity(targetSession)]);
     if (selectedIdRef.current === targetSession) {
-      setHistory(nextHistory.entries);
-      setActivity(nextActivity);
+      patchSessionView(targetSession, (current) => ({ ...current, history: nextHistory.entries, activity: nextActivity }));
     }
   }
 
@@ -594,8 +695,12 @@ export default function App() {
   }
 
   async function readQueue() {
-    if (!selectedId || !connected) return;
-    try { setQueue(await operation<MobileQueue>("queue", { sessionId: selectedId })); }
+    const targetSessionId = selectedId;
+    if (!targetSessionId || !connected) return;
+    try {
+      const nextQueue = await operation<MobileQueue>("queue", { sessionId: targetSessionId });
+      patchSessionView(targetSessionId, (current) => ({ ...current, queue: nextQueue }));
+    }
     catch { /* Keep the last queue state visible. */ }
   }
 
@@ -612,32 +717,44 @@ export default function App() {
   }
 
   async function signOut() {
+    const requestScope = authScope.current;
     try { await logout(csrf); }
     catch { /* The server may already have revoked this cookie. */ }
-    expireSession();
+    if (isCurrentMobileAuthScope(authScope.current, requestScope.generation, requestScope.deviceId)) expireSession();
   }
 
   async function answerApproval(optionId: string) {
-    if (!pendingApproval || !selectedId) return;
+    const targetSessionId = selectedId;
+    const approval = pendingApproval;
+    if (!approval || !targetSessionId) return;
+    const requestScope = authScope.current;
     try {
-      await resolveApproval(pendingApproval.id, selectedId, optionId, csrf);
-      setPendingApproval(undefined);
-      setApprovalOpen(false);
+      await resolveApproval(approval.id, targetSessionId, optionId, csrf);
+      patchSessionView(targetSessionId, (current) => ({ ...current, pendingApproval: undefined, approvalOpen: false }));
       setError("");
-    } catch (cause) { handleApiError(cause); throw cause; }
+    } catch (cause) { handleApiError(cause, requestScope); throw cause; }
   }
 
   async function answerElicitation(action: MobileElicitationAction, content?: Record<string, unknown>) {
-    if (!pendingElicitation || !selectedId) return;
+    const targetSessionId = selectedId;
+    const elicitation = pendingElicitation;
+    if (!elicitation || !targetSessionId) return;
+    const requestScope = authScope.current;
     try {
-      await resolveElicitation(pendingElicitation.id, selectedId, action, content, csrf);
-      setPendingElicitation(undefined);
-      setElicitationOpen(false);
+      await resolveElicitation(elicitation.id, targetSessionId, action, content, csrf);
+      patchSessionView(targetSessionId, (current) => ({ ...current, pendingElicitation: undefined, elicitationOpen: false }));
       setError("");
-    } catch (cause) { handleApiError(cause); throw cause; }
+    } catch (cause) { handleApiError(cause, requestScope); throw cause; }
   }
 
   const onAuthenticated = useCallback((nextDevice: MobileDevice, nextCsrf: string) => {
+    authScope.current = { generation: authScope.current.generation + 1, deviceId: nextDevice.id };
+    snapshotRequest.current = undefined;
+    setDraftsBySession({});
+    setDraftScopeEpoch((epoch) => epoch + 1);
+    setSnapshot(undefined);
+    setSelectedProject("");
+    setSelectedId("");
     setDevice(nextDevice);
     setCsrf(nextCsrf);
     setError("");
@@ -659,8 +776,8 @@ export default function App() {
       <div className="flex items-center gap-2">
         <span className="hidden text-[11px] text-muted sm:inline">{streamConnected ? "Живые обновления" : "Поток переподключается…"}</span>
         <Button variant="ghost" className="min-h-10 px-2" aria-label="Обновить" onClick={() => void refreshSnapshot(true)} disabled={refreshing}>{refreshing ? <LoaderCircle size={17} className="animate-spin" /> : <RefreshCw size={17} />}</Button>
-        {pendingApproval && <Button variant="outline" className="min-h-10 px-2 text-[#f2c66d]" aria-label="Открыть подтверждение" onClick={() => setApprovalOpen(true)}><ShieldAlert size={17} /></Button>}
-        {pendingElicitation && <Button variant="outline" className="min-h-10 px-2 text-accent" aria-label="Открыть запрос MCP" onClick={() => setElicitationOpen(true)}><ShieldAlert size={17} /></Button>}
+        {pendingApproval && <Button variant="outline" className="min-h-10 px-2 text-[#f2c66d]" aria-label="Открыть подтверждение" onClick={() => patchSessionView(selectedId, (current) => ({ ...current, approvalOpen: true }))}><ShieldAlert size={17} /></Button>}
+        {pendingElicitation && <Button variant="outline" className="min-h-10 px-2 text-accent" aria-label="Открыть запрос MCP" onClick={() => patchSessionView(selectedId, (current) => ({ ...current, elicitationOpen: true }))}><ShieldAlert size={17} /></Button>}
         <Button variant="ghost" className="min-h-10 px-2" aria-label="Файлы проекта" onClick={() => setFilesOpen(true)} disabled={!selectedId}><FolderOpen size={17} /></Button>
         <Button variant="ghost" className="min-h-10 px-2" aria-label="Git и изменения" onClick={() => { setGitReviewLocation(undefined); setGitOpen(true); }} disabled={!selectedId}><GitBranch size={17} /></Button>
         <Button variant="ghost" className="min-h-10 px-2" aria-label="Терминал проекта" onClick={() => setTerminalOpen(true)} disabled={!selectedId}><Terminal size={17} /></Button>
@@ -682,7 +799,11 @@ export default function App() {
         onArchive={archiveSession} onUnarchive={unarchiveSession} onRename={renameSession} onDelete={deleteSession}
         onCreateSection={createThreadSection} onRenameSection={renameThreadSection} onDeleteSection={deleteThreadSection}
         onMoveSession={moveSessionToSection} onUpdateReadState={updateSessionReadState} />
-      <Conversation session={selectedSession} history={history} activity={activity} events={events} queue={queue}
+      <Conversation key={selectedId} session={selectedSession} draftText={draftsBySession[mobileDraftKey(device?.id ?? "", draftScopeEpoch, selectedId)] ?? ""}
+        sessionSwitchNotice={sessionSwitchNotice}
+        onDraftTextChange={(sessionId, text) => setDraftsBySession((current) => setSessionDraft(current, mobileDraftKey(device?.id ?? "", draftScopeEpoch, sessionId), text))}
+        onClearDraft={(sessionId, sentText) => setDraftsBySession((current) => clearSessionDraftIfUnchanged(current, mobileDraftKey(device?.id ?? "", draftScopeEpoch, sessionId), sentText))}
+        history={history} activity={activity} events={events} queue={queue}
         connected={connected} connecting={connecting} loading={loading} streamConnected={streamConnected}
         error={error} includeTools={includeTools} onToggleTools={() => setIncludeTools((value) => !value)}
         onConnect={() => void connectSession()} onCancel={() => void cancel()} onFork={() => void forkSession()} forking={forking}
@@ -691,7 +812,7 @@ export default function App() {
         onLoadSkills={loadMobileSkills}
         onLoadApps={loadMobileApps}
         onSearchHistory={(query, beforeOffset, revision) => operation<MobileHistorySearch>("searchHistory", { sessionId: selectedId, query, includeTools, ...(beforeOffset === undefined ? {} : { beforeOffset, revision }) })}
-        onLoadOlderScreenshots={(sessionId, beforeOffset) => operation<MobileScreenshotPage>("listOlderScreenshots", { sessionId, ...(beforeOffset === undefined ? {} : { beforeOffset }) })}
+        onLoadOlderScreenshots={(sessionId, cursor) => operation<MobileScreenshotPage>("listOlderScreenshots", { sessionId, ...(cursor === undefined ? {} : { cursor }) })}
         onLoadEditableTurns={loadEditableTurns} onEditAndRetry={editAndRetry}
         onUploadAttachment={(sessionId, file) => uploadAttachment(sessionId, file, csrf)}
         onRemoveAttachment={(sessionId, id) => removeAttachment(sessionId, id, csrf)}
@@ -704,7 +825,7 @@ export default function App() {
     {filesOpen && selectedId && <FilesPanel sessionId={selectedId} connected={connected} onClose={() => setFilesOpen(false)} onOperation={(op: MobileOperation, args) => operation(op, args)} />}
     {gitOpen && selectedId && <GitPanel key={selectedId} sessionId={selectedId} connected={connected} sessionBusy={selectedSession?.busy === true || activity?.busy === true || queue.busy} initialReviewLocation={gitReviewLocation?.sessionId === selectedId ? gitReviewLocation : undefined} onClose={() => { setGitOpen(false); setGitReviewLocation(undefined); }} onOperation={(op: MobileOperation, args) => operation(op, args)} onWorktreeCreated={async (id, path) => { await operation("select", { sessionId: id }); setSelectedSearchSession(undefined); setSelectedId(id); setSelectedProject(path); setGitOpen(false); setGitReviewLocation(undefined); setWorkspaceOpen(false); }} />}
     {terminalOpen && selectedId && selectedSession && <Suspense fallback={<div role="status" className="fixed inset-0 z-50 grid place-items-center bg-background text-sm text-muted">Открываю терминал…</div>}><TerminalPanel sessionId={selectedId} cwd={selectedSession.cwd} connected={connected} onClose={() => setTerminalOpen(false)} onOperation={(op: MobileOperation, args) => operation(op, args)} /></Suspense>}
-    {approvalOpen && pendingApproval && <ApprovalPanel approval={pendingApproval} onResolve={answerApproval} onClose={() => setApprovalOpen(false)} />}
-    {elicitationOpen && pendingElicitation && <ElicitationPanel elicitation={pendingElicitation} onResolve={answerElicitation} onClose={() => setElicitationOpen(false)} />}
+    {approvalOpen && pendingApproval && <ApprovalPanel approval={pendingApproval} onResolve={answerApproval} onClose={() => patchSessionView(selectedId, (current) => ({ ...current, approvalOpen: false }))} />}
+    {elicitationOpen && pendingElicitation && <ElicitationPanel elicitation={pendingElicitation} onResolve={answerElicitation} onClose={() => patchSessionView(selectedId, (current) => ({ ...current, elicitationOpen: false }))} />}
   </div>;
 }

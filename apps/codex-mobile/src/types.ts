@@ -96,9 +96,12 @@ export interface ScreenshotRef {
   size: number;
 }
 
+export interface PromptImage { name: string; mimeType: string; data: string; preview: string; }
+export type FollowUpMode = "queue" | "steer";
+
 export interface MobileScreenshotPage {
   images: ScreenshotRef[];
-  nextCursor?: number;
+  nextCursor?: string;
 }
 
 export interface MobileHistory {
@@ -289,6 +292,10 @@ export interface MobileGitStatus {
   remoteBranches: string[];
   remotes: Array<{ name: string; fetchTargets: string[]; pushTargets: string[] }>;
   clean: boolean;
+  hasStagedChanges: boolean;
+  hasHiddenChanges: boolean;
+  hasHiddenStagedChanges: boolean;
+  hiddenChangeCount: number;
   changes: Array<{ code: string; indexStatus: string; worktreeStatus: string; path: string; previousPath?: string }>;
   checkedAt: number;
 }

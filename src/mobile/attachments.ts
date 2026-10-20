@@ -17,6 +17,7 @@ export const MAX_MOBILE_ATTACHMENT_TEXT = 200_000;
 const MOBILE_ATTACHMENT_TTL_MS = 30 * 60 * 1000;
 const MAX_PENDING_PER_DEVICE = 30;
 const MAX_ATTACHMENTS_PER_PROMPT = 5;
+const MAX_RESOLVED_REQUESTS = 200;
 
 export interface MobilePromptAttachment {
   id: string;
@@ -43,6 +44,16 @@ interface StoredMobileAttachment extends MobilePromptAttachment {
   claimedBy?: string;
 }
 
+interface ResolvedMobileAttachmentRequest {
+  ownerId: number;
+  deviceId: string;
+  sessionId: string;
+  ids: string[];
+  attachments: MobilePromptAttachment[];
+  expiresAt: number;
+  completed: boolean;
+}
+
 function supportedBinary(bytes: Buffer, name: string): boolean {
   const extension = extname(name).toLowerCase();
   if (extension === ".pdf") return bytes.subarray(0, 5).toString("ascii") === "%PDF-";
@@ -53,6 +64,7 @@ function supportedBinary(bytes: Buffer, name: string): boolean {
 
 export class MobileAttachmentStore {
   private readonly entries = new Map<string, StoredMobileAttachment>();
+  private readonly resolvedRequests = new Map<string, ResolvedMobileAttachmentRequest>();
 
   constructor(private readonly dataDir: string | undefined, private readonly now: () => number = Date.now) {}
 
@@ -115,6 +127,16 @@ export class MobileAttachmentStore {
     if (ids.length === 0) return [];
     if (!/^[a-zA-Z0-9_-]{12,80}$/.test(requestId)) throw new Error("Неверный идентификатор отправки");
 
+    const requestKey = JSON.stringify([deviceId, requestId]);
+    const replay = this.resolvedRequests.get(requestKey);
+    if (replay) {
+      if (replay.ownerId !== ownerId || replay.sessionId !== sessionId ||
+          replay.ids.length !== ids.length || replay.ids.some((id, index) => id !== ids[index])) {
+        throw new Error("ID отправки уже связан с другими вложениями или сеансом");
+      }
+      return replay.attachments.map((attachment) => ({ ...attachment }));
+    }
+
     const selected = ids.map((id) => this.entries.get(id as string));
     if (selected.some((entry) => !entry || entry.ownerId !== ownerId || entry.deviceId !== deviceId || entry.sessionId !== sessionId)) {
       throw new Error("Вложение не найдено или принадлежит другому устройству/сеансу");
@@ -123,18 +145,33 @@ export class MobileAttachmentStore {
       if (entry.claimedBy && entry.claimedBy !== requestId) throw new Error("Вложение уже используется в другом запросе");
     }
     for (const entry of selected as StoredMobileAttachment[]) entry.claimedBy = requestId;
-    return (selected as StoredMobileAttachment[]).map(({ id, name, mimeType, size, text, truncated, path }) => ({
+    const promptAttachments = (selected as StoredMobileAttachment[]).map(({ id, name, mimeType, size, text, truncated, path }) => ({
       id, name, mimeType, size,
       ...(text !== undefined ? { text } : {}),
       ...(truncated ? { truncated: true } : {}),
       ...(path ? { path } : {}),
     }));
+    this.resolvedRequests.set(requestKey, {
+      ownerId, deviceId, sessionId, ids: [...ids], attachments: promptAttachments,
+      expiresAt: this.now() + MOBILE_ATTACHMENT_TTL_MS, completed: false,
+    });
+    while (this.resolvedRequests.size > MAX_RESOLVED_REQUESTS) {
+      this.resolvedRequests.delete(this.resolvedRequests.keys().next().value!);
+    }
+    return promptAttachments.map((attachment) => ({ ...attachment }));
   }
 
   complete(ids: readonly string[], deviceId: string, requestId: string): void {
     for (const id of ids) {
       const entry = this.entries.get(id);
       if (entry?.deviceId === deviceId && entry.claimedBy === requestId) this.entries.delete(id);
+    }
+    const replay = this.resolvedRequests.get(JSON.stringify([deviceId, requestId]));
+    if (replay && !replay.completed && replay.ids.length === ids.length && replay.ids.every((id, index) => id === ids[index])) {
+      replay.completed = true;
+      replay.attachments = replay.attachments.map((attachment) => attachment.text === undefined
+        ? { ...attachment }
+        : { ...attachment, text: "" });
     }
   }
 
@@ -152,6 +189,9 @@ export class MobileAttachmentStore {
   }
 
   private async pruneExpired(): Promise<void> {
+    for (const [key, request] of this.resolvedRequests) {
+      if (request.expiresAt <= this.now()) this.resolvedRequests.delete(key);
+    }
     for (const [id, entry] of this.entries) {
       if (entry.expiresAt > this.now()) continue;
       this.entries.delete(id);

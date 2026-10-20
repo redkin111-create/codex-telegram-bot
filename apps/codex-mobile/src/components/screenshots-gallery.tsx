@@ -22,11 +22,11 @@ export function ScreenshotsGallery({
 }: {
   sessionId: string;
   images: ScreenshotRef[];
-  onLoadOlder: (sessionId: string, beforeOffset?: number) => Promise<MobileScreenshotPage>;
+  onLoadOlder: (sessionId: string, cursor?: string) => Promise<MobileScreenshotPage>;
   onOpenImage: (image: { path: string; name: string }) => void;
 }) {
   const [olderPages, setOlderPages] = useState<ScreenshotRef[][]>([]);
-  const [cursor, setCursor] = useState<number>();
+  const [cursor, setCursor] = useState<string>();
   const [complete, setComplete] = useState(false);
   const [pageOffset, setPageOffset] = useState(0);
   const [loading, setLoading] = useState(false);

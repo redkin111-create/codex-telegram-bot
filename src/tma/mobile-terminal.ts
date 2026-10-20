@@ -18,8 +18,13 @@ function windowsPowerShellScript(command: string): string {
     "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
     "$OutputEncoding = [Console]::OutputEncoding",
     "$global:LASTEXITCODE = 0",
+    "$__codexMobileErrorCount = $Error.Count",
     "& {",
     command,
+    "}",
+    "$__codexMobileCmdletFailed = $Error.Count -gt $__codexMobileErrorCount",
+    "if ($__codexMobileCmdletFailed) {",
+    "  if ($global:LASTEXITCODE -eq 0) { exit 1 }",
     "}",
     "exit $global:LASTEXITCODE",
   ].join("\n");

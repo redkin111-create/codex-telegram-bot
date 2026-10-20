@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { runMobileTerminalCommand } from "../src/tma/mobile-terminal.js";
 import { resolveMobileTerminalShell } from "../src/tma/mobile-terminal-shell.js";
 
 test("Windows shell selection resolves only to supported local shells", () => {
@@ -37,4 +38,12 @@ test("non-Windows systems expose only their configured default shell", () => {
     () => resolveMobileTerminalShell("powershell", "linux", { SHELL: "/bin/zsh" }),
     /Недоступная оболочка терминала/,
   );
+});
+
+test("PowerShell cmdlet failures return a failing exit code", { skip: process.platform !== "win32" }, async () => {
+  const missing = `C:\\codex-mobile-missing-${Date.now()}\\file.txt`;
+  const result = await runMobileTerminalCommand(process.cwd(), `Get-Item -LiteralPath '${missing}'`);
+
+  assert.notEqual(result.exitCode, 0);
+  assert.notEqual(result.stderr, "");
 });

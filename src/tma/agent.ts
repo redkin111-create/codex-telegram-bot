@@ -23,7 +23,7 @@ import { addMobileMcpConfigServer, listMobileMcpConfig, removeMobileMcpConfigSer
 import { mayRequestMobileSkillNaturally, requestedMobileSkillNames, requestsBrowserMobileSkill } from "../mobile/skill-selection.js";
 import { buildContentBlocks } from "../bot/prompt-content.js";
 import { createLogger } from "../logger.js";
-import { readConversationHistoryAsync, searchConversationHistoryAsync } from "../sessions/history.js";
+import { conversationHistorySources, MAX_CONVERSATION_HISTORY_SOURCES, readConversationHistoryAsync, searchConversationHistoryAsync } from "../sessions/history.js";
 import { SessionStore } from "../sessions/store.js";
 import { TelegramSessionRegistry } from "../sessions/telegram-registry.js";
 import { argumentString, isTmaJob, type TmaJob, type TmaResult } from "./protocol.js";
@@ -33,6 +33,23 @@ import { runMobileTerminalCommand } from "./mobile-terminal.js";
 import { mobileTerminalShells, resolveMobileTerminalShell, type MobileTerminalShellId } from "./mobile-terminal-shell.js";
 
 const execFile=promisify(execFileCallback);
+type MobileScreenshotSource={threadId:string;path:string;cwd:string;endByteOffset?:number};
+type MobileScreenshotCursor={sourceIndex:number;beforeOffset?:number};
+function encodeMobileScreenshotCursor(sessionId:string,cursor:MobileScreenshotCursor):string{
+  return Buffer.from(JSON.stringify({v:1,sessionId,...cursor})).toString("base64url");
+}
+function decodeMobileScreenshotCursor(raw:string,sessionId:string):MobileScreenshotCursor{
+  if(raw.length>512||!/^[A-Za-z0-9_-]+$/.test(raw))throw new Error("Некорректный указатель страницы скриншотов");
+  let value:unknown;
+  try{value=JSON.parse(Buffer.from(raw,"base64url").toString("utf8"));}catch{throw new Error("Некорректный указатель страницы скриншотов");}
+  if(!value||typeof value!=="object")throw new Error("Некорректный указатель страницы скриншотов");
+  const cursor=value as Record<string,unknown>;
+  if(cursor.v!==1||cursor.sessionId!==sessionId||!Number.isSafeInteger(cursor.sourceIndex)||
+    (cursor.sourceIndex as number)<0||(cursor.sourceIndex as number)>=MAX_CONVERSATION_HISTORY_SOURCES||
+    (cursor.beforeOffset!==undefined&&!Number.isSafeInteger(cursor.beforeOffset)))throw new Error("Некорректный указатель страницы скриншотов");
+  if(cursor.beforeOffset!==undefined&&(cursor.beforeOffset as number)<0)throw new Error("Некорректный указатель страницы скриншотов");
+  return {sourceIndex:cursor.sourceIndex as number,...(cursor.beforeOffset===undefined?{}:{beforeOffset:cursor.beforeOffset as number})};
+}
 const MAX_MOBILE_PTY_BUFFER=512*1024;
 const MAX_MOBILE_PTY_READ=64*1024;
 const MAX_MOBILE_CONFLICT_STAGE_BYTES=512*1024;
@@ -44,6 +61,7 @@ const MOBILE_PTY_IDLE_MS=30*60*1000;
 import { normalizeMobileIntegrations, normalizeMobileMcpServers, normalizePluginInstallResult, type MobileMcpResourceSummary } from "../mobile/integrations.js";
 import { normalizeMobileMarketplaces } from "../mobile/marketplaces.js";
 import { gitRemoteTarget } from "../mobile/git-remotes.js";
+import { normalizeThreadStatus } from "./live.js";
 import { SttService } from "../app/stt.js";
 import type { MobilePromptAttachment } from "../mobile/attachments.js";
 import { mobileAttachmentContext } from "../mobile/attachments.js";
@@ -670,11 +688,12 @@ export class MiniAppAgent {
         else this.knownThreads.set(chatId,catalogue);
         const sessions=visible.map(thread=>{
           const current=registry.runtimeForSession(chatId,thread.id);
+          const status=normalizeThreadStatus(thread.status);
           return {
             id:thread.id,title:(thread.name||thread.preview||"Новый сеанс").slice(0,180),cwd:thread.cwd||"",
             updatedAt:thread.recencyAt||thread.updatedAt||thread.createdAt||0,
-            source:threadSourceKind(thread)||"unknown",archived,busy:Boolean(current?.isBusy),
-            queue:current?.queueLength||0,liveStatus:"unknown",liveLabel:"Статус неизвестен",section:mobileThreadSection(thread.section),
+            source:threadSourceKind(thread)||"unknown",archived,busy:Boolean(current?.isBusy)||status?.status==="working"||status?.status==="approval",
+            queue:current?.queueLength||0,liveStatus:status?.status??"unknown",liveLabel:status?.label??"Статус неизвестен",section:mobileThreadSection(thread.section),
           };
         });
         return {sessions,nextCursor:page.nextCursor};
@@ -695,11 +714,12 @@ export class MiniAppAgent {
           const legacyPage=legacyVisible.slice(offset,offset+100);
           const legacySessions=legacyPage.map(thread=>{
             const current=archived?undefined:registry.runtimeForSession(chatId,thread.id);
+            const status=normalizeThreadStatus(thread.status);
             return {
               id:thread.id,title:(thread.name||thread.preview||(archived?"Без названия":"Новый сеанс")).slice(0,180),cwd:thread.cwd||"",
               updatedAt:thread.recencyAt||thread.updatedAt||thread.createdAt||0,
-              source:threadSourceKind(thread)||"unknown",archived,busy:Boolean(current?.isBusy),
-              queue:current?.queueLength||0,liveStatus:"unknown",liveLabel:"Статус неизвестен",section:mobileThreadSection(thread.section),
+              source:threadSourceKind(thread)||"unknown",archived,busy:Boolean(current?.isBusy)||status?.status==="working"||status?.status==="approval",
+              queue:current?.queueLength||0,liveStatus:status?.status??"unknown",liveLabel:status?.label??"Статус неизвестен",section:mobileThreadSection(thread.section),
             };
           });
           const nextOffset=offset+legacyPage.length;
@@ -714,11 +734,12 @@ export class MiniAppAgent {
         const page=await this.mobileThreadPage(chatId,{archived,cursor,cwd});
         const sessions=page.threads.map(thread=>{
           const current=archived?undefined:registry.runtimeForSession(chatId,thread.id);
+          const status=normalizeThreadStatus(thread.status);
           return {
             id:thread.id,title:(thread.name||thread.preview||(archived?"Без названия":"Новый сеанс")).slice(0,180),cwd:thread.cwd||"",
             updatedAt:thread.recencyAt||thread.updatedAt||thread.createdAt||0,
-            source:threadSourceKind(thread)||"unknown",archived,busy:Boolean(current?.isBusy),
-            queue:current?.queueLength||0,liveStatus:"unknown",liveLabel:"Статус неизвестен",section:mobileThreadSection(thread.section),
+            source:threadSourceKind(thread)||"unknown",archived,busy:Boolean(current?.isBusy)||status?.status==="working"||status?.status==="approval",
+            queue:current?.queueLength||0,liveStatus:status?.status??"unknown",liveLabel:status?.label??"Статус неизвестен",section:mobileThreadSection(thread.section),
           };
         });
         return {sessions,...(page.nextCursor?{nextCursor:page.nextCursor}:{})};
@@ -1355,11 +1376,22 @@ export class MiniAppAgent {
       }
       case "listOlderScreenshots":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
-        const selected=await this.thread(sessionId,chatId);
-        if(!selected.cwd)throw new Error("Для этого сеанса Codex не найден проект");
-        const beforeOffset=args.beforeOffset;
-        if(beforeOffset!==undefined&&!Number.isSafeInteger(beforeOffset))throw new Error("Некорректный указатель страницы скриншотов");
-        return await this.screenshots.olderPage(sessionId,this.store.jsonlPath(sessionId),selected.cwd,beforeOffset as number|undefined,true);
+        const sources=await this.mobileScreenshotSources(sessionId,chatId);
+        let cursor:MobileScreenshotCursor={sourceIndex:0};
+        if(args.cursor!==undefined){
+          if(typeof args.cursor!=="string")throw new Error("Некорректный указатель страницы скриншотов");
+          cursor=decodeMobileScreenshotCursor(args.cursor,sessionId);
+        }else if(args.beforeOffset!==undefined){
+          if(!Number.isSafeInteger(args.beforeOffset)|| (args.beforeOffset as number)<0)throw new Error("Некорректный указатель страницы скриншотов");
+          cursor.beforeOffset=args.beforeOffset as number;
+        }
+        if(cursor.sourceIndex>=sources.length)throw new Error("Некорректный указатель страницы скриншотов");
+        const source=sources[cursor.sourceIndex]!;
+        const page=await this.screenshots.olderPage(source.threadId,source.path,source.cwd,cursor.beforeOffset,true,source.endByteOffset);
+        const next=page.nextCursor!==undefined
+          ?{sourceIndex:cursor.sourceIndex,beforeOffset:page.nextCursor}
+          :cursor.sourceIndex+1<sources.length?{sourceIndex:cursor.sourceIndex+1}:undefined;
+        return {images:page.images,...(next?{nextCursor:encodeMobileScreenshotCursor(sessionId,next)}:{})};
       }
       case "listMcpConfig":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
@@ -1787,13 +1819,24 @@ export class MiniAppAgent {
         if(job.op==="gitStage"||job.op==="gitUnstage"){
           const paths=[this.mobileGitPath(root,argumentString(args,"path",1200))];
           if(job.op==="gitUnstage"&&typeof args.previousPath==="string")paths.push(this.mobileGitPath(root,args.previousPath));
-          const gitArgs=job.op==="gitStage"?["add","--all","--",...paths]:this.gitHasHead(gitRoot)?["reset","-q","HEAD","--",...paths]:["rm","--cached","--quiet","--ignore-unmatch","--",...paths];
+          if(job.op==="gitStage"){
+            try{
+              const entry=this.mobileProjectEntry(root,paths[0]!);
+              if(entry.kind==="directory")throw new Error("Добавляйте в индекс отдельные файлы, а не папки: в папке могут быть скрытые изменения");
+            }catch(error){
+              if((error as NodeJS.ErrnoException).code!=="ENOENT")throw error;
+              const tracked=this.gitOutput(gitRoot,["--literal-pathspecs","ls-files","-z","--",paths[0]!],128*1024).split("\0").filter(Boolean);
+              if(tracked.some(path=>path.startsWith(paths[0]!+"/")))throw new Error("Добавляйте в индекс отдельные файлы, а не удалённые папки: внутри могут быть скрытые изменения");
+            }
+          }
+          const gitArgs=job.op==="gitStage"?["--literal-pathspecs","add","--all","--",...paths]:this.gitHasHead(gitRoot)?["--literal-pathspecs","reset","-q","HEAD","--",...paths]:["--literal-pathspecs","rm","--cached","--quiet","--ignore-unmatch","--",...paths];
           this.gitMutation(gitRoot,gitArgs);
           return {paths,staged:job.op==="gitStage"};
         }
         if(job.op==="gitCommit"){
           const message=argumentString(args,"message",200).trim();
           if(!message||/[\u0000-\u001f\u007f]/.test(message))throw new Error("Укажите короткое однострочное сообщение коммита");
+          if(this.mobileGitStatus(sessionId,chatId).hasHiddenStagedChanges)throw new Error("Коммит с телефона заблокирован: в индексе есть изменения скрытых или служебных файлов, которые здесь не показываются");
           this.gitMutation(gitRoot,["commit","-m",message]);
           const commit=this.gitOutput(gitRoot,["rev-parse","--short","HEAD"],1024).trim();
           return {project:name,commit,message,branch:this.mobileGitStatus(sessionId,chatId).branch};
@@ -2077,7 +2120,7 @@ export class MiniAppAgent {
       else if(expected.kind==="symlink"){
         let targetIsDirectory=false;
         try{targetIsDirectory=statSync(expected.path).isDirectory();}catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT")throw error;}
-        if(targetIsDirectory)rmdirSync(expected.path);
+        if(targetIsDirectory&&process.platform==="win32")rmdirSync(expected.path);
         else unlinkSync(expected.path);
       }else unlinkSync(expected.path);
     }
@@ -2301,13 +2344,26 @@ export class MiniAppAgent {
     const branch=header.startsWith("## ")?header.slice(3).split("...")[0]?.split(" [")[0]?.slice(0,160)??"":"";
     const lines=[...first,...tokens].filter(Boolean);
     const changes:Array<{code:string;indexStatus:string;worktreeStatus:string;path:string;previousPath?:string}> = [];
-    for(let i=0;i<lines.length&&changes.length<250;i++){
+    let realChangeCount=0;
+    let hiddenChangeCount=0;
+    let hasStagedChanges=false;
+    let hasHiddenStagedChanges=false;
+    for(let i=0;i<lines.length;i++){
       const line=lines[i]!;
       const code=line.slice(0,2);
       const path=line.slice(3);
       const renamed=/[RC]/.test(code);
       const previousPath=renamed?lines[++i]:undefined;
-      if(this.isHiddenMobileGitPath(path)||(previousPath&&this.isHiddenMobileGitPath(previousPath)))continue;
+      realChangeCount++;
+      const staged=code[0]!==" "&&code[0]!=="?";
+      hasStagedChanges||=staged;
+      const hidden=this.isHiddenMobileGitPath(path)||(previousPath&&this.isHiddenMobileGitPath(previousPath))===true;
+      if(hidden){
+        hiddenChangeCount++;
+        hasHiddenStagedChanges||=staged;
+        continue;
+      }
+      if(changes.length>=250)continue;
       changes.push({
         code:code.trim()||"??",indexStatus:code[0]??" ",worktreeStatus:code[1]??" ",
         path:path.slice(0,1200),previousPath:previousPath?.slice(0,1200),
@@ -2320,7 +2376,8 @@ export class MiniAppAgent {
       .map(value=>value.trim()).filter(value=>value&&!value.endsWith("/HEAD")&&!remoteNames.has(value)).slice(0,250);
     const upstreamCandidate=header.includes("...")?header.slice(header.indexOf("...")+3).split(" ")[0]:undefined;
     const upstream=upstreamCandidate&&remoteBranches.includes(upstreamCandidate)?upstreamCandidate:undefined;
-    return {project:name,branch,branches,remoteBranches,remotes,...(upstream?{upstream}:{}),clean:changes.length===0,changes,checkedAt:Date.now()};
+    return {project:name,branch,branches,remoteBranches,remotes,...(upstream?{upstream}:{}),clean:realChangeCount===0,
+      hasStagedChanges,hasHiddenChanges:hiddenChangeCount>0,hasHiddenStagedChanges,hiddenChangeCount,changes,checkedAt:Date.now()};
   }
   private isHiddenMobileGitPath(path:string):boolean{
     return path.split(/[\\/]+/).some(part=>this.isHiddenMobileFile(part));
@@ -2538,6 +2595,25 @@ export class MiniAppAgent {
     if(!matched&&!known&&!allowed)throw new Error("Папка проекта не разрешена");
     return {name:matched?.name||basename(path),cwd:path};
   }
+  lookupMobileSend(userId:number,args:Record<string,unknown>):{found:boolean;result?:unknown}{
+    const sessionId=argumentString(args,"sessionId",80);
+    const requestId=argumentString(args,"requestId",80);
+    if(!/^[a-zA-Z0-9_-]{12,80}$/.test(requestId))throw new Error("Неверный идентификатор запроса");
+    const rawIds=args.attachmentIds;
+    if(!Array.isArray(rawIds)||rawIds.length<1||rawIds.length>5||rawIds.some(id=>typeof id!=="string"))
+      throw new Error("Список вложений недопустим или превышает пять файлов");
+    const attachmentIds=rawIds as string[];
+    if(attachmentIds.some(id=>!/^[a-f0-9-]{36}$/i.test(id))||new Set(attachmentIds).size!==attachmentIds.length)
+      throw new Error("Список вложений недопустим или превышает пять файлов");
+    const text=typeof args.text==="string"&&args.text.length<=16000?args.text.trim():"";
+    const images=parseTmaImages(args.images);
+    const appIds=selectedMobileAppIds(args.appIds);
+    const fingerprint=tmaPromptFingerprint(text,images,[
+      ...attachmentIds,
+      ...appIds.map(appId=>"app:"+appId),
+    ]);
+    return this.promptJournal.lookup(userId+":"+sessionId+":"+requestId,fingerprint);
+  }
   async execute(job:TmaJob,mobileAttachments:readonly MobilePromptAttachment[]=[],context?:{surface:"mobile"}):Promise<unknown>{
     const {acp,registry,cfg}=this.deps;
     const chatId=job.userId,controller=registry.controller(chatId),args=job.args;
@@ -2578,18 +2654,24 @@ export class MiniAppAgent {
         for(const t of threads)if(t.cwd&&!projectMap.has(t.cwd))projectMap.set(t.cwd,basename(t.cwd));
         for(const path of cfg.projectRoots)if(!projectMap.has(path))projectMap.set(path,basename(path));
         if(!projectMap.size)projectMap.set(cfg.workspace,basename(cfg.workspace));
-        const sessions=threads.map(t=>({
-          id:t.id,title:(t.name||t.preview||"Новый сеанс").slice(0,180),
-          cwd:t.cwd||"",updatedAt:t.recencyAt||t.updatedAt||t.createdAt||0,
-          source:threadSourceKind(t)||"unknown",
-          archived:false,
-          ephemeral:t.ephemeral===true,
-          parentThreadId:t.parentThreadId,
-          section:mobileThreadSection(t.section),
-          busy:controlled.some(c=>c.sessionId===t.id&&c.busy),
-          queue:controlled.find(c=>c.sessionId===t.id)?.queueLength||0,
-          progress:controlled.find(c=>c.sessionId===t.id)?.progress,
-        }));
+        const sessions=threads.map(t=>{
+          const status=normalizeThreadStatus(t.status);
+          const current=controlled.find(c=>c.sessionId===t.id);
+          return {
+            id:t.id,title:(t.name||t.preview||"Новый сеанс").slice(0,180),
+            cwd:t.cwd||"",updatedAt:t.recencyAt||t.updatedAt||t.createdAt||0,
+            source:threadSourceKind(t)||"unknown",
+            archived:false,
+            ephemeral:t.ephemeral===true,
+            parentThreadId:t.parentThreadId,
+            section:mobileThreadSection(t.section),
+            busy:Boolean(current?.busy)||status?.status==="working"||status?.status==="approval",
+            queue:current?.queueLength||0,
+            progress:current?.progress,
+            liveStatus:status?.status??"unknown",
+            liveLabel:status?.label??"Статус неизвестен",
+          };
+        });
         return {
           projects:[...projectMap].map(([path,name])=>({path,name})),
           sessions,
@@ -2605,7 +2687,7 @@ export class MiniAppAgent {
           controlled:controlled.map(c=>({id:c.sessionId,busy:c.busy,queue:c.queueLength,paused:c.queuePaused})),
           model:acp.currentModelId||"default",
           models:acp.availableModels.map(m=>({id:m.modelId,name:m.name})),
-          online:true,
+          online:acp.isConnected,
         };
       }
       case "activity":{
@@ -2615,9 +2697,10 @@ export class MiniAppAgent {
         const file=statSyncSafe(path);
         const rt=registry.runtimeForSession(chatId,id);
         // Scan the evolving rollout while Codex is still working.
-        const images=t.cwd?await this.screenshots.scan(id,path,t.cwd,allowBrowserTemp):[];
-        return {mtimeMs:file.mtimeMs,size:file.size,busy:Boolean(rt?.isBusy),
-          queue:rt?.queueLength??0,images,checkedAt:Date.now()};
+        const images=t.cwd?await this.sessionScreenshotImages(id,chatId,allowBrowserTemp):[];
+        const status=normalizeThreadStatus(t.status);
+        return {mtimeMs:file.mtimeMs,size:file.size,busy:Boolean(rt?.isBusy)||status?.status==="working"||status?.status==="approval",
+          queue:rt?.queueLength??0,images,liveStatus:status?.status??"unknown",liveLabel:status?.label??"Статус неизвестен",checkedAt:Date.now()};
       }
       case "history":{
         const id=argumentString(args,"sessionId",80);
@@ -2650,7 +2733,7 @@ export class MiniAppAgent {
           const entries=(await readConversationHistoryAsync(path,40,32*1024*1024,includeTools,resolveParentPath)).map(e=>({
             role:e.role,text:e.text,timestamp:e.timestamp,tool:e.tool,
           }));
-          const refs=t.cwd?await this.screenshots.scan(id,path,t.cwd,allowBrowserTemp):[];
+          const refs=t.cwd?await this.sessionScreenshotImages(id,chatId,allowBrowserTemp):[];
           const result={entries,images:refs,project:t.cwd||""};
           // The agent may append to the log during this read. Don't store
           // a stale transcript under a newer file revision.
@@ -2795,7 +2878,12 @@ export class MiniAppAgent {
   private async readSessionScreenshot(sessionId:string,userId:number,candidate:string,allowBrowserTemp:boolean){
     const thread=await this.thread(sessionId,userId);
     if(!thread.cwd)throw new Error("Неизвестная папка проекта");
-    const referenced=await this.screenshots.authorized(sessionId,this.store.jsonlPath(sessionId),thread.cwd,candidate,allowBrowserTemp);
+    const sources=await this.mobileScreenshotSources(sessionId,userId);
+    let referenced;
+    for(const source of sources){
+      referenced=await this.screenshots.authorized(source.threadId,source.path,source.cwd,candidate,allowBrowserTemp,source.endByteOffset);
+      if(referenced)break;
+    }
     if(!referenced)throw new Error("Изображение не относится к этому сеансу");
     const root=realpathSync(thread.cwd),real=realpathSync(candidate);
     const rel=relative(root,real);
@@ -2811,6 +2899,38 @@ export class MiniAppAgent {
     const image=readFileSync(real);
     if(isBrowserScreenshot&&!image.subarray(0,PNG_SIGNATURE.length).equals(PNG_SIGNATURE))throw new Error("Недопустимый формат скриншота Browser Skill");
     return {name:basename(real),mime,data:image.toString("base64")};
+  }
+  private async mobileScreenshotSources(sessionId:string,userId:number):Promise<MobileScreenshotSource[]>{
+    const selected=await this.thread(sessionId,userId);
+    if(!selected.cwd)throw new Error("Для этого сеанса Codex не найден проект");
+    const childCwd=resolve(selected.cwd);
+    const resolveParentPath=async(parentId:string):Promise<string|undefined>=>{
+      const parent=await this.thread(parentId,userId);
+      if(!parent.cwd)return undefined;
+      const parentCwd=resolve(parent.cwd);
+      const sameProject=process.platform==="win32"
+        ?childCwd.toLowerCase()===parentCwd.toLowerCase()
+        :childCwd===parentCwd;
+      return sameProject?this.store.historyJsonlPath(parentId):undefined;
+    };
+    const sources=await conversationHistorySources(this.store.jsonlPath(sessionId),resolveParentPath);
+    return sources.map(source=>({
+      threadId:source.threadId??sessionId,
+      path:source.path,
+      cwd:selected.cwd!,
+      ...(source.endByteOffset===undefined?{}:{endByteOffset:source.endByteOffset}),
+    }));
+  }
+  private async sessionScreenshotImages(sessionId:string,userId:number,allowBrowserTemp:boolean){
+    const sources=await this.mobileScreenshotSources(sessionId,userId);
+    const groups=await Promise.all([...sources].reverse().map(source=>
+      this.screenshots.scan(source.threadId,source.path,source.cwd,allowBrowserTemp,source.endByteOffset)));
+    const unique=new Map<string,Awaited<ReturnType<TmaScreenshotIndex["scan"]>>[number]>();
+    for(const image of groups.flat()){
+      const key=process.platform==="win32"?image.path.toLowerCase():image.path;
+      unique.set(key,image);
+    }
+    return [...unique.values()].slice(-256);
   }
 }
 

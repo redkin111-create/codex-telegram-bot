@@ -9,6 +9,22 @@ import type { AcpClient } from "../acp/client.js";
 import type { SessionUpdate } from "../acp/types.js";
 
 export type LiveStatus="working"|"approval"|"completed"|"failed"|"cancelled"|"observing";
+export interface NormalizedThreadStatus { status:LiveStatus; label:string; }
+
+export function normalizeThreadStatus(value:unknown):NormalizedThreadStatus|undefined{
+  const raw=value&&typeof value==="object"?value as Record<string,unknown>:undefined;
+  const type=typeof value==="string"?value:typeof raw?.type==="string"?raw.type:"";
+  const flags=Array.isArray(raw?.activeFlags)?raw.activeFlags.filter((flag):flag is string=>typeof flag==="string"):[];
+  if(type==="active"){
+    if(flags.includes("waitingOnApproval"))return {status:"approval",label:"Codex ожидает подтверждения"};
+    if(flags.includes("waitingOnUserInput"))return {status:"observing",label:"Codex ожидает ответа"};
+    return {status:"working",label:"Codex выполняет задание"};
+  }
+  if(type==="systemError")return {status:"failed",label:"Ошибка состояния Codex"};
+  if(type==="idle")return {status:"observing",label:"Codex готов к работе"};
+  if(type==="notLoaded")return {status:"observing",label:"Сеанс не загружен в Codex"};
+  return undefined;
+}
 export interface LiveApproval {
   id:string;
   title:string;
@@ -42,7 +58,7 @@ export interface LiveElicitation {
 export interface LiveEvent {
   id:number;
   sessionId:string;
-  kind:"text"|"tool"|"status"|"activity"|"approval"|"elicitation"|"transcript"|"plan"|"compaction";
+  kind:"text"|"tool"|"status"|"activity"|"approval"|"elicitation"|"transcript"|"plan"|"compaction"|"sync";
   text?:string;
   role?:"user"|"assistant";
   label?:string;
@@ -87,6 +103,7 @@ export class TmaLiveFeed {
   readonly epoch=randomBytes(12).toString("hex");
   private next=0;
   private readonly recent=new Map<string,LiveEvent[]>();
+  private readonly droppedThrough=new Map<string,number>();
   private readonly states=new Map<string,{status:LiveStatus;at:number;label?:string}>();
   private readonly subscribers=new Map<string,Set<(event:LiveEvent)=>void>>();
   private readonly onUpdate=(threadId:string,update:SessionUpdate)=>this.update(threadId,update);
@@ -98,7 +115,7 @@ export class TmaLiveFeed {
   dispose(){
     this.acp.off("session-update",this.onUpdate);
     this.acp.off("notification",this.onNotification);
-    this.subscribers.clear();this.recent.clear();this.states.clear();
+    this.subscribers.clear();this.recent.clear();this.droppedThrough.clear();this.states.clear();
   }
   latestId(){return this.next;}
   hasSubscribers(sessionId:string):boolean{return (this.subscribers.get(sessionId)?.size??0)>0;}
@@ -108,11 +125,18 @@ export class TmaLiveFeed {
     const msg:LiveEvent={...event,id:++this.next,sessionId,at:Date.now()};
     const old=this.recent.get(sessionId)??[];
     old.push(msg);
-    if(old.length>LIMIT)old.shift();
+    if(old.length>LIMIT){
+      const dropped=old.shift()!;
+      this.droppedThrough.set(sessionId,dropped.id);
+    }
     this.recent.delete(sessionId);this.recent.set(sessionId,old);
     if(this.recent.size>MAX_THREADS){
       const first=this.recent.keys().next().value;
-      if(first&&!this.subscribers.has(first))this.recent.delete(first);
+      if(first&&!this.subscribers.has(first)){
+        this.recent.delete(first);
+        this.droppedThrough.delete(first);
+        this.states.delete(first);
+      }
     }
     if(event.kind==="status"&&event.status){
       this.states.set(sessionId,{status:event.status,at:msg.at,label:event.label});
@@ -127,7 +151,13 @@ export class TmaLiveFeed {
     if(!handlers){handlers=new Set();this.subscribers.set(sessionId,handlers);}
     // Register before replay so events during subscribe are not missed.
     handlers.add(write);
-    for(const event of this.recent.get(sessionId)??[])if(event.id>after)write(event);
+    const dropped=this.droppedThrough.get(sessionId)??0;
+    let replayAfter=after;
+    if(after>0&&after<dropped){
+      write({id:dropped,sessionId,kind:"sync",at:Date.now()});
+      replayAfter=dropped;
+    }
+    for(const event of this.recent.get(sessionId)??[])if(event.id>replayAfter)write(event);
     return ()=>{
       handlers!.delete(write);
       if(handlers!.size===0)this.subscribers.delete(sessionId);
@@ -156,6 +186,9 @@ export class TmaLiveFeed {
     if(method==="item/completed"&&p.item&&typeof p.item==="object"&&
       (p.item as Record<string,unknown>).type==="contextCompaction"){
       this.publish(id,{kind:"compaction",label:"Codex подтвердил сокращение контекста"});
+    }else if(method==="thread/status/changed"){
+      const status=normalizeThreadStatus(p.status);
+      if(status)this.status(id,status.status,status.label);
     }else if(method==="turn/started"){
       this.publish(id,{kind:"plan",turnId:str(turn.id,128),plan:[]});
       this.status(id,"working","Codex выполняет задание");
