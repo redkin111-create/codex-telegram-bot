@@ -183,9 +183,15 @@ claim to display the new summary. See the [app-server item schema](https://githu
 
 ## Verification checkpoint (2026-10-20)
 
-- Root TypeScript check: passed; full root test suite: 421/421 passed.
+- Root TypeScript check: passed; full root test suite: 429/429 passed.
 - Mobile production build and its TypeScript check: passed.
 - `npm audit` in `apps/codex-mobile`: 0 known vulnerabilities.
+- MCP configuration writes re-read the selected thread from Codex's current
+  active/archive catalogues before changing config. A regression test archives
+  an already-cached active thread from Desktop and confirms the MCP file stays
+  byte-for-byte unchanged. Browser Skill on Pixel 7 emulation with the isolated
+  fixture selected an archived thread, attempted an MCP toggle, displayed the
+  archive error, and kept the fixture setting enabled.
 - Current Codex CLI resolution selects an installation with its companion
   Code Mode host; startup rejects an incomplete install when no compatible one
   is available. The reported 2026-10-19 branch failure used a CLI folder that

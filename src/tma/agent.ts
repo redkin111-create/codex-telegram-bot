@@ -497,9 +497,34 @@ export class MiniAppAgent {
     throw new Error("Переписка не найдена в последних сеансах Codex");
   }
   private async isArchivedThread(id:string,userId:number):Promise<boolean>{
-    if(this.knownThreads.get(userId)?.has(id))return this.archivedThreads.get(userId)?.has(id)??false;
-    if(this.archivedThreads.get(userId)?.has(id))return true;
-    return (await this.archivedCatalogue(userId)).some(thread=>thread.id===id);
+    // Desktop may archive a selected session after the mobile catalogue was cached.
+    // Re-read Codex's active and archived filters before authorizing a mutation.
+    const known=this.knownThreads.get(userId)?.get(id)??this.archivedThreads.get(userId)?.get(id);
+    const base={limit:100,sortKey:"recency_at" as const,sortDirection:"desc" as const,
+      sourceKinds:["cli","vscode","appServer"] as Array<"cli"|"vscode"|"appServer">,
+      ...(known?.cwd?{cwd:known.cwd}:{})};
+    const contains=async(archived:boolean):Promise<boolean>=>{
+      const params={...base,archived};
+      if(typeof this.deps.acp.listThreadsPage==="function"){
+        let cursor:string|undefined;
+        const seenCursors=new Set<string>();
+        for(let page=0;page<1000;page++){
+          const result=await this.deps.acp.listThreadsPage({...params,...(cursor?{cursor}:{})});
+          if(result.threads.some(thread=>thread.id===id))return true;
+          const next=result.nextCursor;
+          if(!next||next===cursor||seenCursors.has(next))return false;
+          seenCursors.add(next);
+          cursor=next;
+        }
+        return false;
+      }
+      const threads=typeof this.deps.acp.listAllThreads==="function"
+        ?await this.deps.acp.listAllThreads(params)
+        :await this.deps.acp.listThreads(params);
+      return threads.some(thread=>thread.id===id);
+    };
+    if(await contains(false))return false;
+    return contains(true);
   }
   /** Validate stream access with the same catalogue/ownership rules as history. */
   async canReadSession(id:string,userId:number):Promise<boolean>{

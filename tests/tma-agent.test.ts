@@ -1175,6 +1175,7 @@ test("mobile MCP config is session scoped and restart refuses shared runtime wor
   owners.recordMobile(archivedSessionId,101,project,"Archived");
   let pending=true;
   let busy=false;
+  let externallyArchived=false;
   let restarts=0;
   const acp=Object.assign(new EventEmitter(),{
     isConnected:true,
@@ -1182,7 +1183,9 @@ test("mobile MCP config is session scoped and restart refuses shared runtime wor
     async restart(){restarts++;},
     listProjects:async()=>[{id:"p1",name:"fixture",roots:[project]}],
     listThreads:async()=>threads,
-    listAllThreads:async(params?:{archived?:boolean})=>params?.archived?[archivedThread]:threads,
+    listAllThreads:async(params?:{archived?:boolean})=>params?.archived
+      ?[archivedThread,...(externallyArchived?[threads[0]!]:[])]
+      :externallyArchived?threads.slice(1):threads,
   }) as unknown as AcpClient;
   const registry={
     hasPendingWork:()=>pending,
@@ -1201,6 +1204,13 @@ test("mobile MCP config is session scoped and restart refuses shared runtime wor
     assert.equal(readFileSync(configPath,"utf8"),beforeArchivedToggle,"archived session must not change MCP configuration");
     const listed=await agent.executeMobile({op:"listMcpConfig" as never,userId:101,args:{sessionId}}) as Array<Record<string,unknown>>;
     assert.deepEqual(listed,[{name:"fixture",scope:"workspace",enabled:true,transport:"stdio",effective:true}]);
+    const beforeExternalArchiveToggle=readFileSync(configPath,"utf8");
+    externallyArchived=true;
+    await assert.rejects(agent.executeMobile({op:"setMcpConfigEnabled" as never,userId:101,args:{
+      sessionId,name:"fixture",enabled:false,scope:"workspace",
+    }}),/архивного сеанса/i);
+    assert.equal(readFileSync(configPath,"utf8"),beforeExternalArchiveToggle,"Desktop-archived session must not change MCP configuration");
+    externallyArchived=false;
     assert.deepEqual(await agent.executeMobile({op:"setMcpConfigEnabled" as never,userId:101,args:{sessionId,name:"fixture",enabled:false}}),
       {name:"fixture",scope:"workspace",enabled:false,transport:"stdio",effective:true,restartRequired:true});
     const added=await agent.executeMobile({op:"addMcpConfigServer" as never,userId:101,args:{

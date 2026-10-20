@@ -732,6 +732,12 @@ const agent = {
       return { ...entry, restartRequired: true };
     }
     if (job.op === "setMcpConfigEnabled") {
+      if (job.userId !== ownerId || (!sessions.some((session) => session.id === sessionId) && !archivedSessions.some((session) => session.id === sessionId))) {
+        throw new Error("Доступ к сеансу запрещён");
+      }
+      if (archivedSessions.some((session) => session.id === sessionId)) {
+        throw new Error("Нельзя менять настройки MCP из архивного сеанса");
+      }
       const server = fixtureMcpConfig.find((entry) => entry.name === args.name && entry.scope === args.scope);
       if (!server || typeof args.enabled !== "boolean") throw new Error("MCP-сервер недоступен для изменения");
       server.enabled = args.enabled;
