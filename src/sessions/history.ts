@@ -146,11 +146,89 @@ export async function readConversationHistoryAsync(
   maxEntries = 40,
   maxBytes = 32 * 1024 * 1024,
   includeToolOutputs = false,
+  resolveParentPath?: (threadId: string) => Promise<string | undefined>,
 ): Promise<HistoryEntry[]> {
   if (maxEntries <= 0 || maxBytes <= 0) return [];
-  const size = jsonlSize(jsonlPath);
-  if (!size) return [];
+  if (!resolveParentPath) return (await readConversationFileAsync(jsonlPath, maxEntries, maxBytes, includeToolOutputs)).entries;
+
+  // Codex forks keep the earlier transcript in the parent rollout and record
+  // the exact byte boundary in the child's session_meta. Follow only parents
+  // that the caller explicitly resolves, and never read past that boundary.
+  const sources: Array<{ path: string; endByteOffset?: number }> = [{ path: jsonlPath }];
+  const seenIds = new Set<string>();
+  const seenPaths = new Set<string>([jsonlPath]);
+  let currentPath = jsonlPath;
+  for (let depth = 0; depth < 8; depth++) {
+    const meta = readHistoryBase(currentPath);
+    if (!meta?.id || !meta.parentId || meta.endByteOffset === undefined) break;
+    seenIds.add(meta.id);
+    if (seenIds.has(meta.parentId)) break;
+    let parentPath: string | undefined;
+    try { parentPath = await resolveParentPath(meta.parentId); } catch { break; }
+    if (!parentPath || seenPaths.has(parentPath)) break;
+    sources.push({ path: parentPath, endByteOffset: meta.endByteOffset });
+    seenPaths.add(parentPath);
+    currentPath = parentPath;
+  }
+
+  const chunks: HistoryEntry[][] = [];
+  let bytesLeft = maxBytes;
+  let entriesFound = 0;
+  // Read newest first so the shared memory budget always favors the currently
+  // open fork. Reverse the chunks before returning a chronological transcript.
+  for (const source of sources) {
+    if (bytesLeft <= 0 || entriesFound >= maxEntries) break;
+    const read = await readConversationFileAsync(source.path, maxEntries - entriesFound, bytesLeft,
+      includeToolOutputs, source.endByteOffset);
+    chunks.push(read.entries);
+    entriesFound += read.entries.length;
+    bytesLeft -= read.bytesRead;
+  }
+  return chunks.reverse().flat().slice(-maxEntries);
+}
+
+function readHistoryBase(path: string): { id?: string; parentId?: string; endByteOffset?: number } | undefined {
+  const size = jsonlSize(path);
+  if (!size) return undefined;
+  const length = Math.min(size, 64 * 1024);
+  const fd = openSync(path, "r");
+  try {
+    const buffer = Buffer.alloc(length);
+    readSync(fd, buffer, 0, length, 0);
+    const line = buffer.toString("utf8").split("\n", 1)[0]?.trim();
+    if (!line) return undefined;
+    const event = JSON.parse(line) as Record<string, unknown>;
+    if (event.type !== "session_meta" || !event.payload || typeof event.payload !== "object") return undefined;
+    const payload = event.payload as Record<string, unknown>;
+    const id = typeof payload.id === "string" ? payload.id : undefined;
+    const base = payload.history_base;
+    if (!base || typeof base !== "object") return { id };
+    const historyBase = base as Record<string, unknown>;
+    const parentId = typeof historyBase.thread_id === "string" && /^[a-z0-9_-]{8,128}$/i.test(historyBase.thread_id)
+      ? historyBase.thread_id : undefined;
+    const endByteOffset = Number.isSafeInteger(historyBase.end_byte_offset) && (historyBase.end_byte_offset as number) >= 0
+      ? historyBase.end_byte_offset as number : undefined;
+    return { id, parentId, endByteOffset };
+  } catch {
+    return undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+async function readConversationFileAsync(
+  jsonlPath: string,
+  maxEntries: number,
+  maxBytes: number,
+  includeToolOutputs: boolean,
+  endByteOffset?: number,
+): Promise<{ entries: HistoryEntry[]; bytesRead: number }> {
+  if (maxEntries <= 0 || maxBytes <= 0) return { entries: [], bytesRead: 0 };
+  const fileSize = jsonlSize(jsonlPath);
+  const size = endByteOffset === undefined ? fileSize : Math.min(fileSize, endByteOffset);
+  if (!size) return { entries: [], bytesRead: 0 };
   const start = Math.max(0, size - maxBytes);
+  const bytesRead = size - start;
   const input = createReadStream(jsonlPath, { start, end: size - 1, highWaterMark: 64 * 1024 });
   const lines = createInterface({ input, crlfDelay: Infinity });
   const entries: HistoryEntry[] = [];
@@ -174,7 +252,7 @@ export async function readConversationHistoryAsync(
       entries.push(entry);
       if (entries.length > maxEntries) entries.shift();
     }
-    return entries;
+    return { entries, bytesRead };
   } finally {
     lines.close();
     input.destroy();

@@ -74,6 +74,13 @@ export class SessionStore {
     return this.resolvePath(sessionId) ?? join(this.dir, `${sessionId}.jsonl`);
   }
 
+  /** Resolve an existing rollout only; unlike jsonlPath, never return a path
+   * for a missing thread. Used when following Codex fork history metadata. */
+  historyJsonlPath(sessionId: string): string | undefined {
+    if (!/^[a-z0-9_-]{8,128}$/i.test(sessionId)) return undefined;
+    return this.resolvePath(sessionId);
+  }
+
   /** Recursively find every `rollout-*.jsonl`, newest first; refresh the index. */
   private scan(): Indexed[] {
     if (!this.available()) return [];

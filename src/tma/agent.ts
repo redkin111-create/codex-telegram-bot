@@ -2633,8 +2633,21 @@ export class MiniAppAgent {
         const key=cacheKey+":"+stat.size+":"+stat.mtimeMs;
         const existing=this.historyInflight.get(key);
         if(existing)return existing;
+        const resolveParentPath=async(parentId:string):Promise<string|undefined>=>{
+          // Rollout metadata is local input, not authorization. Re-check the
+          // parent through this user's Codex catalogue and keep forks inside
+          // the same project before following any on-disk path.
+          if(!t.cwd)return undefined;
+          const parent=await this.thread(parentId,chatId);
+          if(!parent.cwd)return undefined;
+          const childCwd=resolve(t.cwd),parentCwd=resolve(parent.cwd);
+          const sameProject=process.platform==="win32"
+            ?childCwd.toLowerCase()===parentCwd.toLowerCase()
+            :childCwd===parentCwd;
+          return sameProject?this.store.historyJsonlPath(parentId):undefined;
+        };
         const pending=(async()=>{
-          const entries=(await readConversationHistoryAsync(path,40,32*1024*1024,includeTools)).map(e=>({
+          const entries=(await readConversationHistoryAsync(path,40,32*1024*1024,includeTools,resolveParentPath)).map(e=>({
             role:e.role,text:e.text,timestamp:e.timestamp,tool:e.tool,
           }));
           const refs=t.cwd?await this.screenshots.scan(id,path,t.cwd,allowBrowserTemp):[];

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readConversationHistoryAsync, searchConversationHistoryAsync } from "../src/sessions/history.js";
@@ -24,6 +24,32 @@ test("full history search finds messages older than the conversation window", as
     assert.equal(result.entries[0]?.text, "Ancient needle message");
     assert.equal(result.entries[0]?.role, "user");
     assert.equal(result.skippedLargeRecords, 0);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("forked conversation history includes its parent only through the fork point", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "codex-fork-history-"));
+  const parentId = "01a1575d-bb08-7af1-b09f-1b97d4de9085";
+  const childId = "01a1577c-d2f2-7192-a77a-f51f75692404";
+  const parentPath = join(dir, "parent.jsonl");
+  const childPath = join(dir, "child.jsonl");
+  const parentPrefix = [
+    JSON.stringify({ type: "session_meta", payload: { id: parentId } }),
+    message("user", "Parent prompt", 1),
+    message("assistant", "Parent answer", 2),
+  ].join("\n") + "\n";
+  const forkOffset = Buffer.byteLength(parentPrefix);
+  await writeFile(parentPath, parentPrefix, "utf8");
+  await appendFile(parentPath, message("user", "Parent message after fork", 3) + "\n", "utf8");
+  await writeFile(childPath, [
+    JSON.stringify({ type: "session_meta", payload: { id: childId, history_base: { thread_id: parentId, end_byte_offset: forkOffset } } }),
+    message("user", "Fork follow-up", 4),
+    message("assistant", "Fork answer", 5),
+  ].join("\n") + "\n", "utf8");
+  try {
+    const entries = await readConversationHistoryAsync(childPath, 40, 32 * 1024 * 1024, false,
+      async (threadId) => threadId === parentId ? parentPath : undefined);
+    assert.deepEqual(entries.map((entry) => entry.text), ["Parent prompt", "Parent answer", "Fork follow-up", "Fork answer"]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
