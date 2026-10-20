@@ -35,6 +35,32 @@ test("Mobile ACP selects an installed Codex CLI with its code-mode host", () => 
   }
 });
 
+test("Mobile startup rejects Codex installations without a code-mode host", () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-mobile-missing-code-host-"));
+  const incomplete = join(root, "incomplete");
+  const binary = process.platform === "win32" ? "codex.exe" : "codex";
+  const previousPath = process.env.PATH;
+  const previousAppData = process.env.APPDATA;
+
+  try {
+    mkdirSync(incomplete);
+    writeFileSync(join(incomplete, binary), "incomplete cli");
+    process.env.PATH = incomplete;
+    process.env.APPDATA = join(root, "appdata");
+
+    assert.throws(
+      () => resolveCodexPath(join(incomplete, binary), { requireCodeModeHost: true }),
+      /code-mode host/i,
+    );
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    if (previousAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = previousAppData;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Mobile ACP explicitly enables the Codex code-mode host", async () => {
   const acpClient = await import("../src/acp/client.js") as typeof import("../src/acp/client.js") & {
     buildAcpAppServerArgs?: (options: { trustAllTools: boolean; codeModeHost: boolean }) => string[];

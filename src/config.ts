@@ -274,10 +274,14 @@ export function resolveCodexPath(
   if (options.requireCodeModeHost) {
     const compatible = found.find(hasCodexCodeModeHost);
     if (compatible) return compatible;
+    const host = win ? "codex-code-mode-host.exe" : "codex-code-mode-host";
+    const checked = found.length > 0 ? found.join(", ") : (requested ?? "PATH");
+    throw new Error(
+      `Codex Mobile requires a Codex CLI installation with its companion code-mode host (${host}); none was found beside the detected CLI (${checked}). Update Codex or set CODEX_CLI_PATH to a complete installation, then restart.`,
+    );
   }
 
-  // Keep a configured path when no better installed candidate is available;
-  // startup diagnostics explain if its companion host is missing.
+  // Keep a configured path when no better installed candidate is available.
   return found[0] ?? requested ?? "codex"; // last resort — PATH lookup at spawn time
 }
 

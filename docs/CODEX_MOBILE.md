@@ -35,6 +35,8 @@ points to an incomplete Codex install, startup prefers another installed CLI
 that includes the companion `codex-code-mode-host` executable. Browser Skill
 uses its local `bsk` CLI and connected Chrome extension; Codex's embedded
 `cua_repl` browser surface is not forwarded into the mobile page.
+If no installed CLI includes the companion executable, Mobile startup fails
+with a configuration error instead of accepting chats without local tools.
 - Persistent auth state uses the project's local data directory and atomic
   file storage; no database, cloud service or paid service is introduced.
 - Voice controls are intentionally omitted from the mobile interface at the
@@ -159,9 +161,13 @@ claim to display the new summary. See the [app-server item schema](https://githu
 
 ## Verification checkpoint (2026-10-20)
 
-- Root TypeScript check: passed; full root test suite: 420/420 passed.
+- Root TypeScript check: passed; full root test suite: 421/421 passed.
 - Mobile production build and its TypeScript check: passed.
 - `npm audit` in `apps/codex-mobile`: 0 known vulnerabilities.
+- Current Codex CLI resolution selects an installation with its companion
+  Code Mode host; startup rejects an incomplete install when no compatible one
+  is available. The reported 2026-10-19 branch failure used a CLI folder that
+  lacked the host; the installed `896a…` build now includes it.
 - Plugin and app inventories retain up to 1,000 entries. Settings search covers name, ID, marketplace and description, with 20 items per page; the chat app picker also has search. Tests cover 500 plugin entries and 300 app entries, including search beyond the old 80-row UI cap and page 25.
 - Browser Skill with Pixel 7 at 412×915 on the public Mobile page: navigated the plugin list to page 2 (20 rows per page) and searched for `gitlab`, which returned one match. No plugin configuration was changed. The already-running server still returns its pre-update 300-item inventory until a safe process restart.
 - Browser Skill with Pixel 7 at 412×915: searched for `Canva` in settings and in the chat app picker; each returned the matching app. The app was not selected and no configuration was changed.
