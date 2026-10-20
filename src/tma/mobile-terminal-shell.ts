@@ -6,6 +6,7 @@ interface MobileTerminalShell {
   id: MobileTerminalShellId;
   label: string;
   executable: string;
+  args: string[];
 }
 
 function fileName(path: string): string {
@@ -19,17 +20,18 @@ export function mobileTerminalShells(
   if (platform === "win32") {
     const windows = env.SystemRoot || "C:\\Windows";
     return [
-      { id: "cmd", label: "Командная строка (cmd)", executable: env.ComSpec || "cmd.exe" },
+      { id: "cmd", label: "Командная строка (cmd)", executable: env.ComSpec || "cmd.exe", args: [] },
       {
         id: "powershell",
         label: "Windows PowerShell",
         executable: win32.join(windows, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+        args: ["-NoProfile"],
       },
     ];
   }
 
   const executable = env.SHELL || "/bin/sh";
-  return [{ id: "default", label: fileName(executable) || executable, executable }];
+  return [{ id: "default", label: fileName(executable) || executable, executable, args: [] }];
 }
 
 export function resolveMobileTerminalShell(

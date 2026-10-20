@@ -9,11 +9,13 @@ test("Windows shell selection resolves only to supported local shells", () => {
     id: "cmd",
     label: "Командная строка (cmd)",
     executable: "C:\\Windows\\System32\\cmd.exe",
+    args: [],
   });
   assert.deepEqual(resolveMobileTerminalShell("powershell", "win32", env), {
     id: "powershell",
     label: "Windows PowerShell",
     executable: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    args: ["-NoProfile"],
   });
 });
 
@@ -29,6 +31,7 @@ test("non-Windows systems expose only their configured default shell", () => {
     id: "default",
     label: "zsh",
     executable: "/bin/zsh",
+    args: [],
   });
   assert.throws(
     () => resolveMobileTerminalShell("powershell", "linux", { SHELL: "/bin/zsh" }),

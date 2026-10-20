@@ -32,7 +32,14 @@ test("mobile background process controls are limited to an owned thread and a pr
     {id:foreignId,name:"Foreign fixture",cwd:dir,source:"appServer",createdAt:1,updatedAt:1,recencyAt:1},
   ];
   const listCalls:string[]=[];
+  const activationCalls:string[]=[];
   const terminateCalls:Array<{threadId:string;processId:string}> = [];
+  const runtime={sessionId,isBusy:true};
+  const controller={
+    list:()=>[],
+    runtimeForSession:(id:string)=>id===sessionId?runtime:undefined,
+    switchTo:async(id:string)=>{activationCalls.push(id);return {sessionId:id};},
+  };
   const acp=Object.assign(new EventEmitter(),{
     isConnected:true,
     listProjects:async()=>[{id:"project",name:"Fixture",roots:[dir]}],
@@ -43,7 +50,7 @@ test("mobile background process controls are limited to an owned thread and a pr
     availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],
     currentModelId:"default",currentModeId:"code",accountState:async()=>({}),
   }) as unknown as AcpClient;
-  const registry={controller:()=>({list:()=>[]}),get:()=>({sessionId,isBusy:true}),runtimeForSession:()=>({sessionId,isBusy:true})} as unknown as RuntimeRegistry;
+  const registry={controller:()=>controller,get:()=>runtime,runtimeForSession:()=>runtime} as unknown as RuntimeRegistry;
   const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101","202"])} as AppConfig;
   const owners=new TelegramSessionRegistry(dir);
   owners.recordMobile(sessionId,101,dir,"Fixture");
@@ -55,6 +62,7 @@ test("mobile background process controls are limited to an owned thread and a pr
       items:Array<{itemId:string;processId:string}>;
     };
     assert.deepEqual(listed.items,[{itemId:"item-1",processId:"42"}]);
+    assert.deepEqual(activationCalls,[sessionId],"a restored selected session must be rebound before ACP thread-scoped calls");
     await assert.rejects(agent.executeMobile({op:"stopBackgroundTerminal" as never,userId:202,args:{sessionId,processId:"42"}}),/Доступ к сеансу запрещён/);
     await assert.rejects(agent.executeMobile({op:"stopBackgroundTerminal" as never,userId:101,args:{sessionId,processId:"999"}}),/не найден/i);
     assert.deepEqual(terminateCalls,[]);
@@ -215,7 +223,13 @@ test("mobile sends file attachments and selected skills into the shared runtime 
     currentModelId:"default",currentModeId:"code",
   }) as unknown as AcpClient;
   const runtime={sessionId,isBusy:false,queueLength:0};
-  const controller={runtimeForSession:()=>runtime,foreground:()=>runtime,list:()=>[]};
+  let prepareForegroundCalls=0;
+  const controller={
+    runtimeForSession:()=>runtime,
+    foreground:()=>runtime,
+    switchTo:async(id:string)=>{prepareForegroundCalls++;return {sessionId:id};},
+    list:()=>[],
+  };
   const submitted:Array<{text:string;appIds?:string[];skillNames?:string[];attachmentNames?:string[];attachmentContext?:string;attachmentPaths?:string[];displayText?:string}>=[];
   const registry={
     controller:()=>controller,
@@ -240,6 +254,7 @@ test("mobile sends file attachments and selected skills into the shared runtime 
       {id:"22222222-2222-4222-8222-222222222222",name:binary.name,mimeType:"application/pdf",size:18,path:binary.path},
     ]);
     assert.deepEqual(result,{result:"accepted"});
+    assert.equal(prepareForegroundCalls,1,"sending to an already-foreground restored session must rebind it to the current Codex process");
     assert.equal(submitted.length,1);
     const input=submitted[0]!;
     assert.match(input.text,/Проверь документы/);
@@ -283,7 +298,7 @@ test("mobile resolves natural skill requests from Codex and stops when disabled 
     currentModelId:"default",currentModeId:"code",
   }) as unknown as AcpClient;
   const runtime={sessionId,isBusy:false,queueLength:0};
-  const controller={runtimeForSession:()=>runtime,foreground:()=>runtime,list:()=>[]};
+  const controller={runtimeForSession:()=>runtime,foreground:()=>runtime,switchTo:async(id:string)=>({sessionId:id}),list:()=>[]};
   const submitted:Array<{text:string;skillNames?:string[]}> = [];
   const registry={controller:()=>controller,get:()=>runtime,async submitPrompt(_userId:number,input:{text:string;skillNames?:string[]}){
     submitted.push(input);return {kind:"submitted",outcome:"accepted"};
@@ -677,6 +692,7 @@ test("mobile interactive terminal reattaches, streams output, scopes input and s
     assert.equal(launches.length,1);
     if(process.platform==="win32"){
       assert.match(launches[0]?.shell??"",/WindowsPowerShell[\\/]v1\.0[\\/]powershell\.exe$/i);
+      assert.deepEqual(launches[0]?.args,["-NoProfile"],"PowerShell must not execute user startup profiles");
       assert.equal(started.shell,"powershell.exe");
     }
     assert.equal(launches[0]?.options.cwd,realpathSync.native(project));
@@ -2223,6 +2239,7 @@ test("TMA can still send to a listed session omitted by a later catalogue refres
       list:()=>[],
       runtimeForSession:()=>runtime,
       foreground:()=>runtime,
+      switchTo:async(id:string)=>({sessionId:id}),
     };
     const registry={
       controller:()=>controller,

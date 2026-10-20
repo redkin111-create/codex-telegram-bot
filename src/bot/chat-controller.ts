@@ -299,6 +299,7 @@ export class ChatController {
     if (!rt) return undefined;
     this.exitWatchOnly();
     if (rt === this.fg) {
+      await rt.prepare().catch(() => {});
       return { rt, sessionId, projectName: rt.projectName, busy: rt.isBusy, unread: [], firstView: false, alreadyForeground: true };
     }
     await this.background(this.fg);

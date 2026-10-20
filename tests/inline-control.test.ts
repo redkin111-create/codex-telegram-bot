@@ -666,6 +666,48 @@ test("watch-only exits on controlled-session switches, attach, resume, and new s
   }
 });
 
+test("switching to the restored foreground session rebinds it to the current Codex runtime", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-tg-restored-foreground-"));
+  const sessionId = "restored-session";
+  const resumed: Array<{ id: string; cwd: string }> = [];
+  const acp = Object.assign(new EventEmitter(), {
+    loadSession: async (id: string, cwd: string) => { resumed.push({ id, cwd }); },
+  }) as unknown as AcpClient;
+  Object.defineProperty(acp, "supportsLoadSession", { value: true });
+  let currentSettings = {
+    ...defaultSettings(),
+    projectPath: dir,
+    projectName: "project",
+    sessionId,
+    controlledSessions: [{ sessionId, projectPath: dir, projectName: "project" }],
+    foregroundSessionId: sessionId,
+  };
+  const settings = {
+    get: () => currentSettings,
+    update: (_id: number, patch: Partial<typeof currentSettings>) => { currentSettings = { ...currentSettings, ...patch }; },
+  };
+  const controller = new ChatController(
+    { sendMessage: async () => ({ message_id: 1 }) } as never,
+    505,
+    acp,
+    { workspace: dir, dataDir: dir } as AppConfig,
+    settings as never,
+    { jsonlPath: (id: string) => join(dir, `${id}.jsonl`) } as never,
+    () => {},
+    () => {},
+  );
+
+  try {
+    assert(controller.runtimeForSession(sessionId));
+    const result = await controller.switchTo(sessionId);
+    assert.equal(result?.alreadyForeground, true);
+    assert.deepEqual(resumed, [{ id: sessionId, cwd: dir }]);
+  } finally {
+    controller.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("session origin labels and Telegram registry contain only origin metadata", () => {
   const base = mkdtempSync(join(tmpdir(), "codex-tg-registry-"));
   try {

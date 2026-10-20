@@ -24,6 +24,7 @@ test("same prompt request ID is executed exactly once across simultaneous and re
     const controller={
       runtimeForSession:()=>({sessionId}),
       foreground:()=>({sessionId}),
+      switchTo:async(id:string)=>({sessionId:id}),
     };
     const registry={
       controller:()=>controller,

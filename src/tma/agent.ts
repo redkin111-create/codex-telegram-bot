@@ -917,16 +917,28 @@ export class MiniAppAgent {
       }
       case "listBackgroundTerminals":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
-        await this.thread(sessionId,chatId);
+        const thread=await this.thread(sessionId,chatId);
+        if(await this.isArchivedThread(sessionId,chatId))throw new Error("Сначала восстановите сеанс из архива");
         if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        if(!thread.cwd)throw new Error("Неизвестная рабочая папка сеанса");
         if(typeof acp.listMobileBackgroundTerminals!=="function")throw new Error("Эта версия Codex не поддерживает список фоновых процессов");
+        const controller=registry.controller(chatId);
+        if(controller.runtimeForSession(sessionId))await controller.switchTo(sessionId);
+        else await controller.addAttach(sessionId,thread.cwd,basename(thread.cwd),[]);
+        this.selected.set(chatId,sessionId);
         return {items:await acp.listMobileBackgroundTerminals(sessionId)};
       }
       case "stopBackgroundTerminal":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
-        await this.thread(sessionId,chatId);
+        const thread=await this.thread(sessionId,chatId);
+        if(await this.isArchivedThread(sessionId,chatId))throw new Error("Сначала восстановите сеанс из архива");
         if(!acp.isConnected)throw new Error("Codex сейчас офлайн");
+        if(!thread.cwd)throw new Error("Неизвестная рабочая папка сеанса");
         if(typeof acp.terminateMobileBackgroundTerminal!=="function")throw new Error("Эта версия Codex не поддерживает остановку фоновых процессов");
+        const controller=registry.controller(chatId);
+        if(controller.runtimeForSession(sessionId))await controller.switchTo(sessionId);
+        else await controller.addAttach(sessionId,thread.cwd,basename(thread.cwd),[]);
+        this.selected.set(chatId,sessionId);
         const processId=argumentString(args,"processId",128);
         if(!/^[a-z0-9._-]{1,128}$/i.test(processId))throw new Error("Выберите фоновый процесс из списка сеанса Codex");
         await acp.terminateMobileBackgroundTerminal(sessionId,processId);
@@ -1888,7 +1900,7 @@ export class MiniAppAgent {
       catch{throw new Error("Интерактивный терминал недоступен в этой установке; используйте запуск одной команды");}
     }
     const shell=selectedShell.executable;
-    const pty=factory(shell,[],{
+    const pty=factory(shell,selectedShell.args,{
       name:"xterm-256color",cols:80,rows:24,cwd,encoding:"utf8",
       env:{...process.env,TERM:"xterm-256color"},
     });
@@ -2645,7 +2657,7 @@ export class MiniAppAgent {
             if(await this.isArchivedThread(id,chatId))throw new Error("Сначала восстановите сеанс из архива");
             if(!t.cwd)throw new Error("Неизвестная рабочая папка");
             if(!controller.runtimeForSession(id))await controller.addAttach(id,t.cwd,basename(t.cwd),[]);
-            else if(controller.foreground().sessionId!==id)await controller.switchTo(id);
+            else await controller.switchTo(id);
             this.selected.set(chatId,id);
             const attachmentContexts=mobileAttachments.map(mobileAttachmentContext);
             const promptText=[message,...attachmentContexts].filter(Boolean).join("\n\n");
