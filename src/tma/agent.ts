@@ -1343,6 +1343,7 @@ export class MiniAppAgent {
       }
       case "setMcpConfigEnabled":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        if(await this.isArchivedThread(sessionId,chatId))throw new Error("Нельзя менять настройки MCP из архивного сеанса");
         const selected=await this.thread(sessionId,chatId);
         if(typeof args.enabled!=="boolean")throw new Error("Состояние MCP-сервера должно быть включено или выключено");
         const scope=args.scope;

@@ -1163,13 +1163,16 @@ test("mobile MCP config is session scoped and restart refuses shared runtime wor
   process.env.CODEX_HOME=codexHome;
   const sessionId="31313131-3131-4131-8131-313131313131";
   const foreignSessionId="32323232-3232-4232-8232-323232323232";
+  const archivedSessionId="33333333-3333-4333-8333-333333333333";
   const threads=[
     {id:sessionId,name:"Owned MCP",cwd:project,source:"cli",createdAt:1,updatedAt:2,recencyAt:2},
     {id:foreignSessionId,name:"Foreign MCP",cwd:project,source:"cli",createdAt:1,updatedAt:1,recencyAt:1},
   ];
+  const archivedThread={id:archivedSessionId,name:"Archived MCP",cwd:project,source:"cli",createdAt:1,updatedAt:0,recencyAt:0};
   const owners=new TelegramSessionRegistry(dir);
   owners.recordMobile(sessionId,101,project,"Owned");
   owners.recordMobile(foreignSessionId,202,project,"Foreign");
+  owners.recordMobile(archivedSessionId,101,project,"Archived");
   let pending=true;
   let busy=false;
   let restarts=0;
@@ -1179,7 +1182,7 @@ test("mobile MCP config is session scoped and restart refuses shared runtime wor
     async restart(){restarts++;},
     listProjects:async()=>[{id:"p1",name:"fixture",roots:[project]}],
     listThreads:async()=>threads,
-    listAllThreads:async()=>threads,
+    listAllThreads:async(params?:{archived?:boolean})=>params?.archived?[archivedThread]:threads,
   }) as unknown as AcpClient;
   const registry={
     hasPendingWork:()=>pending,
@@ -1190,6 +1193,12 @@ test("mobile MCP config is session scoped and restart refuses shared runtime wor
   const cfg={sessionsDir:dir,dataDir:dir,workspace:project,projectRoots:[project],allowedUsers:new Set(["101","202"])} as AppConfig;
   const agent=new MiniAppAgent({cfg,acp,registry});
   try{
+    const configPath=join(project,".codex","config.toml");
+    const beforeArchivedToggle=readFileSync(configPath,"utf8");
+    await assert.rejects(agent.executeMobile({op:"setMcpConfigEnabled" as never,userId:101,args:{
+      sessionId:archivedSessionId,name:"fixture",enabled:false,scope:"workspace",
+    }}),/архивного сеанса/i);
+    assert.equal(readFileSync(configPath,"utf8"),beforeArchivedToggle,"archived session must not change MCP configuration");
     const listed=await agent.executeMobile({op:"listMcpConfig" as never,userId:101,args:{sessionId}}) as Array<Record<string,unknown>>;
     assert.deepEqual(listed,[{name:"fixture",scope:"workspace",enabled:true,transport:"stdio",effective:true}]);
     assert.deepEqual(await agent.executeMobile({op:"setMcpConfigEnabled" as never,userId:101,args:{sessionId,name:"fixture",enabled:false}}),
