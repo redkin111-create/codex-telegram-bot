@@ -6,7 +6,7 @@ import type { FollowUpMode, HistoryEntry, MobileActivity, MobileAttachment, Mobi
 import { imageUrl } from "../api.js";
 import { filterCatalogEntries } from "../lib/plugin-catalog.js";
 import { splitCodeReviewComments } from "../lib/review-comments.js";
-import { MobileSubmissionLock } from "../lib/session-state.js";
+import { MobileSubmissionLock, mobileAttachmentsForCleanup, type MobileAttachmentSnapshot } from "../lib/session-state.js";
 import { SafeMarkdown } from "../markdown.js";
 import { isMobileSkillNameSafe, prependMobileSkill } from "../skill-prompt.js";
 import { ScreenshotsGallery } from "./screenshots-gallery.js";
@@ -68,7 +68,7 @@ export function Conversation({
   const editOlderLoadInFlight = useRef<number | undefined>(undefined);
   const [images, setImages] = useState<PromptImage[]>([]);
   const [attachments, setAttachments] = useState<MobileAttachment[]>([]);
-  const attachmentSnapshot = useRef(attachments);
+  const attachmentSnapshot = useRef<MobileAttachmentSnapshot>({ sessionId: session?.id, attachments: [] });
   const [imageError, setImageError] = useState("");
   const [attachmentError, setAttachmentError] = useState("");
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
@@ -110,7 +110,6 @@ export function Conversation({
   const [fullHistoryLoading, setFullHistoryLoading] = useState(false);
   const [fullHistoryError, setFullHistoryError] = useState("");
   const fullHistoryRequest = useRef(0);
-  attachmentSnapshot.current = attachments;
   const usesFullHistory = Boolean(fullHistoryResults && fullHistoryQuery === historySearch.trim());
   const callableApps = useMemo(() => availableApps.filter((app) => app.enabled && app.accessible && app.callable), [availableApps]);
   const filteredCallableApps = useMemo(() => filterCatalogEntries(callableApps, appSearch), [callableApps, appSearch]);
@@ -121,18 +120,34 @@ export function Conversation({
     return history.filter((entry) => entry.text.toLowerCase().includes(query));
   }, [history, historySearch, usesFullHistory, fullHistoryResults]);
 
+  function cleanupPendingAttachments(sessionId: string | undefined) {
+    if (!sessionId) return;
+    const snapshot = attachmentSnapshot.current;
+    for (const file of mobileAttachmentsForCleanup(snapshot, sessionId, submitting.current)) {
+      void removeAttachment.current(sessionId, file.id).catch((cause) => {
+        console.error(`Не удалось очистить вложение ${file.id} сеанса ${sessionId}`, cause);
+      });
+    }
+    if (snapshot.sessionId === sessionId) {
+      attachmentSnapshot.current = {
+        sessionId,
+        attachments: snapshot.attachments.filter((file) => submitting.current.isAttachmentProtected(file.id)),
+      };
+    }
+  }
+
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
-      const sessionId = activeSessionId.current;
-      if (sessionId && !submitting.current) {
-        for (const file of attachmentSnapshot.current) void removeAttachment.current(sessionId, file.id).catch(() => undefined);
-      }
+      cleanupPendingAttachments(attachmentSnapshot.current.sessionId);
     };
   }, []);
 
   useEffect(() => {
+    const previousSessionId = attachmentSnapshot.current.sessionId;
+    if (previousSessionId && previousSessionId !== session?.id) cleanupPendingAttachments(previousSessionId);
+    attachmentSnapshot.current = { sessionId: session?.id, attachments: [] };
     editLoadRequest.current++;
     setHistorySearchOpen(false);
     setHistorySearch("");
@@ -399,13 +414,20 @@ export function Conversation({
     setAttachmentError("");
     try {
       const selected = Array.from(files);
-      if (attachments.length + selected.length > 5) throw new Error("Можно прикрепить не больше пяти файлов");
+      const current = attachmentSnapshot.current;
+      if (current.sessionId !== targetSessionId) return;
+      if (current.attachments.length + selected.length > 5) throw new Error("Можно прикрепить не больше пяти файлов");
       for (const file of selected) {
         const prepared = await onUploadAttachment(targetSessionId, file);
-        if (!mounted.current || activeSessionId.current !== targetSessionId) {
-          await onRemoveAttachment(targetSessionId, prepared.id).catch(() => undefined);
+        if (!mounted.current || activeSessionId.current !== targetSessionId || attachmentSnapshot.current.sessionId !== targetSessionId) {
+          try {
+            await removeAttachment.current(targetSessionId, prepared.id);
+          } catch (cause) {
+            console.error(`Не удалось очистить загруженное вложение ${prepared.id} сеанса ${targetSessionId}`, cause);
+          }
           return;
         }
+        attachmentSnapshot.current = { ...attachmentSnapshot.current, attachments: [...attachmentSnapshot.current.attachments, prepared] };
         setAttachments((current) => [...current, prepared]);
       }
     } catch (cause) {
@@ -415,11 +437,16 @@ export function Conversation({
 
   async function removeDocument(id: string) {
     if (!session) return;
+    if (submitting.current.isAttachmentProtected(id)) return;
     const targetSessionId = session.id;
     setAttachmentError("");
     try {
       const result = await onRemoveAttachment(targetSessionId, id);
       if (!result.removed) throw new Error("Файл уже отправлен или истёк. Обновите сеанс.");
+      submitting.current.resolveAttachments([id]);
+      if (attachmentSnapshot.current.sessionId === targetSessionId) {
+        attachmentSnapshot.current = { ...attachmentSnapshot.current, attachments: attachmentSnapshot.current.attachments.filter((file) => file.id !== id) };
+      }
       if (mounted.current && activeSessionId.current === targetSessionId) setAttachments((current) => current.filter((file) => file.id !== id));
     } catch (cause) {
       if (mounted.current && activeSessionId.current === targetSessionId) setAttachmentError(cause instanceof Error ? cause.message : "Не удалось удалить вложение");
@@ -441,11 +468,15 @@ export function Conversation({
       setAttachmentError("Файлы можно отправить в очередь. Для активной задачи используйте режим «В очередь».");
       return;
     }
-    if (!submitting.current.tryAcquire()) return;
+    if (!submitting.current.tryAcquire([...submittedAttachmentIds])) return;
     setSending(true);
     try {
       await onSend(submittedText, submittedImages, submittedAttachments, submittedMode, submittedApps);
       onClearDraft(targetSessionId, submittedDraft);
+      if (attachmentSnapshot.current.sessionId === targetSessionId) {
+        attachmentSnapshot.current = { ...attachmentSnapshot.current, attachments: attachmentSnapshot.current.attachments.filter((file) => !submittedAttachmentIds.has(file.id)) };
+      }
+      submitting.current.resolveAttachments([...submittedAttachmentIds]);
       if (mounted.current && activeSessionId.current === targetSessionId) {
         setImages((current) => current.filter((image) => !submittedImages.includes(image)));
         setAttachments((current) => current.filter((file) => !submittedAttachmentIds.has(file.id)));
@@ -453,7 +484,12 @@ export function Conversation({
         setAttachmentError("");
         setFollowUpMode((current) => current === submittedMode ? "queue" : current);
       }
-    } catch { /* Keep the draft available after a rejected or uncertain request. */ }
+    } catch (cause) {
+      // The parent operation displays this error; keep the draft for an idempotent retry.
+      if (!(cause instanceof DOMException && cause.name === "AbortError")) {
+        console.error("Не удалось отправить задачу; черновик сохранён для безопасного повтора", cause);
+      }
+    }
     finally {
       submitting.current.release();
       if (mounted.current) setSending(false);
@@ -611,7 +647,7 @@ export function Conversation({
         {!appPickerLoading && !appPickerError && availableApps.some((app) => !app.callable || !app.accessible || !app.enabled) && <p className="mt-2 text-[10px] leading-4 text-muted">Недоступные приложения можно подключить в настройках Codex на компьютере.</p>}
       </section>}
       {images.length > 0 && <div className="mx-auto mb-2 flex max-w-4xl gap-2 overflow-x-auto">{images.map((image, index) => <div key={`${image.name}-${index}`} className="relative h-16 w-20 shrink-0 overflow-hidden rounded-lg border border-border"><img src={image.preview} alt={image.name} className="h-full w-full object-cover" /><button type="button" aria-label={`Убрать ${image.name}`} className="absolute right-1 top-1 rounded-full bg-black/75 px-1.5 text-xs" onClick={() => setImages((current) => current.filter((_, i) => i !== index))}>×</button></div>)}</div>}
-      {attachments.length > 0 && <ul className="mx-auto mb-2 flex max-w-4xl flex-wrap gap-2" aria-label="Прикреплённые файлы">{attachments.map((file) => <li key={file.id} className="flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-border bg-panel px-2.5 py-1.5 text-xs"><FileText size={14} className="shrink-0 text-accent" /><span className="max-w-[min(64vw,20rem)] truncate" title={file.name}>{file.name}</span><span className="shrink-0 text-[10px] text-muted">{(file.size / 1024).toFixed(file.size < 10_240 ? 1 : 0)} КБ</span><button type="button" className="min-h-7 min-w-7 rounded-md text-muted hover:bg-elevated" aria-label={`Убрать файл ${file.name}`} disabled={uploadingAttachments} onClick={() => void removeDocument(file.id)}><X size={13} /></button></li>)}</ul>}
+      {attachments.length > 0 && <ul className="mx-auto mb-2 flex max-w-4xl flex-wrap gap-2" aria-label="Прикреплённые файлы">{attachments.map((file) => <li key={file.id} className="flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-border bg-panel px-2.5 py-1.5 text-xs"><FileText size={14} className="shrink-0 text-accent" /><span className="max-w-[min(64vw,20rem)] truncate" title={file.name}>{file.name}</span><span className="shrink-0 text-[10px] text-muted">{(file.size / 1024).toFixed(file.size < 10_240 ? 1 : 0)} КБ</span><button type="button" className="min-h-7 min-w-7 rounded-md text-muted hover:bg-elevated" aria-label={`Убрать файл ${file.name}`} disabled={uploadingAttachments || submitting.current.isAttachmentProtected(file.id)} onClick={() => void removeDocument(file.id)}><X size={13} /></button></li>)}</ul>}
       {selectedAppIds.length > 0 && <ul className="mx-auto mb-2 flex max-w-4xl flex-wrap gap-2" aria-label="Выбранные приложения">{selectedAppIds.map((id) => {
         const app = availableApps.find((candidate) => candidate.id === id);
         const name = app?.name ?? id;

@@ -390,9 +390,9 @@ const agent = {
       if (job.userId !== ownerId || !sessions.some((session) => session.id === sessionId)) throw new Error("Доступ к сеансу запрещён");
       if (sessionId !== firstSession) return { images: [] };
       const older = fixtureScreenshots.slice(0, 144);
-      if (args.beforeOffset === 64) return { images: older.slice(0, 64) };
-      if (args.beforeOffset !== undefined) throw new Error("Некорректный указатель страницы скриншотов");
-      return { images: older.slice(-80), nextCursor: 64 };
+      if (args.cursor === "64") return { images: older.slice(0, 64) };
+      if (args.cursor !== undefined) throw new Error("Некорректный указатель страницы скриншотов");
+      return { images: older.slice(-80), nextCursor: "64" };
     }
     if (job.op === "searchHistory") {
       if (job.userId !== ownerId || !sessions.some((session) => session.id === sessionId)) throw new Error("Доступ к сеансу запрещён");

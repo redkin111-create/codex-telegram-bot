@@ -30,16 +30,50 @@ export function mobileDraftKey(deviceId: string, authEpoch: number, sessionId: s
 
 export class MobileSubmissionLock {
   private locked = false;
+  private readonly activeAttachmentIds = new Set<string>();
+  private readonly uncertainAttachmentIds = new Set<string>();
 
-  tryAcquire(): boolean {
+  get isLocked(): boolean {
+    return this.locked;
+  }
+
+  tryAcquire(attachmentIds: readonly string[] = []): boolean {
     if (this.locked) return false;
     this.locked = true;
+    for (const id of attachmentIds) this.activeAttachmentIds.add(id);
     return true;
   }
 
   release(): void {
     this.locked = false;
+    for (const id of this.activeAttachmentIds) this.uncertainAttachmentIds.add(id);
+    this.activeAttachmentIds.clear();
   }
+
+  isAttachmentProtected(id: string): boolean {
+    return (this.isLocked && this.activeAttachmentIds.has(id)) || this.uncertainAttachmentIds.has(id);
+  }
+
+  resolveAttachments(ids: readonly string[]): void {
+    for (const id of ids) {
+      this.activeAttachmentIds.delete(id);
+      this.uncertainAttachmentIds.delete(id);
+    }
+  }
+}
+
+export interface MobileAttachmentSnapshot {
+  sessionId?: string;
+  attachments: readonly MobileAttachment[];
+}
+
+export function mobileAttachmentsForCleanup(
+  snapshot: MobileAttachmentSnapshot,
+  sessionId: string,
+  submission: Pick<MobileSubmissionLock, "isAttachmentProtected">,
+): MobileAttachment[] {
+  if (!sessionId || snapshot.sessionId !== sessionId) return [];
+  return snapshot.attachments.filter(({ id }) => !submission.isAttachmentProtected(id));
 }
 
 export function setSessionDraft(drafts: SessionDrafts, sessionId: string, text: string): SessionDrafts {

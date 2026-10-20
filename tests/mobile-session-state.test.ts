@@ -7,6 +7,7 @@ import {
   mobileDraftKey,
   MobileSubmissionLock,
   mobileSendFingerprint,
+  mobileAttachmentsForCleanup,
   PendingMobileSendIds,
   setSessionDraft,
   updateCurrentSessionState,
@@ -66,6 +67,45 @@ test("a rapid second Enter cannot start another send until the first settles", (
   assert.equal(lock.tryAcquire(), false);
   lock.release();
   assert.equal(lock.tryAcquire(), true);
+});
+
+test("unmount cleanup removes only this session's unsubmitted attachments", () => {
+  const attachments = [
+    { id: "draft-a", name: "draft.txt", size: 1, kind: "text" as const },
+    { id: "sent-a", name: "sent.txt", size: 1, kind: "text" as const },
+  ];
+  const lock = new MobileSubmissionLock();
+  assert.equal(lock.tryAcquire(["sent-a"]), true);
+  assert.equal(lock.isLocked, true);
+  assert.equal(lock.isAttachmentProtected("sent-a"), true);
+
+  assert.deepEqual(
+    mobileAttachmentsForCleanup({ sessionId: "session-a", attachments }, "session-a", lock),
+    [attachments[0]],
+  );
+  assert.deepEqual(
+    mobileAttachmentsForCleanup({ sessionId: "session-a", attachments }, "session-b", lock),
+    [],
+  );
+});
+
+test("an uncertain send keeps its attachment protected after the submission lock releases", () => {
+  const attachments = [
+    { id: "sent-a", name: "sent.txt", size: 1, kind: "text" as const },
+    { id: "draft-a", name: "draft.txt", size: 1, kind: "text" as const },
+  ];
+  const lock = new MobileSubmissionLock();
+  assert.equal(lock.tryAcquire(["sent-a"]), true);
+  lock.release(); // onSend rejected after the request may already have reached the server
+
+  assert.equal(lock.isLocked, false);
+  assert.equal(lock.isAttachmentProtected("sent-a"), true);
+  assert.deepEqual(
+    mobileAttachmentsForCleanup({ sessionId: "session-a", attachments }, "session-a", lock),
+    [attachments[1]],
+  );
+  lock.resolveAttachments(["sent-a"]);
+  assert.equal(lock.isAttachmentProtected("sent-a"), false);
 });
 
 test("late data from the previous session is ignored and the new session starts empty", () => {
