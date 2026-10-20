@@ -94,8 +94,17 @@ test("mobile edit and retry only reverts the latest owned idle text turn and sub
     listAllThreads:async(params?:{archived?:boolean})=>params?.archived?[]:threads,
     hasActiveTurn:(id:string)=>id===sessionId&&activeTurn,
     async readMobileLatestEditableTurn(threadId:string){assert.equal(threadId,sessionId);return {...latestTurn};},
-    async readMobileEditableTurns(threadId:string){assert.equal(threadId,sessionId);return [{...latestTurn},{...olderTurn}];},
-    async revertMobileThread(threadId:string,turnId:string){reverts.push({threadId,turnId});latestTurn={turnId:"abcdef01-2345-4234-8234-123456789abc",text:"edited prompt",skillNames:[],appIds:[],attachmentCount:0,editable:true};},
+    async readMobileEditableTurnsPage(threadId:string){assert.equal(threadId,sessionId);return {latestTurnId:latestTurn.turnId,turns:[{...latestTurn},{...olderTurn}]};},
+    async revertMobileThread(threadId:string,turnId:string,expectedLatestTurnId:string,_appIds:string[]|undefined,onBeforeRevert?:()=>void){
+      assert.equal(threadId,sessionId);
+      if(latestTurn.turnId!==expectedLatestTurnId)throw new Error("История Codex изменилась");
+      const selected=[latestTurn,olderTurn].find(turn=>turn.turnId===turnId);
+      if(!selected)throw new Error("Выбранный запрос больше не найден");
+      onBeforeRevert?.();
+      reverts.push({threadId,turnId});
+      latestTurn={turnId:"abcdef01-2345-4234-8234-123456789abc",text:"edited prompt",skillNames:[],appIds:[],attachmentCount:0,editable:true};
+      return {...selected};
+    },
     availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],
     currentModelId:"default",currentModeId:"code",accountState:async()=>({}),
   }) as unknown as AcpClient;
@@ -176,8 +185,8 @@ test("mobile edit keeps image bytes out of browser responses and resubmits owned
     listThreads:async()=>[{id:sessionId,name:"Image edit fixture",cwd:dir,source:"appServer",createdAt:1,updatedAt:2,recencyAt:2}],
     listAllThreads:async(params?:{archived?:boolean})=>params?.archived?[]:[{id:sessionId,name:"Image edit fixture",cwd:dir,source:"appServer",createdAt:1,updatedAt:2,recencyAt:2}],
     async readMobileLatestEditableTurn(){return {...latestTurn};},
-    async readMobileEditableTurns(){return [{...latestTurn}];},
-    async revertMobileThread(_threadId:string){const selected={...latestTurn};latestTurn={...latestTurn,turnId:"b1234567-1234-4234-8234-123456789abc"};return selected;},
+    async readMobileEditableTurnsPage(){return {latestTurnId:latestTurn.turnId,turns:[{...latestTurn}]};},
+    async revertMobileThread(_threadId:string,_turnId:string,_expectedLatestTurnId:string,_appIds:string[]|undefined,onBeforeRevert?:()=>void){const selected={...latestTurn};onBeforeRevert?.();latestTurn={...latestTurn,turnId:"b1234567-1234-4234-8234-123456789abc"};return selected;},
     availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],
     currentModelId:"default",currentModeId:"code",accountState:async()=>({}),
   }) as unknown as AcpClient;
@@ -950,6 +959,61 @@ test("mobile plugin and app catalogs redact host data and plugin changes stay ow
     assert.equal(calls[3]?.op,"uninstall");
     await assert.rejects(agent.executeMobile({op:"setPluginEnabled",userId:202,args:{sessionId,pluginId:"reviewer@official",enabled:true}}),/не разрешён/i);
     await assert.rejects(agent.executeMobile({op:"installPlugin",userId:202,args:{sessionId,pluginId:"reviewer@official",marketplace:"official"}}),/не разрешён/i);
+  }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("mobile editable-turn pages hide Codex cursors and bind them to the owner and session",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"codex-mobile-edit-cursors-"));
+  const sessionId="91919191-9191-4191-8191-919191919191";
+  const otherOwnedId="92929292-9292-4292-8292-929292929292";
+  const foreignId="93939393-9393-4393-8393-939393939393";
+  const threads=[sessionId,otherOwnedId,foreignId].map((id,index)=>({
+    id,name:`Thread ${index}`,cwd:dir,source:"appServer",createdAt:1,updatedAt:3-index,recencyAt:3-index,
+  }));
+  const cursorCalls:Array<{threadId:string;cursor?:string}> = [];
+  const acp=Object.assign(new EventEmitter(),{
+    isConnected:true,
+    listProjects:async()=>[{id:"project",name:"Fixture",roots:[dir]}],
+    listThreads:async()=>threads,
+    listAllThreads:async(params?:{archived?:boolean})=>params?.archived?[]:threads,
+    async readMobileEditableTurnsPage(threadId:string,cursor?:string){
+      cursorCalls.push({threadId,...(cursor?{cursor}:{})});
+      return cursor
+        ? {turns:[{turnId:"turn-21",text:"older request",skillNames:[],attachmentCount:0,editable:true}]}
+        : {latestTurnId:"turn-1",turns:[{turnId:"turn-1",text:"new request",skillNames:[],attachmentCount:0,editable:true}],nextCursor:"native-cursor-secret"};
+    },
+    availableModels:[],availableModes:[],availableSkills:[],availableMcpServers:[],
+    currentModelId:"default",currentModeId:"code",accountState:async()=>({}),
+  }) as unknown as AcpClient;
+  const runtime={sessionId,isBusy:false,queueLength:0};
+  const registry={controller:()=>({list:()=>[]}),get:()=>runtime,runtimeForSession:()=>undefined} as unknown as RuntimeRegistry;
+  const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101","202"])} as AppConfig;
+  const owners=new TelegramSessionRegistry(dir);
+  owners.recordMobile(sessionId,101,dir,"Fixture");
+  owners.recordMobile(otherOwnedId,101,dir,"Fixture");
+  owners.recordMobile(foreignId,202,dir,"Fixture");
+  const agent=new MiniAppAgent({cfg,acp,registry});
+  try{
+    await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
+    const first=await agent.executeMobile({op:"listEditableTurns" as never,userId:101,args:{sessionId}}) as {
+      latestTurnId:string;turns:Array<{turnId:string}>;nextCursor:string;
+    };
+    assert.equal(first.latestTurnId,"turn-1");
+    assert.deepEqual(first.turns.map(turn=>turn.turnId),["turn-1"]);
+    assert.ok(first.nextCursor);
+    assert.doesNotMatch(JSON.stringify(first),/native-cursor-secret/);
+    const older=await agent.executeMobile({op:"listEditableTurns" as never,userId:101,args:{sessionId,cursor:first.nextCursor}}) as {
+      latestTurnId:string;turns:Array<{turnId:string}>;
+    };
+    assert.equal(older.latestTurnId,"turn-1");
+    assert.deepEqual(older.turns.map(turn=>turn.turnId),["turn-21"]);
+    await assert.rejects(agent.executeMobile({op:"listEditableTurns" as never,userId:101,args:{sessionId:otherOwnedId,cursor:first.nextCursor}}),/страниц|устарел|сеанс/i);
+    await assert.rejects(agent.executeMobile({op:"listEditableTurns" as never,userId:202,args:{sessionId,cursor:first.nextCursor}}),/Доступ к сеансу запрещён/);
+    assert.deepEqual(cursorCalls,[
+      {threadId:sessionId},
+      {threadId:sessionId},
+      {threadId:sessionId,cursor:"native-cursor-secret"},
+    ]);
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 

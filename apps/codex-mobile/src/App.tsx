@@ -570,9 +570,9 @@ export default function App() {
     setTimeout(() => { void refreshSnapshot(); }, 500);
   }
 
-  async function loadEditableTurns(): Promise<MobileEditableTurns> {
+  async function loadEditableTurns(cursor?: string): Promise<MobileEditableTurns> {
     if (!selectedId) throw new Error("Сначала выберите сеанс Codex");
-    return operation<MobileEditableTurns>("listEditableTurns", { sessionId: selectedId });
+    return operation<MobileEditableTurns>("listEditableTurns", { sessionId: selectedId, ...(cursor ? { cursor } : {}) });
   }
 
   async function editAndRetry(turnId: string, text: string, expectedLatestTurnId: string) {

@@ -238,6 +238,13 @@ export interface CodexMobileEditableTurn {
   resendLocalImages?: string[];
 }
 
+export interface CodexMobileEditableTurnsPage {
+  latestTurnId?: string;
+  turns: CodexMobileEditableTurn[];
+  /** Raw app-server cursor; MiniAppAgent must replace it with an owner-scoped opaque reference. */
+  nextCursor?: string;
+}
+
 // ── turns ────────────────────────────────────────────────────────────────────
 
 export type CodexUserInput =

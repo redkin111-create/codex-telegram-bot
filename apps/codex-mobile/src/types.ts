@@ -148,6 +148,7 @@ export interface MobileEditableTurn {
 export interface MobileEditableTurns {
   latestTurnId?: string;
   turns: MobileEditableTurn[];
+  nextCursor?: string;
 }
 
 export interface MobileAttachment {

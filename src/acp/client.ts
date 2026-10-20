@@ -70,6 +70,7 @@ import type {
   CodexThreadSettingsUpdateParams,
   CodexBackgroundTerminal,
   CodexMobileEditableTurn,
+  CodexMobileEditableTurnsPage,
 } from "./codex-protocol.js";
 import type {
   ContentBlock,
@@ -84,6 +85,9 @@ import type {
 
 const log = createLogger("codex:client");
 const MOBILE_APP_ID_PATTERN = /^[a-z0-9][a-z0-9_.:@-]{0,199}$/i;
+const MOBILE_EDITABLE_TURN_PAGE_SIZE = 20;
+const MOBILE_EDITABLE_TURN_MAX_PAGES = 500;
+const MOBILE_EDITABLE_TURN_CURSOR_MAX_LENGTH = 8192;
 
 function mobileAppRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -548,33 +552,71 @@ export class AcpClient extends EventEmitter {
 
   /** Read a bounded list of recent user turns, newest first, for safe mobile editing. */
   async readMobileEditableTurns(threadId: string): Promise<CodexMobileEditableTurn[]> {
-    return this.readMobileEditableTurnsInternal(threadId);
+    return (await this.readMobileEditableTurnsPage(threadId)).turns;
   }
 
-  private async readMobileEditableTurnsInternal(threadId: string, retainTurnId?: string): Promise<CodexMobileEditableTurn[]> {
+  /** Read one native cursor page of editable user turns without exposing replay data. */
+  async readMobileEditableTurnsPage(threadId: string, cursor?: string): Promise<CodexMobileEditableTurnsPage> {
+    return await this.readMobileEditableTurnsPageInternal(threadId, cursor);
+  }
+
+  private async readMobileEditableTurnsPageInternal(threadId: string, cursor?: string, retainTurnId?: string): Promise<CodexMobileEditableTurnsPage> {
     if (!/^[a-z0-9_-]{8,128}$/i.test(threadId)) throw new Error("Неверный сеанс Codex для редактирования запроса");
+    if (cursor !== undefined && (!cursor || cursor.length > MOBILE_EDITABLE_TURN_CURSOR_MAX_LENGTH)) {
+      throw new Error("Неверная страница истории Codex");
+    }
     const response = await this.request("thread/turns/list", {
-      threadId, limit: 20, sortDirection: "desc", itemsView: "full",
-    }) as { data?: unknown };
+      threadId, limit: MOBILE_EDITABLE_TURN_PAGE_SIZE, ...(cursor ? { cursor } : {}), sortDirection: "desc", itemsView: "full",
+    }) as { data?: unknown; nextCursor?: unknown };
     if (!Array.isArray(response?.data)) throw new AcpError("Codex вернул неверный список запросов");
-    return response.data.flatMap((turn) => {
+    const turns = response.data.flatMap((turn) => {
       const record = turn && typeof turn === "object" ? turn as Record<string, unknown> : undefined;
       const parsed = parseMobileEditableTurn(turn, record?.id === retainTurnId);
       return parsed ? [parsed] : [];
     });
+    if (response.nextCursor !== undefined && response.nextCursor !== null &&
+        (typeof response.nextCursor !== "string" || !response.nextCursor || response.nextCursor.length > MOBILE_EDITABLE_TURN_CURSOR_MAX_LENGTH)) {
+      throw new AcpError("Codex вернул неверный указатель страницы запросов");
+    }
+    const nextCursor = typeof response.nextCursor === "string" ? response.nextCursor : undefined;
+    if (cursor && nextCursor === cursor) throw new AcpError("Codex повторил указатель страницы запросов");
+    return {
+      ...(!cursor && turns[0] ? { latestTurnId: turns[0].turnId } : {}),
+      turns,
+      ...(nextCursor ? { nextCursor } : {}),
+    };
   }
 
   /** Revalidate the selected turn and latest-turn snapshot before changing history. */
-  async revertMobileThread(threadId: string, beforeTurnId: string, expectedLatestTurnId?: string, appIds: string[] = []): Promise<CodexMobileEditableTurn> {
+  async revertMobileThread(
+    threadId: string,
+    beforeTurnId: string,
+    expectedLatestTurnId?: string,
+    appIds: string[] = [],
+    onBeforeRevert?: () => void,
+  ): Promise<CodexMobileEditableTurn> {
     if (!/^[a-z0-9_-]{8,128}$/i.test(threadId) || !/^[a-z0-9_-]{8,128}$/i.test(beforeTurnId)) {
       throw new Error("Неверный запрос для редактирования истории Codex");
     }
-    const turns = await this.readMobileEditableTurnsInternal(threadId, beforeTurnId);
-    const latestTurnId = turns[0]?.turnId;
+    let page = await this.readMobileEditableTurnsPageInternal(threadId, undefined, beforeTurnId);
+    const latestTurnId = page.latestTurnId;
     if (!latestTurnId || (expectedLatestTurnId && latestTurnId !== expectedLatestTurnId)) {
       throw new AcpError("История Codex изменилась. Обновите список запросов перед редактированием");
     }
-    const selected = turns.find((turn) => turn.turnId === beforeTurnId);
+    let selected = page.turns.find((turn) => turn.turnId === beforeTurnId);
+    let cursor = page.nextCursor;
+    const seenCursors = new Set<string>();
+    let pagesRead = 1;
+    while (!selected && cursor) {
+      if (pagesRead >= MOBILE_EDITABLE_TURN_MAX_PAGES || seenCursors.has(cursor)) {
+        throw new AcpError("Не удалось проверить выбранный старый запрос. Обновите список запросов и повторите попытку");
+      }
+      seenCursors.add(cursor);
+      page = await this.readMobileEditableTurnsPageInternal(threadId, cursor, beforeTurnId);
+      selected = page.turns.find((turn) => turn.turnId === beforeTurnId);
+      cursor = page.nextCursor;
+      pagesRead++;
+    }
     if (!selected) throw new AcpError("Выбранный запрос больше не найден. Обновите список запросов перед редактированием");
     if (!selected.editable) throw new AcpError("Выбранный запрос нельзя безопасно редактировать с телефона");
     for (const path of selected.resendLocalImages ?? []) {
@@ -585,6 +627,7 @@ export class AcpClient extends EventEmitter {
       }
     }
     await this.resolveMobileAppMentions(threadId, appIds.length ? appIds : selected.appIds ?? []);
+    onBeforeRevert?.();
     const result = await this.request("thread/revert", { threadId, beforeTurnId }) as {
       thread?: { id?: unknown };
     };

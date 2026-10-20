@@ -46,7 +46,7 @@ export function Conversation({
   onQueueOpen: () => void;
   onLoadSkills: () => Promise<MobileCapabilities["skills"]>;
   onLoadApps: () => Promise<MobileCapabilities["apps"]>;
-  onLoadEditableTurns: () => Promise<MobileEditableTurns>;
+  onLoadEditableTurns: (cursor?: string) => Promise<MobileEditableTurns>;
   onEditAndRetry: (turnId: string, text: string, expectedLatestTurnId: string) => Promise<void>;
   onUploadAttachment: (sessionId: string, file: File) => Promise<MobileAttachment>;
   onRemoveAttachment: (sessionId: string, id: string) => Promise<{ removed: boolean }>;
@@ -57,6 +57,7 @@ export function Conversation({
   const activeSessionId = useRef(session?.id);
   activeSessionId.current = session?.id;
   const editLoadRequest = useRef(0);
+  const editOlderLoadInFlight = useRef<number | undefined>(undefined);
   const [text, setText] = useState("");
   const [images, setImages] = useState<PromptImage[]>([]);
   const [attachments, setAttachments] = useState<MobileAttachment[]>([]);
@@ -86,6 +87,8 @@ export function Conversation({
   const [editLoading, setEditLoading] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
   const [editTurns, setEditTurns] = useState<MobileEditableTurn[]>([]);
+  const [editNextCursor, setEditNextCursor] = useState<string>();
+  const [editOlderLoading, setEditOlderLoading] = useState(false);
   const [editLatestTurnId, setEditLatestTurnId] = useState("");
   const [editTurn, setEditTurn] = useState<MobileEditableTurn>();
   const [editText, setEditText] = useState("");
@@ -134,6 +137,9 @@ export function Conversation({
     setEditLoading(false);
     setEditSaving(false);
     setEditTurns([]);
+    setEditNextCursor(undefined);
+    setEditOlderLoading(false);
+    editOlderLoadInFlight.current = undefined;
     setEditLatestTurnId("");
     setEditTurn(undefined);
     setEditError("");
@@ -224,6 +230,9 @@ export function Conversation({
     setEditOpen(true);
     setEditLoading(true);
     setEditTurns([]);
+    setEditNextCursor(undefined);
+    setEditOlderLoading(false);
+    editOlderLoadInFlight.current = undefined;
     setEditLatestTurnId("");
     setEditTurn(undefined);
     setEditText("");
@@ -236,6 +245,7 @@ export function Conversation({
       const latestTurnId = typeof result.latestTurnId === "string" ? result.latestTurnId : "";
       const initial = turns.find((turn) => turn.editable) ?? turns[0];
       setEditTurns(turns);
+      setEditNextCursor(result.nextCursor);
       setEditLatestTurnId(latestTurnId);
       setEditTurn(initial);
       setEditText(initial?.text ?? "");
@@ -245,6 +255,35 @@ export function Conversation({
       }
     } finally {
       if (requestId === editLoadRequest.current && activeSessionId.current === targetSessionId) setEditLoading(false);
+    }
+  }
+
+  async function loadOlderEditableTurns() {
+    const cursor = editNextCursor;
+    const targetSessionId = activeSessionId.current;
+    if (!cursor || !targetSessionId || editOlderLoadInFlight.current !== undefined) return;
+    const requestId = editLoadRequest.current;
+    editOlderLoadInFlight.current = requestId;
+    setEditOlderLoading(true);
+    setEditError("");
+    try {
+      const result = await onLoadEditableTurns(cursor);
+      if (requestId !== editLoadRequest.current || activeSessionId.current !== targetSessionId) return;
+      if (result.latestTurnId !== editLatestTurnId) throw new Error("История Codex изменилась. Закройте и откройте редактирование заново.");
+      setEditTurns((current) => {
+        const known = new Set(current.map((turn) => turn.turnId));
+        return [...current, ...result.turns.filter((turn) => !known.has(turn.turnId))];
+      });
+      setEditNextCursor(result.nextCursor);
+    } catch (cause) {
+      if (requestId === editLoadRequest.current && activeSessionId.current === targetSessionId) {
+        setEditError(cause instanceof Error ? cause.message : "Не удалось загрузить более старые запросы");
+      }
+    } finally {
+      if (editOlderLoadInFlight.current === requestId) {
+        editOlderLoadInFlight.current = undefined;
+        if (requestId === editLoadRequest.current && activeSessionId.current === targetSessionId) setEditOlderLoading(false);
+      }
     }
   }
 
@@ -566,6 +605,9 @@ export function Conversation({
               const label = `${index === 0 ? "Последний" : `${index + 1}-й с конца`} · ${snippet}`;
               return <option key={turn.turnId} value={turn.turnId} disabled={!turn.editable}>{label}{turn.editable ? "" : " · нельзя редактировать"}</option>;
             })}</select></label>}
+            {editNextCursor && <Button type="button" variant="outline" className="mt-2 min-h-10 w-full text-xs" disabled={editOlderLoading || editSaving} onClick={() => void loadOlderEditableTurns()}>
+              {editOlderLoading ? <LoaderCircle size={14} className="animate-spin" /> : null}{editOlderLoading ? "Загружаю…" : "Показать более старые запросы"}
+            </Button>}
             {editTurn.skillNames?.length ? <p className="mt-3 text-xs text-muted">Сохранятся навыки: {editTurn.skillNames.join(", ")}</p> : null}
             {editTurn.appIds?.length ? <p className="mt-3 text-xs text-muted">Сохранятся подключённые приложения: {editTurn.appIds.length}.</p> : null}
             {(editTurn.attachmentCount ?? 0) > 0 && <p className="mt-3 text-xs text-muted">Исходные вложения сохранятся: {editTurn.attachmentCount}.</p>}

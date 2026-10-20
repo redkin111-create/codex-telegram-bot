@@ -8,8 +8,10 @@ import { AcpClient } from "../src/acp/client.js";
 test("mobile edit reads the latest text-only user turn without exposing skill paths and uses thread/revert", async () => {
   const client = new AcpClient({ codexCliPath: "codex", workspace: "C:\\work", trustAllTools: false });
   const calls: Array<{ method: string; params: unknown }> = [];
+  let dispatchNotified = false;
   const internal = client as unknown as { request: (method: string, params: unknown) => Promise<unknown> };
   internal.request = async (method, params) => {
+    if (method === "thread/revert") assert.equal(dispatchNotified, true, "the dispatch marker must be set immediately before the history mutation");
     calls.push({ method, params });
     if (method === "thread/turns/list") return {
       data: [{
@@ -34,7 +36,7 @@ test("mobile edit reads the latest text-only user turn without exposing skill pa
     readMobileLatestEditableTurn?: (threadId: string) => Promise<{
       turnId: string; text: string; skillNames: string[]; attachmentCount: number; editable: boolean;
     } | undefined>;
-    revertMobileThread?: (threadId: string, beforeTurnId: string, expectedLatestTurnId?: string) => Promise<void>;
+    revertMobileThread?: (threadId: string, beforeTurnId: string, expectedLatestTurnId?: string, appIds?: string[], onBeforeRevert?: () => void) => Promise<void>;
   };
   assert.equal(typeof api.readMobileLatestEditableTurn, "function");
   assert.equal(typeof api.revertMobileThread, "function");
@@ -42,7 +44,7 @@ test("mobile edit reads the latest text-only user turn without exposing skill pa
   assert.deepEqual(turn, {
     turnId: "turn-uuid-1", text: "original prompt", skillNames: ["fixture-review"], attachmentCount: 0, editable: true,
   });
-  await api.revertMobileThread!.call(client, "owned-thread", "turn-uuid-1");
+  await api.revertMobileThread!.call(client, "owned-thread", "turn-uuid-1", undefined, undefined, () => { dispatchNotified = true; });
   assert.deepEqual(calls, [
     { method: "thread/turns/list", params: { threadId: "owned-thread", limit: 1, sortDirection: "desc", itemsView: "full" } },
     { method: "thread/turns/list", params: { threadId: "owned-thread", limit: 20, sortDirection: "desc", itemsView: "full" } },
@@ -65,12 +67,14 @@ test("mobile edit refuses a changed turn and unsupported attachments before reve
   };
   const api = client as unknown as {
     readMobileLatestEditableTurn: (threadId: string) => Promise<{ editable: boolean; attachmentCount: number } | undefined>;
-    revertMobileThread: (threadId: string, beforeTurnId: string, expectedLatestTurnId?: string) => Promise<void>;
+    revertMobileThread: (threadId: string, beforeTurnId: string, expectedLatestTurnId?: string, appIds?: string[], onBeforeRevert?: () => void) => Promise<void>;
   };
   const turn = await api.readMobileLatestEditableTurn("owned-thread");
   assert.equal(turn?.editable, false);
   assert.equal(turn?.attachmentCount, 1);
-  await assert.rejects(api.revertMobileThread("owned-thread", "turn-old"), /изменил|не найден/i);
+  let dispatchNotified = false;
+  await assert.rejects(api.revertMobileThread("owned-thread", "turn-old", undefined, undefined, () => { dispatchNotified = true; }), /изменил|не найден/i);
+  assert.equal(dispatchNotified, false, "rejected validation must remain safe to retry");
   assert.deepEqual(methods, ["thread/turns/list", "thread/turns/list"]);
   client.stop();
 });
@@ -130,6 +134,54 @@ test("mobile edit lists recent user turns and revalidates an earlier text-only t
   assert.deepEqual(calls.map(({ method }) => method), ["thread/turns/list", "thread/turns/list", "thread/revert", "thread/turns/list"]);
   assert.deepEqual(calls[2], {
     method: "thread/revert", params: { threadId: "owned-thread", beforeTurnId: "turn-older" },
+  });
+  client.stop();
+});
+
+test("mobile edit pages older user turns and revalidates one beyond the first page", async () => {
+  const client = new AcpClient({ codexCliPath: "codex", workspace: "C:\\work", trustAllTools: false });
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const firstPage = Array.from({ length: 20 }, (_, index) => ({
+    id: index === 0 ? "turn-current" : `turn-recent-${index}`,
+    status: "completed",
+    items: [{ type: "userMessage", content: [{ type: "text", text: `request ${index}` }] }],
+  }));
+  const internal = client as unknown as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+  internal.request = async (method, params) => {
+    calls.push({ method, params });
+    if (method === "thread/turns/list" && params.cursor === undefined) {
+      return { data: firstPage, nextCursor: "native-older-cursor", backwardsCursor: "newer-cursor" };
+    }
+    if (method === "thread/turns/list" && params.cursor === "native-older-cursor") {
+      return { data: [{
+        id: "turn-original", status: "completed", items: [{ type: "userMessage", content: [{ type: "text", text: "old request to revise" }] }],
+      }], nextCursor: null, backwardsCursor: "native-older-cursor" };
+    }
+    if (method === "thread/revert") return { thread: { id: "owned-thread" } };
+    throw new Error(`Unexpected ACP method: ${method}`);
+  };
+  const api = client as unknown as {
+    readMobileEditableTurnsPage?: (threadId: string, cursor?: string) => Promise<{
+      latestTurnId?: string; turns: Array<{ turnId: string; text: string }>; nextCursor?: string;
+    }>;
+    revertMobileThread?: (threadId: string, beforeTurnId: string, expectedLatestTurnId?: string) => Promise<{ turnId: string; text: string }>;
+  };
+  assert.equal(typeof api.readMobileEditableTurnsPage, "function");
+  const page = await api.readMobileEditableTurnsPage!.call(client, "owned-thread");
+  assert.equal(page.latestTurnId, "turn-current");
+  assert.equal(page.turns.length, 20);
+  assert.equal(page.nextCursor, "native-older-cursor");
+  assert.equal("backwardsCursor" in page, false);
+
+  const reverted = await api.revertMobileThread!.call(client, "owned-thread", "turn-original", "turn-current");
+  assert.deepEqual(reverted, { turnId: "turn-original", text: "old request to revise", skillNames: [], attachmentCount: 0, editable: true });
+  assert.deepEqual(calls.filter((call) => call.method === "thread/turns/list").map((call) => call.params), [
+    { threadId: "owned-thread", limit: 20, sortDirection: "desc", itemsView: "full" },
+    { threadId: "owned-thread", limit: 20, sortDirection: "desc", itemsView: "full" },
+    { threadId: "owned-thread", limit: 20, cursor: "native-older-cursor", sortDirection: "desc", itemsView: "full" },
+  ]);
+  assert.deepEqual(calls.at(-1), {
+    method: "thread/revert", params: { threadId: "owned-thread", beforeTurnId: "turn-original" },
   });
   client.stop();
 });
