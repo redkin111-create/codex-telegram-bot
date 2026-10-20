@@ -5,6 +5,7 @@
 import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFile as execFileCallback, execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { structuredPatch } from "diff";
@@ -48,6 +49,8 @@ import { mobileAttachmentContext } from "../mobile/attachments.js";
 
 const log=createLogger("tma:agent");
 const MAX_IMG=3*1024*1024;
+const BSK_SCREENSHOT_NAME=/^bsk-screenshot-[a-z0-9-]+\.png$/i;
+const PNG_SIGNATURE=Buffer.from([137,80,78,71,13,10,26,10]);
 const MAX_MOBILE_AUDIO=5*1024*1024;
 function mobileThreadSection(section?:CodexThreadSection|null){
   if(!section)return null;
@@ -1303,7 +1306,7 @@ export class MiniAppAgent {
         if(!selected.cwd)throw new Error("Для этого сеанса Codex не найден проект");
         const beforeOffset=args.beforeOffset;
         if(beforeOffset!==undefined&&!Number.isSafeInteger(beforeOffset))throw new Error("Некорректный указатель страницы скриншотов");
-        return await this.screenshots.olderPage(sessionId,this.store.jsonlPath(sessionId),selected.cwd,beforeOffset as number|undefined);
+        return await this.screenshots.olderPage(sessionId,this.store.jsonlPath(sessionId),selected.cwd,beforeOffset as number|undefined,true);
       }
       case "listMcpConfig":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
@@ -2468,9 +2471,10 @@ export class MiniAppAgent {
     if(!matched&&!known&&!allowed)throw new Error("Папка проекта не разрешена");
     return {name:matched?.name||basename(path),cwd:path};
   }
-  async execute(job:TmaJob,mobileAttachments:readonly MobilePromptAttachment[]=[]):Promise<unknown>{
+  async execute(job:TmaJob,mobileAttachments:readonly MobilePromptAttachment[]=[],context?:{surface:"mobile"}):Promise<unknown>{
     const {acp,registry,cfg}=this.deps;
     const chatId=job.userId,controller=registry.controller(chatId),args=job.args;
+    const allowBrowserTemp=context?.surface==="mobile";
     switch(job.op){
       case "diagnostics":{
         const sent=this.promptJournal.summary();
@@ -2544,7 +2548,7 @@ export class MiniAppAgent {
         const file=statSyncSafe(path);
         const rt=registry.runtimeForSession(chatId,id);
         // Scan the evolving rollout while Codex is still working.
-        const images=t.cwd?await this.screenshots.scan(id,path,t.cwd):[];
+        const images=t.cwd?await this.screenshots.scan(id,path,t.cwd,allowBrowserTemp):[];
         return {mtimeMs:file.mtimeMs,size:file.size,busy:Boolean(rt?.isBusy),
           queue:rt?.queueLength??0,images,checkedAt:Date.now()};
       }
@@ -2553,7 +2557,7 @@ export class MiniAppAgent {
         const t=await this.thread(id,chatId);
         const path=this.store.jsonlPath(id);
         const includeTools=args.includeTools===true;
-        const cacheKey=id+":"+(includeTools?"tools":"chat");
+        const cacheKey=id+":"+(includeTools?"tools":"chat")+":"+(allowBrowserTemp?"mobile-images":"project-images");
         // Avoid re-reading multi-megabyte rollout logs every six seconds.
         // A manual refresh still checks the file's current size/mtime first.
         const stat=statSyncSafe(path);
@@ -2566,7 +2570,7 @@ export class MiniAppAgent {
           const entries=(await readConversationHistoryAsync(path,40,32*1024*1024,includeTools)).map(e=>({
             role:e.role,text:e.text,timestamp:e.timestamp,tool:e.tool,
           }));
-          const refs=t.cwd?await this.screenshots.scan(id,path,t.cwd):[];
+          const refs=t.cwd?await this.screenshots.scan(id,path,t.cwd,allowBrowserTemp):[];
           const result={entries,images:refs,project:t.cwd||""};
           // The agent may append to the log during this read. Don't store
           // a stale transcript under a newer file revision.
@@ -2703,22 +2707,30 @@ export class MiniAppAgent {
       }
       case "image":{
         const id=argumentString(args,"sessionId",80);
-        const t=await this.thread(id,chatId);
-        if(!t.cwd)throw new Error("Неизвестная папка проекта");
         const candidate=argumentString(args,"path",1200);
-        const referenced=await this.screenshots.authorized(id,this.store.jsonlPath(id),t.cwd,candidate);
-        if(!referenced)throw new Error("Изображение не относится к этому сеансу");
-        const root=realpathSync(t.cwd),real=realpathSync(candidate);
-        const rel=relative(root,real);
-        if(!rel||rel===".."||rel.startsWith(".."+sep)||isAbsolute(rel))throw new Error("Недопустимый путь");
-        const ext=extname(real).toLowerCase();
-        const mime=({".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".webp":"image/webp",".gif":"image/gif"} as Record<string,string>)[ext];
-        if(!mime)throw new Error("Неподдерживаемый формат");
-        const stat=statSync(real);
-        if(!stat.isFile()||stat.size>MAX_IMG)throw new Error("Изображение слишком большое");
-        return {name:basename(real),mime,data:readFileSync(real).toString("base64")};
+        return this.readSessionScreenshot(id,chatId,candidate,allowBrowserTemp);
       }
     }
+  }
+  private async readSessionScreenshot(sessionId:string,userId:number,candidate:string,allowBrowserTemp:boolean){
+    const thread=await this.thread(sessionId,userId);
+    if(!thread.cwd)throw new Error("Неизвестная папка проекта");
+    const referenced=await this.screenshots.authorized(sessionId,this.store.jsonlPath(sessionId),thread.cwd,candidate,allowBrowserTemp);
+    if(!referenced)throw new Error("Изображение не относится к этому сеансу");
+    const root=realpathSync(thread.cwd),real=realpathSync(candidate);
+    const rel=relative(root,real);
+    const inWorkspace=Boolean(rel&&rel!==".."&&!rel.startsWith(".."+sep)&&!isAbsolute(rel));
+    const isBrowserScreenshot=allowBrowserTemp&&dirname(real)===realpathSync(tmpdir())&&
+      BSK_SCREENSHOT_NAME.test(basename(real))&&!lstatSync(candidate).isSymbolicLink();
+    if(!inWorkspace&&!isBrowserScreenshot)throw new Error("Недопустимый путь");
+    const ext=extname(real).toLowerCase();
+    const mime=({".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".webp":"image/webp",".gif":"image/gif"} as Record<string,string>)[ext];
+    if(!mime)throw new Error("Неподдерживаемый формат");
+    const stat=statSync(real);
+    if(!stat.isFile()||stat.size>MAX_IMG)throw new Error("Изображение слишком большое");
+    const image=readFileSync(real);
+    if(isBrowserScreenshot&&!image.subarray(0,PNG_SIGNATURE.length).equals(PNG_SIGNATURE))throw new Error("Недопустимый формат скриншота Browser Skill");
+    return {name:basename(real),mime,data:image.toString("base64")};
   }
 }
 

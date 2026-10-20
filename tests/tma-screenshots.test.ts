@@ -20,6 +20,9 @@ function record(path:string){
 
 test("screenshots appear during a running turn, survive >2MiB of later tools and remain accessible",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"tma-live-screens-"));
+  const suffix=`${process.pid}-${Date.now()}`;
+  const browserImage=join(tmpdir(),`bsk-screenshot-${suffix}.png`);
+  const unrelatedTempImage=join(tmpdir(),`private-${suffix}.png`);
   try{
     const home=join(dir,"sessions"),cwd=join(dir,"toy");
     mkdirSync(home);mkdirSync(cwd);
@@ -55,8 +58,29 @@ test("screenshots appear during a running turn, survive >2MiB of later tools and
     const loaded=await agent.execute(job("image",{path:image})) as {mime:string;data:string};
     assert.equal(loaded.mime,"image/png");
     assert.deepEqual(Buffer.from(loaded.data,"base64"),screenshot);
+
+    writeFileSync(unrelatedTempImage,screenshot);
+    appendFileSync(file,record(unrelatedTempImage));
+    const afterUnrelated=await agent.execute(job("activity"),[],{surface:"mobile"}) as {images:Array<{path:string}>};
+    assert.equal(afterUnrelated.images.some(image=>image.path===unrelatedTempImage),false);
+    await assert.rejects(agent.execute(job("image",{path:unrelatedTempImage}),[],{surface:"mobile"}),/Изображение не относится/);
+
+    appendFileSync(file,record(browserImage));
+    writeFileSync(browserImage,screenshot);
+    const telegramImages=await agent.execute(job("activity")) as {images:Array<{path:string}>};
+    assert.equal(telegramImages.images.some(image=>image.path===browserImage),false,"Telegram Mini App keeps its project-only image policy");
+    await assert.rejects(agent.execute(job("image",{path:browserImage})),/Изображение не относится/);
+    const browserImages=await agent.execute(job("activity"),[],{surface:"mobile"}) as {images:Array<{path:string}>};
+    assert.equal(browserImages.images.at(-1)?.path,browserImage);
+    const browserLoaded=await agent.execute(job("image",{path:browserImage}),[],{surface:"mobile"}) as {mime:string;data:string};
+    assert.equal(browserLoaded.mime,"image/png");
+    assert.deepEqual(Buffer.from(browserLoaded.data,"base64"),screenshot);
     agent.stop();
-  }finally{rmSync(dir,{recursive:true,force:true});}
+  }finally{
+    rmSync(dir,{recursive:true,force:true});
+    rmSync(browserImage,{force:true});
+    rmSync(unrelatedTempImage,{force:true});
+  }
 });
 
 test("image index does not expose symlinks or absolute screenshots outside a workspace",async()=>{
@@ -74,6 +98,42 @@ test("image index does not expose symlinks or absolute screenshots outside a wor
     assert.equal(await index.authorized(sid,file,cwd,privateFile),undefined);
     assert.deepEqual((await index.olderPage(sid,file,cwd)).images,[]);
   }finally{rmSync(cwd,{recursive:true,force:true});rmSync(outside,{recursive:true,force:true});}
+});
+
+test("image index exposes only real BSK screenshots from the system temp folder",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"tma-bsk-screens-"));
+  const suffix=`${process.pid}-${Date.now()}`;
+  const browserScreenshot=join(tmpdir(),`bsk-screenshot-${suffix}.png`);
+  const symlinkedBrowserScreenshot=join(tmpdir(),`bsk-screenshot-link-${suffix}.png`);
+  const unrelatedImage=join(tmpdir(),`private-${suffix}.png`);
+  const spoofedBrowserScreenshot=join(tmpdir(),`bsk-screenshot-spoof-${suffix}.png`);
+  try{
+    const cwd=join(dir,"workspace");
+    mkdirSync(cwd);
+    const file=join(dir,"rollout.jsonl");
+    writeFileSync(browserScreenshot,screenshot);
+    writeFileSync(unrelatedImage,screenshot);
+    writeFileSync(spoofedBrowserScreenshot,Buffer.from("not a PNG image"));
+    let symlinkCreated=false;
+    try{symlinkSync(browserScreenshot,symlinkedBrowserScreenshot);symlinkCreated=true;}catch{/* symlink privilege absent on Windows CI */}
+    writeFileSync(file,record(browserScreenshot)+record(unrelatedImage)+record(spoofedBrowserScreenshot)+
+      (symlinkCreated?record(symlinkedBrowserScreenshot):""));
+
+    const index=new TmaScreenshotIndex();
+    assert.deepEqual(await index.scan(sid,file,cwd),[]);
+    const images=await index.scan(sid,file,cwd,true);
+    assert.deepEqual(images.map(image=>image.path),[browserScreenshot]);
+    assert.deepEqual(await index.authorized(sid,file,cwd,browserScreenshot,true),images[0]);
+    assert.equal(await index.authorized(sid,file,cwd,unrelatedImage,true),undefined);
+    assert.equal(await index.authorized(sid,file,cwd,spoofedBrowserScreenshot,true),undefined);
+    if(symlinkCreated)assert.equal(await index.authorized(sid,file,cwd,symlinkedBrowserScreenshot,true),undefined);
+  }finally{
+    rmSync(dir,{recursive:true,force:true});
+    rmSync(browserScreenshot,{force:true});
+    rmSync(symlinkedBrowserScreenshot,{force:true});
+    rmSync(unrelatedImage,{force:true});
+    rmSync(spoofedBrowserScreenshot,{force:true});
+  }
 });
 
 test("incremental index returns successive screenshots without requiring final assistant replies",async()=>{

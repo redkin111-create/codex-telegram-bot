@@ -25,7 +25,7 @@ const MOBILE_READ_OPERATIONS = new Set<MobileLocalOperation>(["listOlderScreensh
 
 export interface MobileAgent {
   canReadSession(id: string, userId: number): Promise<boolean>;
-  execute(job: TmaJob, attachments?: readonly MobilePromptAttachment[]): Promise<unknown>;
+  execute(job: TmaJob, attachments?: readonly MobilePromptAttachment[], context?: { surface: "mobile" }): Promise<unknown>;
   executeMobile?(job: MobileLocalJob): Promise<unknown>;
 }
 
@@ -810,7 +810,7 @@ export function createMobileServer(options: MobileServerOptions): Server {
   };
 
   const execute = (op: TmaOperation, userId: number, args: Record<string, unknown>, promptAttachments?: readonly MobilePromptAttachment[]) =>
-    options.agent.execute({ id: randomBytes(12).toString("hex"), op, userId, args }, promptAttachments);
+    options.agent.execute({ id: randomBytes(12).toString("hex"), op, userId, args }, promptAttachments, { surface: "mobile" });
 
   return server;
 }
