@@ -15,8 +15,15 @@ interface TerminalResult {
   timedOut: boolean;
 }
 
-interface TerminalStartResult { terminalId: string; shell: string; reused: boolean; exited: boolean; }
+type TerminalShellId = "cmd" | "powershell" | "default";
+interface TerminalShellOption { id: TerminalShellId; label: string; }
+interface TerminalShellsResult { shells: TerminalShellOption[]; }
+interface TerminalStartResult { terminalId: string; shell: string; shellId: TerminalShellId; reused: boolean; exited: boolean; }
 interface TerminalReadResult { terminalId: string; output: string; nextOffset: number; truncated: boolean; exited: boolean; exitCode: number | null; }
+
+function isTerminalShellId(value: unknown): value is TerminalShellId {
+  return value === "cmd" || value === "powershell" || value === "default";
+}
 
 export function TerminalPanel({ sessionId, cwd, connected, onClose, onOperation }: {
   sessionId: string;
@@ -157,12 +164,38 @@ function InteractiveTerminal({ sessionId, connected, onOperation }: {
   const operationRef = useRef(onOperation);
   const flushRef = useRef<() => void>(() => {});
   const [terminalId, setTerminalId] = useState("");
+  const [shells, setShells] = useState<TerminalShellOption[]>([]);
+  const [selectedShell, setSelectedShell] = useState<TerminalShellId | "">("");
+  const [activeShell, setActiveShell] = useState("");
   const [starting, setStarting] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [exited, setExited] = useState(false);
   const [error, setError] = useState("");
 
   operationRef.current = onOperation;
+
+  useEffect(() => {
+    let active = true;
+    setShells([]);
+    setActiveShell("");
+    if (!connected) {
+      setSelectedShell("");
+      return () => { active = false; };
+    }
+    void operationRef.current("listTerminalShells", { sessionId }).then((result: unknown) => {
+      const options = (result as TerminalShellsResult | undefined)?.shells;
+      if (!Array.isArray(options) || options.some((option) => !option || !isTerminalShellId(option.id) || typeof option.label !== "string")) {
+        throw new Error("Codex вернул неверный список оболочек терминала");
+      }
+      if (!active) return;
+      setShells(options);
+      setSelectedShell((current) => options.some((option) => option.id === current) ? current : options[0]?.id ?? "");
+    }).catch((cause: unknown) => {
+      if (!active) return;
+      setError(cause instanceof Error ? cause.message : "Не удалось получить список оболочек");
+    });
+    return () => { active = false; };
+  }, [sessionId, connected]);
 
   useEffect(() => {
     const parent = host.current;
@@ -253,15 +286,23 @@ function InteractiveTerminal({ sessionId, connected, onOperation }: {
 
   async function start() {
     if (!connected || starting) return;
+    if (!selectedShell || !shells.some((option) => option.id === selectedShell)) {
+      setError("Выберите доступную оболочку терминала");
+      return;
+    }
     setStarting(true);
     setError("");
     try {
-      const result = await operationRef.current("terminalStart", { sessionId }) as TerminalStartResult;
-      if (!result.terminalId) throw new Error("Codex не вернул подключение к терминалу");
+      const result = await operationRef.current("terminalStart", { sessionId, shell: selectedShell }) as TerminalStartResult;
+      if (!result.terminalId || !isTerminalShellId(result.shellId)) throw new Error("Codex не вернул подключение к выбранной оболочке");
+      const actualShell = shells.find((option) => option.id === result.shellId);
+      if (!actualShell) throw new Error("Codex подключил недоступную оболочку терминала");
       if (terminalIdRef.current || exited) terminal.current?.reset();
       terminal.current?.writeln(result.reused ? "\r\n[Подключение к существующему терминалу восстановлено]" : "\r\n[Терминал подключён]");
       terminalIdRef.current = result.terminalId;
       setTerminalId(result.terminalId);
+      setSelectedShell(result.shellId);
+      setActiveShell(actualShell.label);
       setExited(result.exited);
       offset.current = 0;
       fit.current?.fit();
@@ -290,12 +331,24 @@ function InteractiveTerminal({ sessionId, connected, onOperation }: {
   return <>
     <div className="flex min-h-0 flex-1 flex-col gap-2">
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
-        <p role="status" className="text-xs text-muted">{!connected ? "Подключите сеанс Codex" : terminalId ? exited ? "Терминал завершён" : "Интерактивный терминал подключён" : "Терминал не запущен"}</p>
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <p role="status" className="text-xs text-muted">{!connected ? "Подключите сеанс Codex" : terminalId ? exited ? "Терминал завершён" : "Интерактивный терминал подключён" : "Терминал не запущен"}</p>
+          {activeShell && <p className="text-xs text-accent">Оболочка: {activeShell}</p>}
+        </div>
         <div className="flex gap-2">
           {!terminalId || exited ? <Button type="button" className="min-h-10 px-3" disabled={!connected || starting} onClick={() => setConfirming(true)}>{starting ? <LoaderCircle size={15} className="animate-spin" /> : <Play size={15} />}{exited ? "Новый терминал" : "Запустить терминал"}</Button>
             : <Button type="button" variant="outline" className="min-h-10 px-3" onClick={() => void stop()}>Остановить</Button>}
         </div>
       </div>
+      <label className="flex shrink-0 items-center gap-2 text-xs text-muted">
+        Оболочка
+        <select aria-label="Оболочка" value={selectedShell} disabled={!connected || starting || Boolean(terminalId && !exited) || !shells.length}
+          onChange={(event) => setSelectedShell(isTerminalShellId(event.currentTarget.value) ? event.currentTarget.value : "")}
+          className="min-h-10 min-w-0 flex-1 rounded-lg border border-border bg-elevated px-3 text-sm text-text disabled:opacity-60">
+          {!shells.length && <option value="">Загрузка…</option>}
+          {shells.map((shell) => <option key={shell.id} value={shell.id}>{shell.label}</option>)}
+        </select>
+      </label>
       {!connected && <p className="text-xs text-muted">Сначала подключите этот сеанс, чтобы управлять его терминалом.</p>}
       {error && <p role="alert" className="shrink-0 rounded-xl border border-[#733b39] bg-[#351f1e] p-2 text-xs text-[#ffc3bd]">{error}</p>}
       <div ref={host} role="application" aria-label="Интерактивный терминал проекта" className="min-h-56 flex-1 overflow-hidden rounded-xl border border-border bg-[#0c100d] p-2" />

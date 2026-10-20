@@ -661,10 +661,24 @@ test("mobile interactive terminal reattaches, streams output, scopes input and s
   const agent=new MiniAppAgent({cfg,acp,registry,mobilePtyFactory});
   try{
     await agent.execute({id:"abcdef0123456789abcdef01",op:"snapshot",userId:101,args:{}});
-    const started=await agent.executeMobile({op:"terminalStart" as never,userId:101,args:{sessionId}}) as {terminalId:string;reused:boolean};
+    const shellList=await agent.executeMobile({op:"listTerminalShells" as never,userId:101,args:{sessionId}}) as {
+      shells:Array<{id:string;label:string}>;
+    };
+    assert.deepEqual(shellList.shells.map(({id})=>id),process.platform==="win32"?["cmd","powershell"]:["default"]);
+    await assert.rejects(
+      agent.executeMobile({op:"terminalStart" as never,userId:101,args:{sessionId,shell:"C:\\Users\\Public\\payload.exe"}}),
+      /Недоступная оболочка терминала/,
+    );
+    assert.equal(launches.length,0,"an unapproved shell must not start");
+    const shellId=process.platform==="win32"?"powershell":"default";
+    const started=await agent.executeMobile({op:"terminalStart" as never,userId:101,args:{sessionId,shell:shellId}}) as {terminalId:string;shell:string;reused:boolean};
     assert.match(started.terminalId,/^[a-f0-9-]{36}$/i);
     assert.equal(started.reused,false);
     assert.equal(launches.length,1);
+    if(process.platform==="win32"){
+      assert.match(launches[0]?.shell??"",/WindowsPowerShell[\\/]v1\.0[\\/]powershell\.exe$/i);
+      assert.equal(started.shell,"powershell.exe");
+    }
     assert.equal(launches[0]?.options.cwd,realpathSync.native(project));
     const attached=await agent.executeMobile({op:"terminalStart" as never,userId:101,args:{sessionId}}) as {terminalId:string;reused:boolean};
     assert.equal(attached.terminalId,started.terminalId);

@@ -586,16 +586,19 @@ const agent = {
       if (!session) throw new Error("Сеанс не найден");
       return { exitCode: 0, stdout: `mobile-terminal-fixture\n${session.cwd}\n`, stderr: "", truncated: false, durationMs: 4, timedOut: false };
     }
+    if (job.op === "listTerminalShells") {
+      return { shells: [{ id: "cmd", label: "Командная строка (cmd)" }, { id: "powershell", label: "Windows PowerShell" }] };
+    }
     if (job.op === "terminalStart") {
       const session = sessions.find((entry) => entry.id === sessionId);
       if (!session) throw new Error("Сеанс не найден");
       const existingId = fixtureTerminalBySession.get(sessionId);
       const existing = existingId ? fixtureTerminals.get(existingId) : undefined;
-      if (existing && !existing.exited && existingId) return { terminalId: existingId, shell: "Fixture Shell", reused: true, exited: false };
+      if (existing && !existing.exited && existingId) return { terminalId: existingId, shell: "Fixture Shell", shellId: String(args.shell ?? "cmd"), reused: true, exited: false };
       const terminalId = randomUUID();
       fixtureTerminals.set(terminalId, { sessionId, output: "fixture shell ready\r\n", pendingInput: "", exited: false, exitCode: null });
       fixtureTerminalBySession.set(sessionId, terminalId);
-      return { terminalId, shell: "Fixture Shell", reused: false, exited: false };
+      return { terminalId, shell: "Fixture Shell", shellId: String(args.shell ?? "cmd"), reused: false, exited: false };
     }
     if (job.op === "terminalRead") {
       const terminal = fixtureTerminals.get(String(args.terminalId ?? ""));

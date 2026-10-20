@@ -30,6 +30,7 @@ import { argumentString, isTmaJob, type TmaJob, type TmaResult } from "./protoco
 import { parseTmaImages, tmaPromptFingerprint } from "./prompt-images.js";
 import { DurablePromptJournal } from "./prompt-journal.js";
 import { runMobileTerminalCommand } from "./mobile-terminal.js";
+import { mobileTerminalShells, resolveMobileTerminalShell, type MobileTerminalShellId } from "./mobile-terminal-shell.js";
 
 const execFile=promisify(execFileCallback);
 const MAX_MOBILE_PTY_BUFFER=512*1024;
@@ -192,7 +193,7 @@ export interface MobilePtyOptions {
 }
 export type MobilePtyFactory=(shell:string,args:string[],options:MobilePtyOptions)=>MobilePtyProcess;
 interface MobilePtyRecord {
-  terminalId:string;ownerId:number;sessionId:string;shell:string;pty:MobilePtyProcess;
+  terminalId:string;ownerId:number;sessionId:string;shell:string;shellId:MobileTerminalShellId;pty:MobilePtyProcess;
   output:string;outputStart:number;totalChars:number;exited:boolean;exitCode:number|null;closed:boolean;
   expiry?:NodeJS.Timeout;dataSubscription?:{dispose():void};exitSubscription?:{dispose():void};
 }
@@ -200,7 +201,7 @@ interface MobileMcpResourceRef {
   ownerId:number;sessionId:string;serverName:string;uri?:string;uriTemplate?:string;expiresAt:number;
 }
 export interface AgentDeps { cfg:AppConfig; acp:AcpClient; registry:RuntimeRegistry; stt?:Pick<SttService,"enabled"|"transcribe">; mobilePtyFactory?:MobilePtyFactory; }
-export type MobileLocalOperation = "capabilities" | "listOlderScreenshots" | "listThreadReadStates" | "updateThreadReadState" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "searchHistory" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "listRealtimeVoices" | "startRealtime" | "stopRealtime" | "terminalExec" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "addMcpConfigServer" | "setMcpConfigEnabled" | "removeMcpConfigServer" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "createSideChat" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "setPluginEnabled" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "downloadFile" | "writeFile" | "createFile" | "createDirectory" | "renameProjectEntry" | "deleteProjectEntry" | "gitStatus" | "gitDiff" | "gitConflictStages" | "gitResolveConflictStage" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPull" | "gitPush";
+export type MobileLocalOperation = "capabilities" | "listOlderScreenshots" | "listThreadReadStates" | "updateThreadReadState" | "listThreadSections" | "createThreadSection" | "renameThreadSection" | "deleteThreadSection" | "moveThreadToSection" | "searchThreads" | "searchHistory" | "listMoreThreads" | "latestEditableTurn" | "listEditableTurns" | "editAndRetry" | "transcribeAudio" | "listRealtimeVoices" | "startRealtime" | "stopRealtime" | "terminalExec" | "listTerminalShells" | "terminalStart" | "terminalRead" | "terminalInput" | "terminalResize" | "terminalStop" | "listBackgroundTerminals" | "stopBackgroundTerminal" | "setModel" | "setMode" | "setReasoning" | "setGoal" | "clearGoal" | "setSkillEnabled" | "listMcpConfig" | "addMcpConfigServer" | "setMcpConfigEnabled" | "removeMcpConfigServer" | "restartCodex" | "mcpOAuthLogin" | "callMcpTool" | "readMcpResource" | "steer" | "forkThread" | "createSideChat" | "compactThread" | "reviewThread" | "archiveThread" | "unarchiveThread" | "renameThread" | "deleteThread" | "installPlugin" | "uninstallPlugin" | "setPluginEnabled" | "addMarketplace" | "removeMarketplace" | "upgradeMarketplace" | "createWorktree" | "files" | "readFile" | "readImage" | "downloadFile" | "writeFile" | "createFile" | "createDirectory" | "renameProjectEntry" | "deleteProjectEntry" | "gitStatus" | "gitDiff" | "gitConflictStages" | "gitResolveConflictStage" | "gitStage" | "gitUnstage" | "gitCommit" | "gitCreateBranch" | "gitSwitchBranch" | "gitTrackRemoteBranch" | "gitFetch" | "gitPull" | "gitPush";
 export interface MobileLocalJob { op:MobileLocalOperation; userId:number; args:Record<string,unknown>; }
 const MOBILE_GLOBAL_OPERATIONS=new Set<MobileLocalOperation>(["listThreadReadStates","listThreadSections","createThreadSection","renameThreadSection","deleteThreadSection"]);
 export class MiniAppAgent {
@@ -862,12 +863,16 @@ export class MiniAppAgent {
         if(!command||command.includes("\0"))throw new Error("Введите корректную команду");
         return runMobileTerminalCommand(root,command);
       }
+      case "listTerminalShells":{
+        if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
+        return {shells:mobileTerminalShells().map(({id,label})=>({id,label}))};
+      }
       case "terminalStart":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
         if(await this.isArchivedThread(sessionId,chatId))throw new Error("Нельзя запускать терминал в архивном сеансе");
         this.requireIdleMobileRuntime(sessionId,chatId);
         const {root}=this.mobileRoot(sessionId,chatId);
-        return this.startMobilePty(chatId,sessionId,root);
+        return this.startMobilePty(chatId,sessionId,root,args.shell);
       }
       case "terminalRead":{
         if(!await this.canReadSession(sessionId,chatId))throw new Error("Доступ к сеансу запрещён");
@@ -1870,9 +1875,10 @@ export class MiniAppAgent {
     if(!runtime)throw new Error("Сначала подключите сеанс к мобильному клиенту");
     if(runtime.isBusy)throw new Error("Дождитесь завершения текущей задачи Codex перед изменением настроек или файлов проекта");
   }
-  private async startMobilePty(ownerId:number,sessionId:string,cwd:string){
+  private async startMobilePty(ownerId:number,sessionId:string,cwd:string,requestedShell:unknown){
+    const selectedShell=resolveMobileTerminalShell(requestedShell);
     const existing=[...this.mobilePtys.values()].find(item=>item.ownerId===ownerId&&item.sessionId===sessionId&&!item.exited&&!item.closed);
-    if(existing){this.touchMobilePty(existing);return {terminalId:existing.terminalId,shell:existing.shell,reused:true,exited:false};}
+    if(existing){this.touchMobilePty(existing);return {terminalId:existing.terminalId,shell:existing.shell,shellId:existing.shellId,reused:true,exited:false};}
     for(const item of this.mobilePtys.values())if(item.ownerId===ownerId&&item.sessionId===sessionId){
       this.mobilePtys.delete(item.terminalId);this.disposeMobilePty(item);
     }
@@ -1881,12 +1887,12 @@ export class MiniAppAgent {
       try{factory=(await import("@homebridge/node-pty-prebuilt-multiarch")).spawn as MobilePtyFactory;}
       catch{throw new Error("Интерактивный терминал недоступен в этой установке; используйте запуск одной команды");}
     }
-    const shell=process.platform==="win32"?(process.env.ComSpec||"cmd.exe"):(process.env.SHELL||"/bin/sh");
+    const shell=selectedShell.executable;
     const pty=factory(shell,[],{
       name:"xterm-256color",cols:80,rows:24,cwd,encoding:"utf8",
       env:{...process.env,TERM:"xterm-256color"},
     });
-    const terminal:MobilePtyRecord={terminalId:randomUUID(),ownerId,sessionId,shell:basename(shell),pty,
+    const terminal:MobilePtyRecord={terminalId:randomUUID(),ownerId,sessionId,shell:basename(shell),shellId:selectedShell.id,pty,
       output:"",outputStart:0,totalChars:0,exited:false,exitCode:null,closed:false};
     terminal.dataSubscription=pty.onData(data=>{
       terminal.output+=data;
@@ -1905,7 +1911,7 @@ export class MiniAppAgent {
     });
     this.mobilePtys.set(terminal.terminalId,terminal);
     this.touchMobilePty(terminal);
-    return {terminalId:terminal.terminalId,shell:terminal.shell,reused:false,exited:false};
+    return {terminalId:terminal.terminalId,shell:terminal.shell,shellId:terminal.shellId,reused:false,exited:false};
   }
   private mobilePtyFor(ownerId:number,sessionId:string,args:Record<string,unknown>):MobilePtyRecord{
     const terminalId=argumentString(args,"terminalId",36);

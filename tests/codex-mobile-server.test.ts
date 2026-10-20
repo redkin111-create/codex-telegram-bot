@@ -1441,6 +1441,36 @@ test("interactive terminal operations require the paired device, CSRF and an own
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
+test("terminal shell options require the paired device, Origin and an owned session", async () => {
+  const f = await startFixture();
+  try {
+    const url = f.origin + "/api/operations";
+    const payload = (sessionId = allowedSession) => JSON.stringify({ op: "listTerminalShells", args: { sessionId } });
+    const anonymous = await fetch(url, {
+      method: "POST", headers: { origin: f.origin, "content-type": "application/json" }, body: payload(),
+    });
+    assert.equal(anonymous.status, 401);
+
+    const login = await pair(f.origin, f.auth);
+    const headers = { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" };
+    const noCsrf = await fetch(url, { method: "POST", headers, body: payload() });
+    assert.equal(noCsrf.status, 403);
+
+    const beforeForeign = f.calls.length;
+    const foreign = await fetch(url, {
+      method: "POST", headers: { ...headers, "x-csrf-token": login.csrfToken }, body: payload(foreignSession),
+    });
+    assert.equal(foreign.status, 403);
+    assert.equal(f.calls.length, beforeForeign, "foreign session shell options must not reach the agent");
+
+    const accepted = await fetch(url, {
+      method: "POST", headers: { ...headers, "x-csrf-token": login.csrfToken }, body: payload(),
+    });
+    assert.equal(accepted.status, 200);
+    assert.equal(f.calls.at(-1)?.op, "listTerminalShells");
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
 test("archive, restore, rename and delete actions require a paired owner, Origin and CSRF", async () => {
   const f = await startFixture();
   try {
