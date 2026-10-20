@@ -4,6 +4,7 @@ import { FileText, GitFork, ImagePlus, LoaderCircle, MessageSquare, Minimize2, P
 import "../../../../apps/mini-app/public/photo-input.js";
 import type { HistoryEntry, MobileActivity, MobileAttachment, MobileCapabilities, MobileEditableTurn, MobileEditableTurns, MobileHistorySearch, MobileLiveEvent, MobileQueue, MobileScreenshotPage, MobileSession } from "../types.js";
 import { imageUrl } from "../api.js";
+import { filterCatalogEntries } from "../lib/plugin-catalog.js";
 import { splitCodeReviewComments } from "../lib/review-comments.js";
 import { SafeMarkdown } from "../markdown.js";
 import { isMobileSkillNameSafe, prependMobileSkill } from "../skill-prompt.js";
@@ -79,6 +80,7 @@ export function Conversation({
   const [appPickerLoading, setAppPickerLoading] = useState(false);
   const [appPickerError, setAppPickerError] = useState("");
   const [availableApps, setAvailableApps] = useState<MobileCapabilities["apps"]>([]);
+  const [appSearch, setAppSearch] = useState("");
   const [selectedAppIds, setSelectedAppIds] = useState<string[]>([]);
   const [editOpen, setEditOpen] = useState(false);
   const [editLoading, setEditLoading] = useState(false);
@@ -97,6 +99,8 @@ export function Conversation({
   const [fullHistoryError, setFullHistoryError] = useState("");
   const fullHistoryRequest = useRef(0);
   const usesFullHistory = Boolean(fullHistoryResults && fullHistoryQuery === historySearch.trim());
+  const callableApps = useMemo(() => availableApps.filter((app) => app.enabled && app.accessible && app.callable), [availableApps]);
+  const filteredCallableApps = useMemo(() => filterCatalogEntries(callableApps, appSearch), [callableApps, appSearch]);
   const visibleHistory = useMemo(() => {
     if (usesFullHistory) return fullHistoryResults?.entries ?? [];
     const query = historySearch.trim().toLowerCase();
@@ -124,6 +128,7 @@ export function Conversation({
     setAppPickerLoading(false);
     setAppPickerError("");
     setAvailableApps([]);
+    setAppSearch("");
     setSelectedAppIds([]);
     setEditOpen(false);
     setEditLoading(false);
@@ -504,12 +509,13 @@ export function Conversation({
       </section>}
       {appPickerOpen && <section className="mx-auto mb-2 max-h-56 max-w-4xl overflow-y-auto rounded-xl border border-border bg-panel p-3" aria-label="Выбрать приложение Codex">
         <div className="mb-2 flex items-center justify-between gap-2"><h2 className="text-xs font-semibold">Подключённые приложения</h2><button type="button" className="min-h-8 px-2 text-xs text-muted" onClick={() => setAppPickerOpen(false)}>Закрыть</button></div>
+        {!appPickerLoading && !appPickerError && callableApps.length > 0 && <Input aria-label="Поиск подключённого приложения" value={appSearch} onChange={(event) => setAppSearch(event.target.value)} placeholder="Найти приложение…" maxLength={120} />}
         {appPickerLoading ? <p className="py-2 text-xs text-muted">Загружаю приложения…</p>
           : appPickerError ? <p role="alert" className="py-2 text-xs text-[#ffc3bd]">{appPickerError}</p>
-            : availableApps.filter((app) => app.enabled && app.accessible && app.callable).length ? <ul className="space-y-1">{availableApps.filter((app) => app.enabled && app.accessible && app.callable).map((app) => {
+            : filteredCallableApps.length ? <ul className="space-y-1">{filteredCallableApps.map((app) => {
               const chosen = selectedAppIds.includes(app.id);
               return <li key={app.id}><button type="button" className="flex min-h-11 w-full items-center justify-between gap-3 rounded-lg px-2 py-2 text-left hover:bg-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" aria-pressed={chosen} aria-label={`${chosen ? "Убрать" : "Добавить"} приложение ${app.name}`} onClick={() => toggleSelectedApp(app.id)}><span className="min-w-0"><span className="block truncate text-xs font-medium">{app.name}</span>{app.description && <span className="mt-0.5 block truncate text-[11px] text-muted">{app.description}</span>}</span><span className="shrink-0 text-xs text-accent">{chosen ? "Добавлено" : "Добавить"}</span></button></li>;
-            })}</ul> : <p className="py-2 text-xs text-muted">Нет подключённых приложений, доступных для этого сеанса.</p>}
+            })}</ul> : callableApps.length ? <p className="py-2 text-xs text-muted">Приложения по этому запросу не найдены.</p> : <p className="py-2 text-xs text-muted">Нет подключённых приложений, доступных для этого сеанса.</p>}
         {!appPickerLoading && !appPickerError && availableApps.some((app) => !app.callable || !app.accessible || !app.enabled) && <p className="mt-2 text-[10px] leading-4 text-muted">Недоступные приложения можно подключить в настройках Codex на компьютере.</p>}
       </section>}
       {images.length > 0 && <div className="mx-auto mb-2 flex max-w-4xl gap-2 overflow-x-auto">{images.map((image, index) => <div key={`${image.name}-${index}`} className="relative h-16 w-20 shrink-0 overflow-hidden rounded-lg border border-border"><img src={image.preview} alt={image.name} className="h-full w-full object-cover" /><button type="button" aria-label={`Убрать ${image.name}`} className="absolute right-1 top-1 rounded-full bg-black/75 px-1.5 text-xs" onClick={() => setImages((current) => current.filter((_, i) => i !== index))}>×</button></div>)}</div>}

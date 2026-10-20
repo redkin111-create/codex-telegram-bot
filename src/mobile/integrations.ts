@@ -210,7 +210,7 @@ export function normalizeMobileIntegrations(
     pluginCatalogAvailable: Array.isArray(pluginCatalogRecord?.marketplaces) || Array.isArray(installedPluginCatalogRecord?.marketplaces),
     appsAvailable: Array.isArray(appCatalogRecord?.data) || appsInstalled.size > 0,
     plugins: [...plugins.values()].slice(0, MOBILE_PLUGIN_INVENTORY_LIMIT),
-    apps: [...appsById.values()].slice(0, 200),
+    apps: [...appsById.values()].slice(0, MOBILE_PLUGIN_INVENTORY_LIMIT),
   };
 }
 

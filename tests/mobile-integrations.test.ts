@@ -89,6 +89,21 @@ test("mobile integration inventory keeps every plugin in a 500-entry marketplace
   assert.equal(result.plugins[499]?.id, "plugin-500@large");
 });
 
+test("mobile integration inventory keeps all 300 apps from a larger Codex app catalog", () => {
+  const apps = Array.from({ length: 300 }, (_, index) => ({
+    id: `app-${index + 1}`,
+    name: `Application ${index + 1}`,
+    description: "Callable Codex app",
+    isEnabled: true,
+    isAccessible: true,
+  }));
+
+  const result = normalizeMobileIntegrations(undefined, undefined, { data: apps }, undefined);
+
+  assert.equal(result.apps.length, 300);
+  assert.equal(result.apps[299]?.id, "app-300");
+});
+
 test("remote plugin installation only resolves an available catalog entry without a local path", () => {
   const catalog = { marketplaces: [{ name: "official", path: null, plugins: [
     { id: "safe@official", name: "safe", source: { type: "remote" }, installed: false,

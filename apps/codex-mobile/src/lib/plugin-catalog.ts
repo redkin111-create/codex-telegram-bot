@@ -1,23 +1,27 @@
-export interface SearchablePlugin {
+export interface SearchableCatalogEntry {
   id: string;
   name: string;
-  marketplace: string;
+  marketplace?: string;
   description?: string;
 }
 
-export const mobilePluginPageSize = 20;
+export const mobileCatalogPageSize = 20;
 
-export function filterPluginCatalog<T extends SearchablePlugin>(plugins: readonly T[], query: string): T[] {
+export function filterCatalogEntries<T extends SearchableCatalogEntry>(entries: readonly T[], query: string): T[] {
   const needle = query.trim().toLowerCase();
-  if (!needle) return [...plugins];
-  return plugins.filter((plugin) =>
-    [plugin.name, plugin.id, plugin.marketplace, plugin.description]
+  if (!needle) return [...entries];
+  return entries.filter((entry) =>
+    [entry.name, entry.id, entry.marketplace, entry.description]
       .some((value) => value?.toLowerCase().includes(needle)),
   );
 }
 
-export function paginatePluginCatalog<T>(items: readonly T[], requestedPage: number, pageSize = mobilePluginPageSize) {
-  const safePageSize = Number.isSafeInteger(pageSize) && pageSize > 0 ? pageSize : mobilePluginPageSize;
+export function filterPluginCatalog<T extends SearchableCatalogEntry & { marketplace: string }>(plugins: readonly T[], query: string): T[] {
+  return filterCatalogEntries(plugins, query);
+}
+
+export function paginateCatalogEntries<T>(items: readonly T[], requestedPage: number, pageSize = mobileCatalogPageSize) {
+  const safePageSize = Number.isSafeInteger(pageSize) && pageSize > 0 ? pageSize : mobileCatalogPageSize;
   const pageCount = Math.max(1, Math.ceil(items.length / safePageSize));
   const page = Math.min(pageCount, Math.max(1, Number.isFinite(requestedPage) ? Math.trunc(requestedPage) : 1));
   const start = (page - 1) * safePageSize;

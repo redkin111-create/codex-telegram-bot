@@ -3,7 +3,7 @@ import { Activity, Bot, ChevronDown, CircleHelp, Clock3, Download, ExternalLink,
 import { completeMcpOAuthCallback, readAppInventory, readCapabilities, readMcpInventory, readPluginInventory, readSkillInventory } from "../api.js";
 import { isCapabilitySectionResponse } from "../capability-compat.js";
 import { loadCapabilitySections } from "../lib/capability-loading.js";
-import { filterPluginCatalog, mobilePluginPageSize, paginatePluginCatalog } from "../lib/plugin-catalog.js";
+import { filterCatalogEntries, filterPluginCatalog, mobileCatalogPageSize, paginateCatalogEntries } from "../lib/plugin-catalog.js";
 import { AccountsPanel } from "./accounts-panel.js";
 import { McpConfigPanel } from "./mcp-config-panel.js";
 import type { MobileCapabilities, MobileOperation } from "../types.js";
@@ -85,6 +85,8 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
   const [pluginNotice, setPluginNotice] = useState<PluginInstallNotice>();
   const [pluginSearch, setPluginSearch] = useState("");
   const [pluginPage, setPluginPage] = useState(1);
+  const [appSearch, setAppSearch] = useState("");
+  const [appPage, setAppPage] = useState(1);
   const [skillAction, setSkillAction] = useState<SkillAction>();
   const [marketplaceSource, setMarketplaceSource] = useState("");
   const [marketplaceRef, setMarketplaceRef] = useState("");
@@ -394,7 +396,9 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
   const selectedPlugin = capabilities?.plugins.find((entry) => entry.id === pluginAction?.pluginId);
   const selectedSkill = capabilities?.skills.find((entry) => entry.name === skillAction?.name);
   const filteredPlugins = filterPluginCatalog(capabilities?.plugins ?? [], pluginSearch);
-  const pluginPageData = paginatePluginCatalog(filteredPlugins, pluginPage, mobilePluginPageSize);
+  const pluginPageData = paginateCatalogEntries(filteredPlugins, pluginPage, mobileCatalogPageSize);
+  const filteredApps = filterCatalogEntries(capabilities?.apps ?? [], appSearch);
+  const appPageData = paginateCatalogEntries(filteredApps, appPage, mobileCatalogPageSize);
 
   return <div className="fixed inset-0 z-50 flex justify-end bg-black/65" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section role="dialog" aria-modal="true" aria-labelledby="mobile-settings-title" className="safe-area-top safe-area-bottom flex h-full max-h-[100svh] w-full max-w-xl flex-col border-l border-border bg-background shadow-soft">
@@ -511,10 +515,21 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
           </Card>
           <Card className="space-y-3 p-4">
             <h3 className="flex items-center gap-2 text-sm font-semibold"><Plug size={16} className="text-accent" /> Приложения и подключения</h3>
-            {!inventoryLoaded.apps && !capabilities.apps.length ? <p role="status" className="text-xs text-muted">Загружаю список приложений…</p> : !capabilities.appsAvailable ? <p className="text-xs leading-relaxed text-muted">Эта версия Codex не предоставляет список приложений.</p> : capabilities.apps.length ? <ul className="space-y-3">{capabilities.apps.slice(0, 80).map((app) => <li key={app.id} className="rounded-xl border border-border bg-[#111613] p-3">
+            {!inventoryLoaded.apps && !capabilities.apps.length ? <p role="status" className="text-xs text-muted">Загружаю список приложений…</p> : !capabilities.appsAvailable ? <p className="text-xs leading-relaxed text-muted">Эта версия Codex не предоставляет список приложений.</p> : capabilities.apps.length ? <>
+              <label className="block space-y-1.5">
+                <span className="sr-only">Поиск приложений</span>
+                <Input aria-label="Поиск приложений" value={appSearch} onChange={(event) => { setAppSearch(event.target.value); setAppPage(1); }} placeholder="Название, описание или ID" maxLength={120} />
+              </label>
+              {appPageData.total ? <ul className="space-y-3">{appPageData.items.map((app) => <li key={app.id} className="rounded-xl border border-border bg-[#111613] p-3">
               <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{app.name}</p>{app.description && <p className="mt-1 text-xs leading-relaxed text-muted">{app.description}</p>}</div><Badge>{!app.enabled ? "Отключено" : app.callable ? "Подключено" : app.accessible ? "Доступно" : "Требует входа"}</Badge></div>
               {app.installUrl && !app.accessible && safeLinkHost(app.installUrl) && <a className="mt-2 inline-flex min-h-9 items-center gap-1 text-xs text-accent underline" href={app.installUrl} target="_blank" rel="noopener noreferrer">Подключить · {safeLinkHost(app.installUrl)}<ExternalLink size={12} /></a>}
-            </li>)}</ul> : <p className="text-xs text-muted">Приложения не найдены.</p>}
+            </li>)}</ul> : <p className="text-xs text-muted">Приложения по этому запросу не найдены.</p>}
+              <div className="flex items-center justify-between gap-2" role="group" aria-label="Страницы каталога приложений">
+                <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label="Предыдущая страница приложений" disabled={appPageData.page <= 1} onClick={() => setAppPage((page) => Math.max(1, page - 1))}>Назад</Button>
+                <p role="status" className="text-center text-[11px] text-muted">{appPageData.total} приложений · {appPageData.page}/{appPageData.pageCount}</p>
+                <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label="Следующая страница приложений" disabled={appPageData.page >= appPageData.pageCount} onClick={() => setAppPage((page) => Math.min(appPageData.pageCount, page + 1))}>Дальше</Button>
+              </div>
+            </> : <p className="text-xs text-muted">Приложения не найдены.</p>}
             <p className="text-[11px] leading-relaxed text-muted">Состояние читается у локального Codex. Перед переходом проверьте адрес сервиса и подключайте только знакомые вам службы.</p>
           </Card>
           <Card className="space-y-3 p-4">

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { filterPluginCatalog, paginatePluginCatalog } from "../apps/codex-mobile/src/lib/plugin-catalog.js";
+import { filterCatalogEntries, filterPluginCatalog, paginateCatalogEntries } from "../apps/codex-mobile/src/lib/plugin-catalog.js";
 
 const plugins = Array.from({ length: 500 }, (_, index) => ({
   id: `plugin-${index + 1}@catalog`,
@@ -20,7 +20,7 @@ test("plugin search matches IDs, marketplaces and descriptions without case sens
 });
 
 test("plugin catalog pagination makes all 500 entries reachable on small pages", () => {
-  const result = paginatePluginCatalog(plugins, 25, 20);
+  const result = paginateCatalogEntries(plugins, 25, 20);
 
   assert.equal(result.total, 500);
   assert.equal(result.page, 25);
@@ -28,4 +28,15 @@ test("plugin catalog pagination makes all 500 entries reachable on small pages",
   assert.equal(result.items.length, 20);
   assert.equal(result.items[0]?.id, "plugin-481@catalog");
   assert.equal(result.items[19]?.id, "plugin-500@catalog");
+});
+
+test("app search can find an entry after the first 80 rows without requiring a marketplace", () => {
+  const apps = Array.from({ length: 300 }, (_, index) => ({
+    id: `app-${index + 1}`,
+    name: `Application ${index + 1}`,
+    description: index === 299 ? "Final callable connector" : undefined,
+  }));
+
+  assert.deepEqual(filterCatalogEntries(apps, "application 300"), [apps[299]]);
+  assert.deepEqual(filterCatalogEntries(apps, "FINAL CALLABLE"), [apps[299]]);
 });
