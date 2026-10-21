@@ -43,6 +43,8 @@ async function startFixture(extensions: Record<string, unknown> = {}) {
   let failNext = false;
   let nextSendResult: unknown = { result: "queued" };
   let nextExecutionError: Error | undefined;
+  let nextExecutionGate: (() => Promise<void>) | undefined;
+  let nextAuthorizationGate: (() => Promise<void>) | undefined;
   let mobileSendLookup: (ownerId: number, args: Record<string, unknown>) => { found: boolean; result?: unknown } = () => ({ found: false });
   let downloadValue: unknown = { name: "release.zip", size: 4, bytes: Buffer.from([0x50, 0x4b, 0x03, 0x04]) };
   let readImageValue: unknown = { name: "pixel.png", mime: "image/png", data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString("base64") };
@@ -74,10 +76,14 @@ async function startFixture(extensions: Record<string, unknown> = {}) {
     },
   } as unknown as MobileAccountController;
   const agent = {
-    async canReadSession(id: string, ownerId: number) { return (id === allowedSession || id === secondOwnedSession) && ownerId === 101; },
+    async canReadSession(id: string, ownerId: number) {
+      if (nextAuthorizationGate) { const gate = nextAuthorizationGate; nextAuthorizationGate = undefined; await gate(); }
+      return (id === allowedSession || id === secondOwnedSession) && ownerId === 101;
+    },
     lookupMobileSend(ownerId: number, args: Record<string, unknown>) { return mobileSendLookup(ownerId, args); },
     async execute(job: { op: string; userId: number; args: Record<string, unknown> }, attachments?: unknown[]) {
       calls.push({ ...job, ...(attachments ? { attachments } : {}) });
+      if (nextExecutionGate) { const gate = nextExecutionGate; nextExecutionGate = undefined; await gate(); }
       if (nextExecutionError) { const error = nextExecutionError; nextExecutionError = undefined; throw error; }
       if (failNext) { failNext = false; throw new Error("Codex runtime unavailable"); }
       if (job.op === "snapshot") return { projects: [{ path: "C:\\work\\demo", name: "demo" }], sessions: [{ id: allowedSession, title: "Demo" }] };
@@ -156,6 +162,8 @@ async function startFixture(extensions: Record<string, unknown> = {}) {
   return { server, auth, feed, calls, approvalDecisions, approvalId, accountCalls, dataDir, origin, failNext: () => { failNext = true; },
     setNextSendResult: (value: unknown) => { nextSendResult = value; },
     setNextExecutionError: (value: Error) => { nextExecutionError = value; },
+    setNextExecutionGate: (gate: () => Promise<void>) => { nextExecutionGate = gate; },
+    setNextAuthorizationGate: (gate: () => Promise<void>) => { nextAuthorizationGate = gate; },
     setMobileSendLookup: (lookup: typeof mobileSendLookup) => { mobileSendLookup = lookup; },
     setMobileOAuthResult: (value: unknown) => { mobileOAuthResult = value; },
     setDownloadValue: (value: unknown) => { downloadValue = value; }, setReadImageValue: (value: unknown) => { readImageValue = value; } };
@@ -759,6 +767,85 @@ test("mobile logout and device revocation clean their unclaimed uploads", async 
     });
     assert.equal(logout.status, 200);
     assert.deepEqual(await readdir(incoming), []);
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("an upload finishing after logout is rejected and removed", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    let markAuthorizationStarted!: () => void;
+    const authorizationStarted = new Promise<void>((resolve) => { markAuthorizationStarted = resolve; });
+    let finishAuthorization!: () => void;
+    const authorizationGate = new Promise<void>((resolve) => { finishAuthorization = resolve; });
+    f.setNextAuthorizationGate(async () => { markAuthorizationStarted(); await authorizationGate; });
+
+    const uploadUrl = new URL("/api/attachments", f.origin);
+    uploadUrl.searchParams.set("sessionId", allowedSession);
+    uploadUrl.searchParams.set("name", "late-upload.pdf");
+    const uploading = fetch(uploadUrl, {
+      method: "POST",
+      headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/pdf" },
+      body: Buffer.from("%PDF-1.7\nfixture document"),
+    });
+    await authorizationStarted;
+
+    const logout = await fetch(f.origin + "/api/logout", {
+      method: "POST",
+      headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken },
+    });
+    assert.equal(logout.status, 200);
+
+    finishAuthorization();
+    const response = await uploading;
+    assert.equal(response.status, 401);
+    assert.deepEqual(await readdir(join(f.dataDir, "telegram-incoming")), []);
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("a pre-dispatch refusal finishing after logout cleans its released upload", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const uploadUrl = new URL("/api/attachments", f.origin);
+    uploadUrl.searchParams.set("sessionId", allowedSession);
+    uploadUrl.searchParams.set("name", "late-refusal.pdf");
+    const upload = await fetch(uploadUrl, {
+      method: "POST",
+      headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/pdf" },
+      body: Buffer.from("%PDF-1.7\nfixture document"),
+    });
+    assert.equal(upload.status, 201);
+    const attachment = await upload.json() as { id: string };
+
+    let markExecutionStarted!: () => void;
+    const executionStarted = new Promise<void>((resolve) => { markExecutionStarted = resolve; });
+    let finishExecution!: () => void;
+    const executionGate = new Promise<void>((resolve) => { finishExecution = resolve; });
+    f.setNextExecutionGate(async () => { markExecutionStarted(); await executionGate; });
+    f.setNextExecutionError(new MobileSubmissionRejectedError("Codex отказался до принятия задания"));
+    const sending = fetch(f.origin + "/api/operations", {
+      method: "POST",
+      headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ op: "send", args: {
+        sessionId: allowedSession, text: "Прочитай файл", requestId: "mobile-late-refusal-001", attachmentIds: [attachment.id],
+      } }),
+    });
+    await executionStarted;
+
+    const incoming = join(f.dataDir, "telegram-incoming");
+    const logout = await fetch(f.origin + "/api/logout", {
+      method: "POST",
+      headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken },
+    });
+    assert.equal(logout.status, 200);
+    assert.equal((await readdir(incoming)).length, 1, "logout must keep an attachment still used by a request");
+
+    finishExecution();
+    const refused = await sending;
+    assert.equal(refused.status, 502);
+    assert.equal((await refused.json() as { submissionOutcome?: string }).submissionOutcome, "rejected");
+    assert.deepEqual(await readdir(incoming), [], "a later confirmed refusal must not strand the released upload");
   } finally { await cleanup(f.server, f.dataDir); }
 });
 

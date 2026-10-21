@@ -163,6 +163,11 @@ export class MobileAuthStore {
     return publicDevice(device);
   }
 
+  isDeviceActive(ownerId: number, deviceId: string): boolean {
+    return this.store.get().devices.some((device) =>
+      device.ownerId === ownerId && device.id === deviceId && !device.revokedAt && device.expiresAt > this.now());
+  }
+
   verifyCsrf(deviceId: string, csrfToken: string | undefined): boolean {
     if (!csrfToken || !/^[A-Za-z0-9_-]{40,60}$/.test(csrfToken)) return false;
     const device = this.store.get().devices.find((entry) =>

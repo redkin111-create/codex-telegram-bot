@@ -351,6 +351,11 @@ export function createMobileServer(options: MobileServerOptions): Server {
       try {
         const mimeType = typeof req.headers["content-type"] === "string" ? req.headers["content-type"] : "application/octet-stream";
         const descriptor = await attachments.add(device.ownerId, device.id, sessionId, name, mimeType, bytes);
+        if (!options.auth.isDeviceActive(device.ownerId, device.id)) {
+          await attachments.remove(device.ownerId, device.id, sessionId, descriptor.id);
+          json(res, 401, { error: "Устройство не авторизовано" });
+          return;
+        }
         json(res, 201, descriptor);
       } catch (error) {
         const message = safeError(error);
@@ -791,6 +796,9 @@ export function createMobileServer(options: MobileServerOptions): Server {
         if (attachmentIds.length > 0 && typeof args.requestId === "string") {
           if (body.op === "send" && isBlockedMobileSubmission(result)) {
             attachments.release(attachmentIds, device.id, args.requestId);
+            if (!options.auth.isDeviceActive(device.ownerId, device.id)) {
+              await attachments.clearUnclaimedForDevice(device.ownerId, device.id);
+            }
           } else {
             attachments.complete(attachmentIds, device.id, args.requestId);
           }
@@ -801,6 +809,9 @@ export function createMobileServer(options: MobileServerOptions): Server {
         if (body.op === "send" && isMobileSubmissionRejectedError(error)) {
           if (attachmentIds.length > 0 && typeof args.requestId === "string") {
             attachments.release(attachmentIds, device.id, args.requestId);
+            if (!options.auth.isDeviceActive(device.ownerId, device.id)) {
+              await attachments.clearUnclaimedForDevice(device.ownerId, device.id);
+            }
           }
           json(res, 502, { error: safeError(error), submissionOutcome: "rejected" });
         } else {
