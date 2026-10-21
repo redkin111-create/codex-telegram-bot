@@ -882,7 +882,7 @@ export default function App() {
         onLoadOlderScreenshots={(sessionId, cursor) => operation<MobileScreenshotPage>("listOlderScreenshots", { sessionId, ...(cursor === undefined ? {} : { cursor }) })}
         onLoadEditableTurns={loadEditableTurns} onEditAndRetry={editAndRetry}
         onUploadAttachment={(sessionId, file) => uploadAttachment(sessionId, file, csrf)}
-        onRemoveAttachment={(sessionId, id) => removeAttachment(sessionId, id, csrf)}
+        onRemoveAttachment={(sessionId, id, keepalive) => removeAttachment(sessionId, id, csrf, keepalive)}
         onQueueRemove={(id) => void removeQueued(id)} onQueueResume={() => void resumeQueue()}
         onOpenReviewLocation={(location) => { if (!selectedId) return; setGitReviewLocation({ sessionId: selectedId, ...location }); setGitOpen(true); }}
         onQueueOpen={readQueue} />

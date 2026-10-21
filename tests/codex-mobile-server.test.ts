@@ -86,6 +86,7 @@ async function startFixture(extensions: Record<string, unknown> = {}) {
     },
     async executeMobile(job: { op: string; userId: number; args: Record<string, unknown> }) {
       calls.push(job);
+      if (nextExecutionError) { const error = nextExecutionError; nextExecutionError = undefined; throw error; }
       if (failNext) { failNext = false; throw new Error("Codex runtime unavailable"); }
       if (job.op === "mcpOAuthLogin") return mobileOAuthResult;
       if (job.op === "listThreadReadStates") return { states: {
@@ -928,6 +929,32 @@ test("steer requests require an authenticated device, same Origin, CSRF and sess
     });
     assert.equal(accepted.status, 200);
     assert.equal(f.calls.at(-1)?.op, "steer");
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("steer responses mark only a typed pre-dispatch refusal as confirmed", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const url = f.origin + "/api/operations";
+    const headers = { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" };
+    const send = (requestId: string) => fetch(url, {
+      method: "POST", headers,
+      body: JSON.stringify({ op: "steer", args: { sessionId: allowedSession, requestId, text: "Направление для активного тестового хода" } }),
+    });
+
+    f.setNextExecutionError(new MobileSubmissionRejectedError("Нет подтверждённого активного хода Codex"));
+    const refused = await send("steer-refusal-0001");
+    assert.equal(refused.status, 502);
+    assert.deepEqual(await refused.json(), {
+      error: "Нет подтверждённого активного хода Codex", submissionOutcome: "rejected",
+    });
+
+    f.setNextExecutionError(new Error("Соединение с Codex прервано"));
+    const ambiguous = await send("steer-network-0001");
+    assert.equal(ambiguous.status, 502);
+    assert.deepEqual(await ambiguous.json(), { error: "Соединение с Codex прервано" },
+      "an untyped failure must remain ambiguous, even when the operation is steer");
   } finally { await cleanup(f.server, f.dataDir); }
 });
 

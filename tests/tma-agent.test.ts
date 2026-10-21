@@ -14,6 +14,7 @@ import type { RuntimeRegistry } from "../src/bot/registry.js";
 import { CODEX_PINNED_THREAD_SECTION_ID } from "../src/acp/codex-protocol.js";
 import { TelegramSessionRegistry } from "../src/sessions/telegram-registry.js";
 import { saveIncomingAttachment } from "../src/bot/incoming-files.js";
+import { MobileSubmissionRejectedError } from "../src/mobile/submission.js";
 
 test("mobile-only agent can use existing runtime logic without an outbound TMA transport",()=>{
   const dir=mkdtempSync(join(tmpdir(),"codex-mobile-agent-"));
@@ -1479,11 +1480,18 @@ test("mobile steer reuses the active owner runtime and never sends without a con
     assert.deepEqual(calls,[{id:sessionId,content:[{type:"text",text:"Остановись после проверки теста"}]}]);
     await assert.rejects(agent.executeMobile({op:"steer",userId:101,args:args("steer-request-0001","другой текст")}),/ID.*другого направления/i);
     runtime.isBusy=false;
-    await assert.rejects(agent.executeMobile({op:"steer",userId:101,args:args("steer-request-0002","Не отправлять")}),/активного хода/i);
+    await assert.rejects(agent.executeMobile({op:"steer",userId:101,args:args("steer-request-0002","Не отправлять")}),error=>{
+      assert.equal(error instanceof MobileSubmissionRejectedError,true,
+        "a pre-dispatch steer refusal must be reported as safe to edit and retry");
+      assert.match((error as Error).message,/активного хода/i);
+      return true;
+    });
     runtime.isBusy=true;
+    assert.deepEqual(await agent.executeMobile({op:"steer",userId:101,args:args("steer-request-0002","Не отправлять")}),{steered:true},
+      "the same request ID can be retried after the confirmed refusal");
     active=false;
     await assert.rejects(agent.executeMobile({op:"steer",userId:202,args:args("steer-request-0003","Чужой owner")}),/не разрешён/i);
-    assert.equal(calls.length,1);
+    assert.equal(calls.length,2);
   }finally{agent.stop();rmSync(dir,{recursive:true,force:true});}
 });
 

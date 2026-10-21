@@ -1,6 +1,7 @@
 import type {
   MobileAccountAction, MobileAccountsSnapshot, MobileActivity, MobileApproval, MobileAttachment, MobileCapabilities, MobileDevice, MobileElicitation, MobileElicitationAction, MobileFile, MobileFileListing, MobileGitConflictStages, MobileGitDiff, MobileGitStatus, MobileHistory, MobileOperation, MobileSnapshot,
 } from "./types.js";
+import { mobileAttachmentRemovalRequest } from "./lib/attachment-request.js";
 import { MobileApiError, mobileApiErrorFromPayload } from "./lib/mobile-api-error.js";
 export { isConfirmedMobileSubmissionRejection, mobileSubmissionOutcome, MobileApiError } from "./lib/mobile-api-error.js";
 
@@ -218,11 +219,9 @@ export async function uploadAttachment(sessionId: string, file: File, csrfToken:
   return payload;
 }
 
-export function removeAttachment(sessionId: string, id: string, csrfToken: string) {
-  const query = new URLSearchParams({ sessionId });
-  return jsonRequest<{ removed: boolean }>(`/api/attachments/${encodeURIComponent(id)}?${query}`, {
-    method: "DELETE", headers: { "X-CSRF-Token": csrfToken },
-  });
+export function removeAttachment(sessionId: string, id: string, csrfToken: string, keepalive = false) {
+  const request = mobileAttachmentRemovalRequest(sessionId, id, csrfToken, keepalive);
+  return jsonRequest<{ removed: boolean }>(request.path, request.init);
 }
 
 const MAX_AUDIO_BYTES = 5 * 1024 * 1024;

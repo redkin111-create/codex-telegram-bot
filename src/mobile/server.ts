@@ -775,7 +775,13 @@ export function createMobileServer(options: MobileServerOptions): Server {
           }
           json(res, 200, result);
         }
-        catch (error) { json(res, 502, { error: safeError(error) }); }
+        catch (error) {
+          if (body.op === "steer" && isMobileSubmissionRejectedError(error)) {
+            json(res, 502, { error: safeError(error), submissionOutcome: "rejected" });
+          } else {
+            json(res, 502, { error: safeError(error) });
+          }
+        }
         return;
       }
       try {

@@ -1215,9 +1215,15 @@ export class MiniAppAgent {
             this.promptJournal.complete(key,result);
             return result;
           }catch(error){
-            if(dispatched)this.promptJournal.uncertain(key);
-            else this.promptJournal.clearBeforeDispatch(key);
-            throw error;
+            if(dispatched){
+              this.promptJournal.uncertain(key);
+              throw error;
+            }
+            this.promptJournal.clearBeforeDispatch(key);
+            throw new MobileSubmissionRejectedError(
+              error instanceof Error ? error.message : "Codex не принял направление до начала выполнения",
+              error,
+            );
           }
         })();
         this.sends.set(key,{fingerprint,promise:pending,at:Date.now()});

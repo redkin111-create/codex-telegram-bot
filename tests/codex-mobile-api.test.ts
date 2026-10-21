@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mobileAttachmentRemovalRequest } from "../apps/codex-mobile/src/lib/attachment-request.js";
 import { asLiveEvent } from "../apps/codex-mobile/src/lib/live-event.js";
 import { isConfirmedMobileSubmissionRejection, mobileApiErrorFromPayload, mobileSubmissionOutcome } from "../apps/codex-mobile/src/lib/mobile-api-error.js";
 
 const sessionId="11111111-1111-4111-8111-111111111111";
+
+test("pending attachment cleanup request uses fetch keepalive when the conversation closes",()=>{
+  const request=mobileAttachmentRemovalRequest(sessionId,"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","csrf-token",true);
+  assert.equal(request.path,"/api/attachments/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa?sessionId="+sessionId);
+  assert.equal(request.init.method,"DELETE");
+  assert.equal(request.init.keepalive,true);
+  assert.deepEqual(request.init.headers,{"X-CSRF-Token":"csrf-token"});
+});
 
 test("mobile SSE parser accepts only bounded plan fields and leaves step markup as text",()=>{
   const event=asLiveEvent({id:7,event:"message",data:JSON.stringify({

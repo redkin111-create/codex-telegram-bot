@@ -56,7 +56,7 @@ export function Conversation({
   onLoadEditableTurns: (cursor?: string) => Promise<MobileEditableTurns>;
   onEditAndRetry: (turnId: string, text: string, expectedLatestTurnId: string) => Promise<void>;
   onUploadAttachment: (sessionId: string, file: File) => Promise<MobileAttachment>;
-  onRemoveAttachment: (sessionId: string, id: string) => Promise<{ removed: boolean }>;
+  onRemoveAttachment: (sessionId: string, id: string, keepalive?: boolean) => Promise<{ removed: boolean }>;
   onOpenReviewLocation: (location: { path: string; line?: number }) => void;
   onSearchHistory: (query: string, beforeOffset?: number, revision?: string) => Promise<MobileHistorySearch>;
   onLoadOlderScreenshots: (sessionId: string, cursor?: string) => Promise<MobileScreenshotPage>;
@@ -132,7 +132,7 @@ export function Conversation({
     if (!sessionId) return;
     const snapshot = attachmentSnapshot.current;
     for (const file of mobileAttachmentsForCleanup(snapshot, sessionId, submitting)) {
-      void removeAttachment.current(sessionId, file.id).then((result) => {
+      void removeAttachment.current(sessionId, file.id, true).then((result) => {
         if (result.removed) {
           changeComposerDraft.current(sessionId, (current) => ({
             ...current, attachments: current.attachments.filter((attachment) => attachment.id !== file.id),
