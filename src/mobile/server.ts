@@ -378,8 +378,8 @@ export function createMobileServer(options: MobileServerOptions): Server {
       return;
     }
     if (path === "/api/logout" && method === "POST") {
-      await attachments.clearUnclaimedForDevice(device.ownerId, device.id);
       options.auth.revokeDevice(device.ownerId, device.id);
+      await attachments.clearUnclaimedForDevice(device.ownerId, device.id);
       clearCookie(res, SESSION_COOKIE);
       clearCookie(res, CSRF_COOKIE, false);
       json(res, 200, { loggedOut: true });
