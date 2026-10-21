@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FolderOpen, GitBranch, LoaderCircle, Menu, RefreshCw, Shield, ShieldAlert, SlidersHorizontal, Terminal } from "lucide-react";
+import { LoaderCircle, Menu } from "lucide-react";
 import {
   logout, MobileApiError, mobileSubmissionOutcome, openEventStream, readActivity, readApprovals, readElicitations,
   readAppInventory, readHistory, readSession, readSkillInventory, readSnapshot, removeAttachment, resolveApproval, resolveElicitation, runOperation, uploadAttachment,
@@ -16,6 +16,7 @@ import { GitPanel } from "./components/git-panel.js";
 import { Pairing } from "./components/pairing.js";
 import { SettingsPanel } from "./components/settings-panel.js";
 import { Workspace } from "./components/workspace.js";
+import { MobileHeaderActions } from "./components/mobile-header-actions.js";
 import type {
   HistoryEntry, MobileActivity, MobileApproval, MobileAttachment, MobileDevice, MobileElicitation, MobileElicitationAction, MobileEditableTurns, MobileHistorySearch, MobileLiveEvent, MobileQueue, MobileScreenshotPage, MobileSession, MobileSnapshot,
   MobileOperation,
@@ -828,26 +829,30 @@ export default function App() {
     return <><Pairing onAuthenticated={onAuthenticated} />{error && <p className="fixed bottom-4 left-4 right-4 rounded-xl border border-[#733b39] bg-[#351f1e] p-3 text-sm text-[#ffc3bd]" role="alert">{error}</p>}</>;
   }
 
-  if (!snapshot) return <main className="flex min-h-[100svh] items-center justify-center gap-3 text-sm text-muted"><LoaderCircle size={18} className="animate-spin text-accent" /> Подключаю Codex…</main>;
+  if (!snapshot) return <main className="mobile-viewport flex items-center justify-center gap-3 text-sm text-muted"><LoaderCircle size={18} className="animate-spin text-accent" /> Подключаю Codex…</main>;
 
-  return <div className="safe-area-top flex h-[100svh] min-h-[100svh] flex-col overflow-hidden">
-    <header className="flex h-[68px] shrink-0 items-center justify-between border-b border-border bg-[#141815] px-3 sm:px-5">
-      <div className="flex min-w-0 items-center gap-3">
-        <Button variant="ghost" className="min-h-10 px-2 md:hidden" aria-label="Открыть список сеансов" onClick={() => setWorkspaceOpen(true)}><Menu size={20} /></Button>
+  return <div className="app-viewport safe-area-top flex flex-col overflow-hidden">
+    <header className="relative z-20 flex h-[68px] shrink-0 items-center justify-between gap-2 border-b border-border bg-[#141815] px-3 sm:gap-3 sm:px-5">
+      <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+        <Button id="workspace-toggle" variant="ghost" className="min-h-11 min-w-11 px-2 lg:hidden" aria-label="Открыть список сеансов" aria-controls="workspace-drawer" aria-expanded={workspaceOpen} onClick={() => setWorkspaceOpen(true)}><Menu size={20} /></Button>
         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[#46533d] bg-[#20291b] text-accent"><span className="font-mono text-sm font-bold">C</span></div>
-        <div className="min-w-0"><p className="truncate text-sm font-bold tracking-tight">Codex Mobile</p><p className="truncate text-[10px] text-muted">{snapshot.online ? "Локальный Codex runtime" : "Соединение с Codex потеряно"}</p></div>
+        <div className="min-w-0"><p className="truncate text-sm font-bold tracking-tight">Codex Mobile</p><p className="hidden truncate text-[10px] text-muted sm:block">{snapshot.online ? "Локальный Codex runtime" : "Соединение с Codex потеряно"}</p></div>
       </div>
-      <div className="flex items-center gap-2">
-        <span className="hidden text-[11px] text-muted sm:inline">{streamConnected ? "Живые обновления" : "Поток переподключается…"}</span>
-        <Button variant="ghost" className="min-h-10 px-2" aria-label="Обновить" onClick={() => void refreshSnapshot(true)} disabled={refreshing}>{refreshing ? <LoaderCircle size={17} className="animate-spin" /> : <RefreshCw size={17} />}</Button>
-        {pendingApproval && <Button variant="outline" className="min-h-10 px-2 text-[#f2c66d]" aria-label="Открыть подтверждение" onClick={() => patchSessionView(selectedId, (current) => ({ ...current, approvalOpen: true }))}><ShieldAlert size={17} /></Button>}
-        {pendingElicitation && <Button variant="outline" className="min-h-10 px-2 text-accent" aria-label="Открыть запрос MCP" onClick={() => patchSessionView(selectedId, (current) => ({ ...current, elicitationOpen: true }))}><ShieldAlert size={17} /></Button>}
-        <Button variant="ghost" className="min-h-10 px-2" aria-label="Файлы проекта" onClick={() => setFilesOpen(true)} disabled={!selectedId}><FolderOpen size={17} /></Button>
-        <Button variant="ghost" className="min-h-10 px-2" aria-label="Git и изменения" onClick={() => { setGitReviewLocation(undefined); setGitOpen(true); }} disabled={!selectedId}><GitBranch size={17} /></Button>
-        <Button variant="ghost" className="min-h-10 px-2" aria-label="Терминал проекта" onClick={() => setTerminalOpen(true)} disabled={!selectedId}><Terminal size={17} /></Button>
-        <Button variant="ghost" className="min-h-10 px-2" aria-label="Настройки Codex" onClick={() => setSettingsOpen(true)}><SlidersHorizontal size={17} /></Button>
-        <Button variant="ghost" className="min-h-10 px-2" aria-label="Устройства и безопасность" onClick={() => setDevicesOpen(true)}><Shield size={17} /><span className="sr-only">Устройства</span></Button>
-      </div>
+      <MobileHeaderActions
+        streamConnected={streamConnected}
+        refreshing={refreshing}
+        canOpenProjectTools={Boolean(selectedId)}
+        pendingApproval={Boolean(pendingApproval)}
+        pendingElicitation={Boolean(pendingElicitation)}
+        onRefresh={() => void refreshSnapshot(true)}
+        onOpenApproval={() => patchSessionView(selectedId, (current) => ({ ...current, approvalOpen: true }))}
+        onOpenElicitation={() => patchSessionView(selectedId, (current) => ({ ...current, elicitationOpen: true }))}
+        onOpenFiles={() => setFilesOpen(true)}
+        onOpenGit={() => { setGitReviewLocation(undefined); setGitOpen(true); }}
+        onOpenTerminal={() => setTerminalOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenDevices={() => setDevicesOpen(true)}
+      />
     </header>
     <div className="flex min-h-0 flex-1">
       <Workspace snapshot={snapshot} selectedProject={selectedProject} search={search} searchResults={searchResults}

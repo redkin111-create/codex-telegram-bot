@@ -238,7 +238,7 @@ export function GitPanel({ sessionId, connected, sessionBusy, onClose, onOperati
   const remoteTargets = remoteAction === "push" ? selectedRemote?.pushTargets : selectedRemote?.fetchTargets;
 
   return <div className="fixed inset-0 z-50 flex justify-end bg-black/65" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section role="dialog" aria-modal="true" aria-labelledby="git-title" className="safe-area-top safe-area-bottom flex h-full max-h-[100svh] w-full max-w-3xl flex-col border-l border-border bg-background shadow-soft">
+    <section role="dialog" aria-modal="true" aria-labelledby="git-title" className="safe-area-top safe-area-bottom flex h-full max-h-[100dvh] w-full max-w-3xl flex-col border-l border-border bg-background shadow-soft">
       <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-4 sm:px-6">
         <GitBranch size={18} className="shrink-0 text-accent" />
         <div className="min-w-0 flex-1"><p className="text-[10px] font-bold uppercase tracking-[.18em] text-[#a7c278]">{status?.project ?? "Проект"}</p><h2 id="git-title" className="truncate text-base font-semibold">Git и изменения</h2></div>
@@ -380,7 +380,7 @@ export function GitPanel({ sessionId, connected, sessionBusy, onClose, onOperati
       </section>
     </div>}
     {conflictFile && <div className="fixed inset-0 z-[90] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
-      <section className="safe-area-bottom flex max-h-[92svh] w-full max-w-2xl flex-col gap-3 rounded-2xl border border-border bg-elevated p-4 shadow-soft sm:p-5" role="dialog" aria-modal="true" aria-labelledby="conflict-editor-title">
+      <section className="safe-area-bottom flex max-h-[92dvh] w-full max-w-2xl flex-col gap-3 rounded-2xl border border-border bg-elevated p-4 shadow-soft sm:p-5" role="dialog" aria-modal="true" aria-labelledby="conflict-editor-title">
         <div className="flex items-start justify-between gap-3"><div className="min-w-0"><h3 id="conflict-editor-title" className="text-base font-semibold">Разрешить конфликт Git</h3><p className="mt-1 break-all font-mono text-xs text-muted">{conflictFile.path}</p></div><Button type="button" variant="ghost" className="min-h-9 px-2" aria-label="Закрыть редактор конфликта" disabled={conflictSaving} onClick={() => { setConflictFile(undefined); setConflictError(""); }}><X size={17} /></Button></div>
         <p className="text-xs leading-5 text-muted">Редактор показывает обычный текст и не исполняет содержимое файла. Сохранение меняет рабочий файл; действие ниже также добавит его в Git-индекс и отметит конфликт решённым.</p>
         {!connected && <p className="rounded-lg border border-border bg-[#111613] p-2 text-xs text-muted">Подключите сеанс к мобильному клиенту, чтобы сохранить изменения.</p>}

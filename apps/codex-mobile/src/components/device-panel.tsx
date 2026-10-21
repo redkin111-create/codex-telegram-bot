@@ -33,10 +33,10 @@ export function DevicePanel({
   }
 
   return <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/65 p-0 backdrop-blur-sm sm:items-center sm:p-5" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <Card className="max-h-[88svh] w-full overflow-y-auto rounded-b-none p-5 sm:max-w-lg sm:rounded-2xl">
+    <Card className="max-h-[88dvh] w-full overflow-y-auto rounded-b-none p-5 sm:max-w-lg sm:rounded-2xl">
       <div className="flex items-start justify-between gap-4">
         <div><p className="text-xs font-semibold uppercase tracking-widest text-[#a7c278]">Безопасность</p><h2 className="mt-1 text-xl font-semibold">Устройства</h2></div>
-        <Button variant="ghost" aria-label="Закрыть настройки" className="min-h-10 px-2" onClick={onClose}><X size={19} /></Button>
+        <Button variant="ghost" aria-label="Закрыть устройства" className="min-h-10 px-2" onClick={onClose}><X size={19} /></Button>
       </div>
       <div className="mt-5 space-y-3">
         {devices.map((device) => <div key={device.id} className="flex items-center gap-3 rounded-xl border border-border bg-[#121713] p-3">

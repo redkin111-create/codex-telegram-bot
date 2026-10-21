@@ -1,7 +1,17 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Archive, ArchiveRestore, Check, FolderKanban, FolderPlus, LoaderCircle, Pencil, Pin, PinOff, Plus, Search, Trash2, X } from "lucide-react";
 import type { MobileSession, MobileSnapshot, MobileThreadSection } from "../types.js";
 import { Button, Input } from "./ui/primitives.js";
+
+function formatSessionUpdatedAt(timestampSeconds: number) {
+  if (!Number.isFinite(timestampSeconds) || timestampSeconds <= 0) return undefined;
+  const date = new Date(timestampSeconds * 1000);
+  if (!Number.isFinite(date.getTime())) return undefined;
+  return {
+    dateTime: date.toISOString(),
+    label: date.toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" }),
+  };
+}
 
 export function Workspace({
   snapshot, selectedProject, search, searchResults, searchCursor, searchLoading, searchMoreLoading, extraSessions,
@@ -59,6 +69,8 @@ export function Workspace({
   const [readStateError, setReadStateError] = useState("");
   const [readStateErrorId, setReadStateErrorId] = useState("");
   const [savingReadStateId, setSavingReadStateId] = useState("");
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const nativeSearch = search.trim().length >= 2;
   const sectionsAvailable = snapshot.sectionsAvailable !== false;
   const sessions = useMemo(() => {
@@ -70,9 +82,26 @@ export function Workspace({
       return (!selectedProject || session.cwd === selectedProject) &&
         (!sectionFilter || (sectionFilter === "__unsectioned__" ? !session.section?.id : session.section?.id === sectionFilter)) &&
         (nativeSearch || !search || `${session.title} ${session.cwd}`.toLowerCase().includes(search.toLowerCase()));
-    });
+    }).sort((left, right) => right.updatedAt - left.updatedAt);
   }, [snapshot.sessions, snapshot.archivedSessions, searchResults, extraSessions, selectedProject, search, showArchived, nativeSearch, sectionFilter]);
   const currentProject = snapshot.projects.find((project) => project.path === selectedProject);
+
+  useEffect(() => {
+    if (!open) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      onCloseRef.current();
+      document.getElementById("workspace-toggle")?.focus();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    document.getElementById("workspace-drawer-close")?.focus();
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
 
   async function saveRename(session: MobileSession) {
     if (!renameValue.trim() || savingName) return;
@@ -125,11 +154,13 @@ export function Workspace({
   }
 
   return <>
-    {open && <button className="fixed inset-0 z-30 bg-black/55 md:hidden" aria-label="Закрыть список сеансов" onClick={onClose} />}
-    <aside className={`${open ? "fixed inset-x-0 bottom-0 top-[68px] z-40 flex" : "hidden"} w-full shrink-0 flex-col border-r border-border bg-[#141815] md:relative md:inset-auto md:z-auto md:flex md:w-[292px]`}>
+    {open && <button className="fixed inset-0 z-30 bg-black/55 lg:hidden" aria-label="Закрыть список сеансов" onClick={onClose} />}
+    <aside id="workspace-drawer" aria-label="Проекты и сеансы" className={open
+      ? "mobile-workspace-drawer mobile-safe-area-bottom fixed inset-x-0 bottom-0 z-40 flex w-full max-w-[28rem] shrink-0 flex-col border-r border-border bg-[#141815] lg:relative lg:inset-auto lg:z-auto lg:flex lg:w-[292px] lg:max-w-none"
+      : "hidden w-full shrink-0 flex-col border-r border-border bg-[#141815] lg:relative lg:inset-auto lg:z-auto lg:flex lg:w-[292px]"}>
       <div className="flex items-center justify-between border-b border-border px-4 py-4">
         <div><p className="text-[10px] font-bold uppercase tracking-[.2em] text-[#a7c278]">Рабочее место</p><h2 className="mt-1 truncate text-sm font-semibold">{currentProject?.name ?? "Все проекты"}</h2></div>
-        <Button variant="ghost" className="min-h-10 px-2 md:hidden" aria-label="Закрыть список" onClick={onClose}><X size={18} /></Button>
+        <Button id="workspace-drawer-close" variant="ghost" className="min-h-11 min-w-11 px-2 lg:hidden" aria-label="Закрыть список" onClick={onClose}><X size={18} /></Button>
       </div>
 
       <div className="space-y-3 p-4">
@@ -168,6 +199,7 @@ export function Workspace({
           {sessions.map((session) => {
             const active = session.id === selectedId;
             const connected = connectedIds.has(session.id);
+            const lastMessageAt = formatSessionUpdatedAt(session.updatedAt);
             const pinnedSection = snapshot.sections?.find((section) => section.builtIn);
             const pinned = Boolean(pinnedSection && session.section?.id === pinnedSection.id);
             return <div key={session.id} className={`rounded-xl border p-2 ${active ? "border-[#596b43] bg-[#222a1e]" : "border-transparent hover:border-border hover:bg-elevated"}`}>
@@ -177,6 +209,7 @@ export function Workspace({
                   <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${session.archived ? "bg-[#59625a]" : session.busy ? "animate-pulse bg-[#d8f58e]" : connected ? "bg-[#76984c]" : "bg-[#59625a]"}`} aria-label={session.archived ? "В архиве" : session.busy ? "Выполняется" : connected ? "Подключён" : "Статус неизвестен"} />
                 </span>
                 <span className="mt-2 block truncate text-xs text-[#839087]">{session.archived ? "В архиве" : session.liveLabel || "Статус неизвестен"}</span>
+                {lastMessageAt && <time dateTime={lastMessageAt.dateTime} className="mt-1 block truncate text-[10px] text-[#788278]">Последнее сообщение: {lastMessageAt.label}</time>}
                 {session.ephemeral && <span className="mt-1 inline-flex rounded-md border border-[#3b4832] bg-[#1c2418] px-2 py-0.5 text-[10px] text-[#bedb92]">Временный side chat</span>}
                 {session.section?.name && <span className="mt-1 inline-flex max-w-full truncate rounded-md border border-[#3b4832] bg-[#1c2418] px-2 py-0.5 text-[10px] text-[#bedb92]">{session.section.name}</span>}
                 <span className="mt-1 block truncate font-mono text-[10px] text-[#657066]">{session.cwd}</span>
@@ -234,7 +267,7 @@ export function Workspace({
       <div className="border-t border-border px-4 py-3 text-[11px] text-[#788278]">Codex Desktop · история и управление</div>
     </aside>
     {sectionsOpen && <div className="fixed inset-0 z-[55] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
-      <section role="dialog" aria-modal="true" aria-labelledby="thread-sections-title" className="safe-area-bottom max-h-[90svh] w-full max-w-lg space-y-4 overflow-y-auto rounded-2xl border border-border bg-elevated p-5 shadow-soft">
+      <section role="dialog" aria-modal="true" aria-labelledby="thread-sections-title" className="safe-area-bottom max-h-[90dvh] w-full max-w-lg space-y-4 overflow-y-auto rounded-2xl border border-border bg-elevated p-5 shadow-soft">
         <div className="flex items-start justify-between gap-3"><div><h3 id="thread-sections-title" className="text-base font-semibold">Разделы сеансов</h3><p className="mt-1 text-xs leading-5 text-muted">Изменения сохраняются через Codex и появятся в его списке сеансов.</p></div><Button type="button" variant="ghost" className="min-h-9 px-2" aria-label="Закрыть управление разделами" onClick={() => setSectionsOpen(false)}><X size={17} /></Button></div>
         {sectionError && <p role="alert" className="rounded-xl border border-[#733b39] bg-[#351f1e] px-3 py-2 text-sm text-[#ffc3bd]">{sectionError}</p>}
         <form className="flex gap-2" onSubmit={(event) => void saveNewSection(event)}><Input aria-label="Название нового раздела" value={newSectionName} onChange={(event) => setNewSectionName(event.target.value)} maxLength={64} placeholder="Например, На проверку" /><Button type="submit" className="shrink-0 px-3" disabled={!newSectionName.trim() || savingSection}>{savingSection ? <LoaderCircle size={15} className="animate-spin" /> : <Plus size={16} />}Создать</Button></form>

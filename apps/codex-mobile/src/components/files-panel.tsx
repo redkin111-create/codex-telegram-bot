@@ -199,7 +199,7 @@ export function FilesPanel({ sessionId, connected, onClose, onOperation }: {
 
   const canGoBack = Boolean(file || imagePreview || directory);
   return <div className="fixed inset-0 z-50 flex justify-end bg-black/65" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section role="dialog" aria-modal="true" aria-labelledby="files-title" className="safe-area-top safe-area-bottom flex h-full max-h-[100svh] w-full max-w-3xl flex-col border-l border-border bg-background shadow-soft">
+    <section role="dialog" aria-modal="true" aria-labelledby="files-title" className="safe-area-top safe-area-bottom flex h-full max-h-[100dvh] w-full max-w-3xl flex-col border-l border-border bg-background shadow-soft">
       <header className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-3 sm:px-5">
         {canGoBack && <Button variant="ghost" className="min-h-10 px-2" aria-label={file ? "Назад к файлам" : "На уровень выше"} onClick={goBack}><ArrowLeft size={18} /></Button>}
         <div className="min-w-0 flex-1"><p className="truncate text-[10px] font-bold uppercase tracking-[.18em] text-[#a7c278]">{listing?.project || file?.project || "Проект"}</p><h2 id="files-title" className="truncate text-base font-semibold">{file?.path || imagePreview?.path || (directory ? `${directory}/` : "Файлы проекта")}</h2></div>
@@ -217,7 +217,7 @@ export function FilesPanel({ sessionId, connected, onClose, onOperation }: {
       {imagePreview ? <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 sm:p-5">
         <Card className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-3 sm:p-5">
           <img src={projectImageUrl(sessionId, imagePreview.path)} alt={`Предпросмотр ${imagePreview.path}`} loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => setError("Не удалось безопасно загрузить изображение")}
-            className="max-h-[68svh] max-w-full rounded-lg object-contain" />
+            className="max-h-[68dvh] max-w-full rounded-lg object-contain" />
         </Card>
         <p className="text-[11px] text-muted">{sizeLabel(imagePreview.size)} · Только растровый предпросмотр. SVG и другие активные форматы не исполняются.</p>
       </div> : file ? <div className="flex min-h-0 flex-1 flex-col p-3 sm:p-5">

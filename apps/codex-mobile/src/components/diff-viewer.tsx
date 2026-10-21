@@ -28,7 +28,7 @@ export function DiffViewer({ patch, loading, emptyMessage, focusLine }: { patch:
   if (loading) return <p role="status" className="p-4 font-mono text-xs text-muted">Читаю diff…</p>;
   if (!lines.length) return <p className="p-4 font-mono text-xs text-muted">{emptyMessage}</p>;
 
-  return <div role="list" aria-label="Изменения по строкам" className="max-h-[42svh] overflow-auto py-2 font-mono text-[11px] leading-5 sm:max-h-[52svh]">
+  return <div role="list" aria-label="Изменения по строкам" className="max-h-[42dvh] overflow-auto py-2 font-mono text-[11px] leading-5 sm:max-h-[52dvh]">
     {lines.map((line, index) => <div key={`${index}-${line.kind}`} role="listitem" data-diff-kind={line.kind}
       data-review-target={index === focusIndex ? "true" : undefined} ref={index === focusIndex ? focusedRow : undefined}
       aria-label={`${rowLabel[line.kind]}${line.oldLine !== undefined ? `, старая строка ${line.oldLine}` : ""}${line.newLine !== undefined ? `, новая строка ${line.newLine}` : ""}: ${line.text}`}

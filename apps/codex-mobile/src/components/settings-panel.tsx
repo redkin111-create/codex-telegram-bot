@@ -401,7 +401,7 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
   const appPageData = paginateCatalogEntries(filteredApps, appPage, mobileCatalogPageSize);
 
   return <div className="fixed inset-0 z-50 flex justify-end bg-black/65" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section role="dialog" aria-modal="true" aria-labelledby="mobile-settings-title" className="safe-area-top safe-area-bottom flex h-full max-h-[100svh] w-full max-w-xl flex-col border-l border-border bg-background shadow-soft">
+    <section role="dialog" aria-modal="true" aria-labelledby="mobile-settings-title" className="safe-area-top safe-area-bottom flex h-full max-h-[100dvh] w-full max-w-xl flex-col border-l border-border bg-background shadow-soft">
       <header className="flex shrink-0 items-center justify-between border-b border-border px-4 py-4 sm:px-6">
         <div><p className="text-[10px] font-bold uppercase tracking-[.2em] text-[#a7c278]">Codex</p><h2 id="mobile-settings-title" className="mt-1 text-lg font-semibold">Настройки и возможности</h2></div>
         <div className="flex items-center gap-1"><Button type="button" variant="ghost" className="min-h-10 px-2" aria-label="Обновить данные Codex" disabled={loading || saving} onClick={() => void reload()}><RefreshCw size={16} className={loading ? "animate-spin" : ""} /></Button>
@@ -572,7 +572,7 @@ export function SettingsPanel({ sessionId, connected, csrf, onClose, onOperation
         </section>
       </div>}
       {mcpToolAction && <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
-        <section role="alertdialog" aria-modal="true" aria-labelledby="mcp-tool-confirm-title" className="safe-area-bottom max-h-[92svh] w-full max-w-md space-y-4 overflow-y-auto rounded-2xl border border-border bg-elevated p-5 shadow-soft">
+        <section role="alertdialog" aria-modal="true" aria-labelledby="mcp-tool-confirm-title" className="safe-area-bottom max-h-[92dvh] w-full max-w-md space-y-4 overflow-y-auto rounded-2xl border border-border bg-elevated p-5 shadow-soft">
           <div><h3 id="mcp-tool-confirm-title" className="text-base font-semibold">Подтвердите вызов MCP</h3>
             <p className="mt-2 break-words text-sm"><span className="font-medium">{mcpToolAction.serverName}</span> · <span className="font-mono">{mcpToolAction.toolName}</span></p>
             {mcpToolAction.description && <p className="mt-2 break-words text-xs leading-relaxed text-muted">{mcpToolAction.description}</p>}

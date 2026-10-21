@@ -62,7 +62,7 @@ export function Pairing({ onAuthenticated }: { onAuthenticated: (device: MobileD
     } catch { setError("Не удалось скопировать. Выделите код вручную."); }
   }
 
-  return <main className="safe-area-top flex min-h-[100svh] items-center justify-center px-4 py-8">
+  return <main className="mobile-viewport safe-area-screen flex items-center justify-center px-4">
     <Card className="w-full max-w-md p-6 sm:p-8">
       <div className="mb-6 flex h-12 w-12 items-center justify-center rounded-2xl border border-[#44513d] bg-[#202a1c] text-accent">
         <Smartphone size={23} />

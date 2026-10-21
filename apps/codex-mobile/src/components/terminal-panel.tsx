@@ -35,7 +35,7 @@ export function TerminalPanel({ sessionId, cwd, connected, onClose, onOperation 
   const [mode, setMode] = useState<"interactive" | "command">("interactive");
   return <>
     <div className="fixed inset-0 z-40 bg-black/70" role="presentation" onClick={onClose} />
-    <section role="dialog" aria-modal="true" aria-labelledby="terminal-title" className="safe-area-bottom fixed inset-x-0 bottom-0 z-50 flex max-h-[96svh] flex-col rounded-t-2xl border border-border bg-[#141815] shadow-soft md:inset-y-0 md:right-0 md:left-auto md:w-[min(720px,100vw)] md:rounded-none">
+    <section role="dialog" aria-modal="true" aria-labelledby="terminal-title" className="safe-area-top safe-area-bottom fixed inset-x-0 bottom-0 z-50 flex max-h-[96dvh] flex-col rounded-t-2xl border border-border bg-[#141815] shadow-soft md:inset-y-0 md:right-0 md:left-auto md:w-[min(720px,100vw)] md:rounded-none">
       <header className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
         <div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-[#a7c278]">CODEX-MOBILE</p><h2 id="terminal-title" className="mt-1 flex items-center gap-2 text-base font-semibold"><TerminalIcon size={17} /> Терминал проекта</h2></div>
         <Button variant="ghost" className="min-h-10 px-2" aria-label="Закрыть терминал" onClick={onClose}><X size={18} /></Button>
@@ -405,7 +405,7 @@ function OneShotTerminal({ sessionId, cwd, connected, onOperation }: {
     {result && <Card className="space-y-3 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs"><strong>Код выхода: {result.exitCode === null ? "не получен" : result.exitCode}</strong><span className="text-muted">{result.timedOut ? "Превышен лимит 60 секунд" : `${result.durationMs} мс`}</span></div>
       {result.truncated && <p className="text-xs text-muted">Вывод сокращён до безопасного размера.</p>}
-      {output ? <pre className="max-h-[40svh] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-[#0c100d] p-3 font-mono text-xs leading-relaxed text-text">{output}</pre> : <p className="text-xs text-muted">Команда ничего не вывела.</p>}
+      {output ? <pre className="max-h-[40dvh] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-[#0c100d] p-3 font-mono text-xs leading-relaxed text-text">{output}</pre> : <p className="text-xs text-muted">Команда ничего не вывела.</p>}
     </Card>}
     {confirming && <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="presentation">
       <section role="alertdialog" aria-modal="true" aria-labelledby="terminal-confirm-title" className="safe-area-bottom w-full max-w-md space-y-4 rounded-2xl border border-border bg-elevated p-5 shadow-soft">

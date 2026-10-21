@@ -64,7 +64,7 @@ export function ElicitationPanel({ elicitation, onResolve, onClose }: {
   }
 
   return <div className="fixed inset-0 z-[61] flex items-end justify-center bg-black/70 p-3 sm:items-center" role="presentation">
-    <section role="dialog" aria-modal="true" aria-labelledby="elicitation-title" className="safe-area-bottom max-h-[90svh] w-full max-w-lg overflow-auto rounded-2xl border border-border bg-[#171b18] p-4 shadow-soft sm:p-5">
+    <section role="dialog" aria-modal="true" aria-labelledby="elicitation-title" className="safe-area-bottom max-h-[90dvh] w-full max-w-lg overflow-auto rounded-2xl border border-border bg-[#171b18] p-4 shadow-soft sm:p-5">
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0"><p className="text-[10px] font-bold uppercase tracking-[.18em] text-accent">Запрос MCP · {elicitation.serverName}</p><h2 id="elicitation-title" className="mt-1 text-base font-semibold leading-snug">Ответ Codex-сервера</h2></div>
         <Button variant="ghost" className="min-h-9 px-2" aria-label="Скрыть запрос MCP" onClick={onClose} disabled={busy}><X size={17} /></Button>

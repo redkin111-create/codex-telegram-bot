@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
-import { FileText, GitFork, ImagePlus, LoaderCircle, MessageSquare, Minimize2, Paperclip, Pencil, Play, Plug, Search, Send, Sparkles, Square, Trash2, Wrench, X } from "lucide-react";
+import { FileText, GitFork, ImagePlus, LoaderCircle, MessageSquare, Minimize2, MoreHorizontal, Paperclip, Pencil, Play, Plug, Search, Send, Sparkles, Square, Trash2, Wrench, X } from "lucide-react";
 import "../../../../apps/mini-app/public/photo-input.js";
 import type { FollowUpMode, HistoryEntry, MobileActivity, MobileAttachment, MobileCapabilities, MobileEditableTurn, MobileEditableTurns, MobileHistorySearch, MobileLiveEvent, MobileQueue, MobileScreenshotPage, MobileSession, PromptImage } from "../types.js";
 import { imageUrl, isConfirmedMobileSubmissionRejection } from "../api.js";
@@ -112,6 +112,8 @@ export function Conversation({
   const submissionUncertain = submitting.hasUncertainSubmission;
   const composerLocked = submissionInFlight || submissionUncertain;
   const [historySearchOpen, setHistorySearchOpen] = useState(false);
+  const [sessionActionsOpen, setSessionActionsOpen] = useState(false);
+  const sessionActionsRef = useRef<HTMLDivElement>(null);
   const [historySearch, setHistorySearch] = useState("");
   const [fullHistoryQuery, setFullHistoryQuery] = useState("");
   const [fullHistoryResults, setFullHistoryResults] = useState<MobileHistorySearch>();
@@ -119,6 +121,24 @@ export function Conversation({
   const [fullHistoryError, setFullHistoryError] = useState("");
   const fullHistoryRequest = useRef(0);
   const usesFullHistory = Boolean(fullHistoryResults && fullHistoryQuery === historySearch.trim());
+
+  useEffect(() => {
+    if (!sessionActionsOpen) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (!sessionActionsRef.current?.contains(event.target as Node)) setSessionActionsOpen(false);
+    };
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setSessionActionsOpen(false);
+      document.getElementById("session-actions-trigger")?.focus();
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [sessionActionsOpen]);
   const callableApps = useMemo(() => availableApps.filter((app) => app.enabled && app.accessible && app.callable), [availableApps]);
   const filteredCallableApps = useMemo(() => filterCatalogEntries(callableApps, appSearch), [callableApps, appSearch]);
   const visibleHistory = useMemo(() => {
@@ -165,6 +185,7 @@ export function Conversation({
     if (previousSessionId && previousSessionId !== session?.id) cleanupPendingAttachments(previousSessionId);
     attachmentSnapshot.current = { sessionId: session?.id, attachments };
     editLoadRequest.current++;
+    setSessionActionsOpen(false);
     setHistorySearchOpen(false);
     setHistorySearch("");
     setCompactNotice("");
@@ -537,6 +558,17 @@ export function Conversation({
     }
   }
 
+  function toggleHistorySearch() {
+    if (historySearchOpen) {
+      setHistorySearch("");
+      fullHistoryRequest.current++;
+      setFullHistoryResults(undefined);
+      setFullHistoryQuery("");
+      setFullHistoryError("");
+    }
+    setHistorySearchOpen((value) => !value);
+  }
+
   if (!session) return <main className="flex min-w-0 flex-1 items-center justify-center p-5"><div className="max-w-sm text-center"><div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-border bg-panel text-accent"><Wrench size={22} /></div><h2 className="mt-5 text-lg font-semibold">Выберите сеанс</h2><p className="mt-2 text-sm leading-6 text-muted">Можно сначала просмотреть историю. Подключение понадобится, чтобы отправить задачу или управлять очередью.</p></div></main>;
 
   const status = session.archived ? "В архиве" : activity?.liveLabel || session.liveLabel || "Статус неизвестен";
@@ -556,17 +588,20 @@ export function Conversation({
           {connected && session.busy && <Button variant="danger" className="min-h-9 px-3 text-xs" onClick={onCancel}><Square size={13} /> Остановить</Button>}
         </div>
       </div>
-      <div className="mt-2 flex flex-wrap justify-end gap-2">
-        <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label="Найти в истории" aria-pressed={historySearchOpen} onClick={() => {
-          if (historySearchOpen) {
-            setHistorySearch("");
-            fullHistoryRequest.current++;
-            setFullHistoryResults(undefined);
-            setFullHistoryQuery("");
-            setFullHistoryError("");
-          }
-          setHistorySearchOpen((value) => !value);
-        }}><Search size={14} />Поиск</Button>
+      <div className="mt-2 flex items-center justify-end gap-2 md:hidden" role="group" aria-label="Действия сеанса">
+        <Button type="button" variant="outline" className="min-h-11 px-3 text-xs" aria-label="Найти в истории" aria-pressed={historySearchOpen} onClick={toggleHistorySearch}><Search size={14} />Поиск</Button>
+        <div ref={sessionActionsRef} className="relative">
+          <Button id="session-actions-trigger" type="button" variant="outline" className="min-h-11 px-3 text-xs" aria-label="Дополнительные действия сеанса" aria-expanded={sessionActionsOpen} aria-controls="session-actions-menu" onClick={() => setSessionActionsOpen((value) => !value)}><MoreHorizontal size={16} />Действия</Button>
+          {sessionActionsOpen && <div id="session-actions-menu" className="absolute right-0 top-full z-30 mt-2 flex max-h-[70dvh] w-[calc(100vw-2rem)] max-w-80 flex-col gap-1 overflow-y-auto rounded-2xl border border-border bg-elevated p-2 shadow-soft" role="group" aria-label="Действия сеанса">
+            {session.ephemeral && session.parentThreadId ? <Button type="button" variant="ghost" className="w-full justify-start" onClick={() => { setSessionActionsOpen(false); onReturnToParent(); }}><GitFork size={15} />К исходному сеансу</Button> : !session.archived && <Button type="button" variant="ghost" className="w-full justify-start" onClick={() => { setSessionActionsOpen(false); onCreateSideChat(); }} disabled={sideChatting}>{sideChatting ? <LoaderCircle size={15} className="animate-spin" /> : <MessageSquare size={15} />}{sideChatting ? "Открываю…" : "Спросить в side chat"}</Button>}
+            {!session.ephemeral && <Button type="button" variant="ghost" className="w-full justify-start" onClick={() => { setSessionActionsOpen(false); onFork(); }} disabled={forking || turnBusy || session.archived}>{forking ? <LoaderCircle size={15} className="animate-spin" /> : <GitFork size={15} />}{forking ? "Создаю…" : "Создать ответвление"}</Button>}
+            {connected && !session.ephemeral && <Button type="button" variant="ghost" className="w-full justify-start" onClick={() => { setSessionActionsOpen(false); setCompactNotice(""); setCompactConfirm(true); }} disabled={compacting || compactAwaitingConfirmation || turnBusy || session.archived}>{compacting ? <LoaderCircle size={15} className="animate-spin" /> : <Minimize2 size={15} />}Сократить контекст</Button>}
+            {connected && !session.archived && !session.ephemeral && <Button type="button" variant="ghost" className="w-full justify-start" onClick={() => { setSessionActionsOpen(false); void openEditDialog(); }} disabled={turnBusy || editLoading || editSaving}>{editLoading ? <LoaderCircle size={15} className="animate-spin" /> : <Pencil size={15} />}Редактировать запрос</Button>}
+          </div>}
+        </div>
+      </div>
+      <div className="mt-2 hidden flex-wrap justify-end gap-2 md:flex">
+        <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label="Найти в истории" aria-pressed={historySearchOpen} onClick={toggleHistorySearch}><Search size={14} />Поиск</Button>
         {session.ephemeral && session.parentThreadId ? <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" onClick={onReturnToParent} aria-label="Вернуться к исходному сеансу"><GitFork size={14} />К исходному сеансу</Button> : !session.archived && <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" onClick={onCreateSideChat} disabled={sideChatting} aria-label="Спросить в side chat">
           {sideChatting ? <LoaderCircle size={14} className="animate-spin" /> : <MessageSquare size={14} />}
           {sideChatting ? "Открываю…" : "Спросить в side chat"}
@@ -711,7 +746,7 @@ export function Conversation({
     </form>
     {openImage && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90 p-3 sm:p-8" role="dialog" aria-modal="true" aria-label={openImage.name} onMouseDown={(event) => { if (event.target === event.currentTarget) setOpenImage(undefined); }}>
       <Button variant="outline" className="absolute right-4 top-4 z-10 min-h-11 px-4" aria-label="Закрыть скриншот" onClick={() => setOpenImage(undefined)}>Закрыть</Button>
-      <img src={imageUrl(session.id, openImage.path)} alt={openImage.name} className="max-h-[88svh] max-w-full rounded-xl object-contain" />
+      <img src={imageUrl(session.id, openImage.path)} alt={openImage.name} className="max-h-[88dvh] max-w-full rounded-xl object-contain" />
       <span className="sr-only">{openImage.name}</span>
     </div>}
     {editOpen && <div className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-black/75 p-3 sm:p-5" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !editSaving) setEditOpen(false); }}>
@@ -735,7 +770,7 @@ export function Conversation({
             {editTurn.appIds?.length ? <p className="mt-3 text-xs text-muted">Сохранятся подключённые приложения: {editTurn.appIds.length}.</p> : null}
             {(editTurn.attachmentCount ?? 0) > 0 && <p className="mt-3 text-xs text-muted">Исходные вложения сохранятся: {editTurn.attachmentCount}.</p>}
             <label htmlFor="edit-turn-text" className="mt-3 block text-xs font-medium text-muted">Текст запроса</label>
-            <Textarea id="edit-turn-text" value={editText} onChange={(event) => setEditText(event.target.value)} rows={6} maxLength={16000} className="mt-1 max-h-[35svh] resize-y" aria-label="Новый текст запроса" />
+            <Textarea id="edit-turn-text" value={editText} onChange={(event) => setEditText(event.target.value)} rows={6} maxLength={16000} className="mt-1 max-h-[35dvh] resize-y" aria-label="Новый текст запроса" />
             <p className="mt-1 text-right text-[11px] text-muted">{editText.length}/16000</p>
           </> : <div className="mt-4 rounded-xl border border-border bg-[#111613] p-3 text-sm text-muted">
             <p className="font-medium text-text">Нет запроса, который можно безопасно редактировать</p>
