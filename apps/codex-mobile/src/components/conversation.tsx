@@ -3,10 +3,10 @@ import type { FormEvent, KeyboardEvent } from "react";
 import { FileText, GitFork, ImagePlus, LoaderCircle, MessageSquare, Minimize2, Paperclip, Pencil, Play, Plug, Search, Send, Sparkles, Square, Trash2, Wrench, X } from "lucide-react";
 import "../../../../apps/mini-app/public/photo-input.js";
 import type { FollowUpMode, HistoryEntry, MobileActivity, MobileAttachment, MobileCapabilities, MobileEditableTurn, MobileEditableTurns, MobileHistorySearch, MobileLiveEvent, MobileQueue, MobileScreenshotPage, MobileSession, PromptImage } from "../types.js";
-import { imageUrl } from "../api.js";
+import { imageUrl, isConfirmedMobileSubmissionRejection } from "../api.js";
 import { filterCatalogEntries } from "../lib/plugin-catalog.js";
 import { splitCodeReviewComments } from "../lib/review-comments.js";
-import { MobileSubmissionLock, mobileAttachmentsForCleanup, type MobileAttachmentSnapshot } from "../lib/session-state.js";
+import { mobileAttachmentsForCleanup, type MobileAttachmentSnapshot, type MobileComposerDraft, type MobileSubmissionLock } from "../lib/session-state.js";
 import { SafeMarkdown } from "../markdown.js";
 import { isMobileSkillNameSafe, prependMobileSkill } from "../skill-prompt.js";
 import { ScreenshotsGallery } from "./screenshots-gallery.js";
@@ -15,12 +15,15 @@ import { Badge, Button, Input, Textarea } from "./ui/primitives.js";
 export type { FollowUpMode, PromptImage } from "../types.js";
 
 export function Conversation({
-  session, draftText, onDraftTextChange, onClearDraft, sessionSwitchNotice, history, activity, events, queue, connected, connecting, loading, streamConnected,
+  session, draftText, composerDraft, submissionLock, onComposerDraftChange, onDraftTextChange, onClearDraft, sessionSwitchNotice, history, activity, events, queue, connected, connecting, loading, streamConnected,
   error, includeTools, onToggleTools, onConnect, onCancel, onFork, forking, onCreateSideChat, sideChatting, onReturnToParent, onCompact, compacting, onSend, onQueueRemove, onQueueResume, onQueueOpen, onLoadSkills, onLoadApps,
   onLoadEditableTurns, onEditAndRetry, onUploadAttachment, onRemoveAttachment, onOpenReviewLocation, onSearchHistory, onLoadOlderScreenshots,
 }: {
   session?: MobileSession;
   draftText: string;
+  composerDraft: MobileComposerDraft;
+  submissionLock: MobileSubmissionLock;
+  onComposerDraftChange: (sessionId: string, update: (current: MobileComposerDraft) => MobileComposerDraft) => void;
   sessionSwitchNotice: string;
   onDraftTextChange: (sessionId: string, text: string) => void;
   onClearDraft: (sessionId: string, sentText: string) => void;
@@ -61,14 +64,18 @@ export function Conversation({
   const activeSessionId = useRef(session?.id);
   activeSessionId.current = session?.id;
   const mounted = useRef(true);
-  const submitting = useRef(new MobileSubmissionLock());
+  const submitting = submissionLock;
   const removeAttachment = useRef(onRemoveAttachment);
   removeAttachment.current = onRemoveAttachment;
+  const changeComposerDraft = useRef(onComposerDraftChange);
+  changeComposerDraft.current = onComposerDraftChange;
   const editLoadRequest = useRef(0);
   const editOlderLoadInFlight = useRef<number | undefined>(undefined);
-  const [images, setImages] = useState<PromptImage[]>([]);
-  const [attachments, setAttachments] = useState<MobileAttachment[]>([]);
-  const attachmentSnapshot = useRef<MobileAttachmentSnapshot>({ sessionId: session?.id, attachments: [] });
+  const images = composerDraft.images;
+  const attachments = composerDraft.attachments;
+  const followUpMode = composerDraft.mode;
+  const selectedAppIds = composerDraft.appIds;
+  const attachmentSnapshot = useRef<MobileAttachmentSnapshot>({ sessionId: session?.id, attachments });
   const [imageError, setImageError] = useState("");
   const [attachmentError, setAttachmentError] = useState("");
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
@@ -79,7 +86,6 @@ export function Conversation({
   const [compactAwaitingConfirmation, setCompactAwaitingConfirmation] = useState(false);
   const compactEventStart = useRef(0);
   const compactConfirmationSeen = useRef(false);
-  const [followUpMode, setFollowUpMode] = useState<FollowUpMode>("queue");
   const [openImage, setOpenImage] = useState<{ path: string; name: string }>();
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
   const [skillPickerLoading, setSkillPickerLoading] = useState(false);
@@ -90,7 +96,6 @@ export function Conversation({
   const [appPickerError, setAppPickerError] = useState("");
   const [availableApps, setAvailableApps] = useState<MobileCapabilities["apps"]>([]);
   const [appSearch, setAppSearch] = useState("");
-  const [selectedAppIds, setSelectedAppIds] = useState<string[]>([]);
   const [editOpen, setEditOpen] = useState(false);
   const [editLoading, setEditLoading] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
@@ -103,6 +108,9 @@ export function Conversation({
   const [editError, setEditError] = useState("");
   const [editNotice, setEditNotice] = useState("");
   const [sending, setSending] = useState(false);
+  const submissionInFlight = submitting.isLocked || sending;
+  const submissionUncertain = submitting.hasUncertainSubmission;
+  const composerLocked = submissionInFlight || submissionUncertain;
   const [historySearchOpen, setHistorySearchOpen] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
   const [fullHistoryQuery, setFullHistoryQuery] = useState("");
@@ -123,15 +131,19 @@ export function Conversation({
   function cleanupPendingAttachments(sessionId: string | undefined) {
     if (!sessionId) return;
     const snapshot = attachmentSnapshot.current;
-    for (const file of mobileAttachmentsForCleanup(snapshot, sessionId, submitting.current)) {
-      void removeAttachment.current(sessionId, file.id).catch((cause) => {
-        console.error(`Не удалось очистить вложение ${file.id} сеанса ${sessionId}`, cause);
-      });
+    for (const file of mobileAttachmentsForCleanup(snapshot, sessionId, submitting)) {
+      void removeAttachment.current(sessionId, file.id).then((result) => {
+        if (result.removed) {
+          changeComposerDraft.current(sessionId, (current) => ({
+            ...current, attachments: current.attachments.filter((attachment) => attachment.id !== file.id),
+          }));
+        }
+      }).catch((cause) => console.error(`Не удалось очистить вложение ${file.id} сеанса ${sessionId}`, cause));
     }
     if (snapshot.sessionId === sessionId) {
       attachmentSnapshot.current = {
         sessionId,
-        attachments: snapshot.attachments.filter((file) => submitting.current.isAttachmentProtected(file.id)),
+        attachments: snapshot.attachments.filter((file) => submitting.isAttachmentProtected(file.id)),
       };
     }
   }
@@ -145,9 +157,13 @@ export function Conversation({
   }, []);
 
   useEffect(() => {
+    attachmentSnapshot.current = { sessionId: session?.id, attachments };
+  }, [session?.id, attachments]);
+
+  useEffect(() => {
     const previousSessionId = attachmentSnapshot.current.sessionId;
     if (previousSessionId && previousSessionId !== session?.id) cleanupPendingAttachments(previousSessionId);
-    attachmentSnapshot.current = { sessionId: session?.id, attachments: [] };
+    attachmentSnapshot.current = { sessionId: session?.id, attachments };
     editLoadRequest.current++;
     setHistorySearchOpen(false);
     setHistorySearch("");
@@ -168,7 +184,6 @@ export function Conversation({
     setAppPickerError("");
     setAvailableApps([]);
     setAppSearch("");
-    setSelectedAppIds([]);
     setEditOpen(false);
     setEditLoading(false);
     setEditSaving(false);
@@ -180,7 +195,6 @@ export function Conversation({
     setEditTurn(undefined);
     setEditError("");
     setEditNotice("");
-    setAttachments([]);
     setAttachmentError("");
   }, [session?.id]);
 
@@ -369,15 +383,24 @@ export function Conversation({
   }
 
   function toggleSelectedApp(id: string) {
-    setSelectedAppIds((current) => {
-      if (current.includes(id)) return current.filter((selected) => selected !== id);
-      if (current.length >= 3) {
-        setAppPickerError("Можно выбрать не больше трёх приложений для одного сообщения");
-        return current;
-      }
-      setAppPickerError("");
-      return [...current, id];
-    });
+    const targetSessionId = activeSessionId.current;
+    if (!targetSessionId) return;
+    if (selectedAppIds.includes(id)) {
+      onComposerDraftChange(targetSessionId, (current) => ({ ...current, appIds: current.appIds.filter((selected) => selected !== id) }));
+      return;
+    }
+    if (selectedAppIds.length >= 3) {
+      setAppPickerError("Можно выбрать не больше трёх приложений для одного сообщения");
+      return;
+    }
+    setAppPickerError("");
+    onComposerDraftChange(targetSessionId, (current) => ({ ...current, appIds: [...current.appIds, id] }));
+  }
+
+  function selectFollowUpMode(mode: FollowUpMode) {
+    const targetSessionId = activeSessionId.current;
+    if (!targetSessionId || composerLocked) return;
+    onComposerDraftChange(targetSessionId, (current) => ({ ...current, mode }));
   }
 
   function chooseSkill(name: string) {
@@ -392,6 +415,7 @@ export function Conversation({
   async function attach(files: FileList | null) {
     if (!files?.length) return;
     const targetSessionId = activeSessionId.current;
+    if (!targetSessionId) return;
     setPreparing(true);
     setImageError("");
     try {
@@ -402,7 +426,7 @@ export function Conversation({
         prepared.push(await window.CodexPhotos.prepare(file));
         if (!mounted.current || activeSessionId.current !== targetSessionId) return;
       }
-      setImages((current) => [...current, ...prepared]);
+      changeComposerDraft.current(targetSessionId, (current) => ({ ...current, images: [...current.images, ...prepared] }));
     } catch (cause) { if (mounted.current && activeSessionId.current === targetSessionId) setImageError(cause instanceof Error ? cause.message : "Не удалось подготовить изображение"); }
     finally { if (mounted.current && activeSessionId.current === targetSessionId) setPreparing(false); }
   }
@@ -428,7 +452,7 @@ export function Conversation({
           return;
         }
         attachmentSnapshot.current = { ...attachmentSnapshot.current, attachments: [...attachmentSnapshot.current.attachments, prepared] };
-        setAttachments((current) => [...current, prepared]);
+        changeComposerDraft.current(targetSessionId, (current) => ({ ...current, attachments: [...current.attachments, prepared] }));
       }
     } catch (cause) {
       if (mounted.current && activeSessionId.current === targetSessionId) setAttachmentError(cause instanceof Error ? cause.message : "Не удалось прикрепить файл");
@@ -437,17 +461,19 @@ export function Conversation({
 
   async function removeDocument(id: string) {
     if (!session) return;
-    if (submitting.current.isAttachmentProtected(id)) return;
+    if (composerLocked || submitting.isAttachmentProtected(id)) return;
     const targetSessionId = session.id;
     setAttachmentError("");
     try {
       const result = await onRemoveAttachment(targetSessionId, id);
       if (!result.removed) throw new Error("Файл уже отправлен или истёк. Обновите сеанс.");
-      submitting.current.resolveAttachments([id]);
+      submitting.resolveAttachments([id]);
       if (attachmentSnapshot.current.sessionId === targetSessionId) {
         attachmentSnapshot.current = { ...attachmentSnapshot.current, attachments: attachmentSnapshot.current.attachments.filter((file) => file.id !== id) };
       }
-      if (mounted.current && activeSessionId.current === targetSessionId) setAttachments((current) => current.filter((file) => file.id !== id));
+      changeComposerDraft.current(targetSessionId, (current) => ({
+        ...current, attachments: current.attachments.filter((file) => file.id !== id),
+      }));
     } catch (cause) {
       if (mounted.current && activeSessionId.current === targetSessionId) setAttachmentError(cause instanceof Error ? cause.message : "Не удалось удалить вложение");
     }
@@ -468,30 +494,38 @@ export function Conversation({
       setAttachmentError("Файлы можно отправить в очередь. Для активной задачи используйте режим «В очередь».");
       return;
     }
-    if (!submitting.current.tryAcquire([...submittedAttachmentIds])) return;
+    if (!submitting.tryAcquire([...submittedAttachmentIds])) {
+      setAttachmentError("Подождите завершения отправки в этом сеансе.");
+      return;
+    }
     setSending(true);
+    let releaseOutcome: "accepted" | "rejected" | "uncertain" = "uncertain";
     try {
       await onSend(submittedText, submittedImages, submittedAttachments, submittedMode, submittedApps);
+      releaseOutcome = "accepted";
       onClearDraft(targetSessionId, submittedDraft);
       if (attachmentSnapshot.current.sessionId === targetSessionId) {
         attachmentSnapshot.current = { ...attachmentSnapshot.current, attachments: attachmentSnapshot.current.attachments.filter((file) => !submittedAttachmentIds.has(file.id)) };
       }
-      submitting.current.resolveAttachments([...submittedAttachmentIds]);
+      submitting.resolveAttachments([...submittedAttachmentIds]);
       if (mounted.current && activeSessionId.current === targetSessionId) {
-        setImages((current) => current.filter((image) => !submittedImages.includes(image)));
-        setAttachments((current) => current.filter((file) => !submittedAttachmentIds.has(file.id)));
-        setSelectedAppIds((current) => current.length === submittedApps.length && current.every((id, index) => id === submittedApps[index]) ? [] : current);
         setAttachmentError("");
-        setFollowUpMode((current) => current === submittedMode ? "queue" : current);
       }
     } catch (cause) {
-      // The parent operation displays this error; keep the draft for an idempotent retry.
+      if (isConfirmedMobileSubmissionRejection(cause)) {
+        releaseOutcome = "rejected";
+        if (mounted.current && activeSessionId.current === targetSessionId) {
+          setAttachmentError(`Задание не принято: ${cause.message} Черновик и вложения сохранены.`);
+        }
+      } else if (mounted.current && activeSessionId.current === targetSessionId) {
+        setAttachmentError("Результат отправки неизвестен. Черновик сохранён, а вложения защищены. Повторите тот же запрос, чтобы проверить его результат без дублирования.");
+      }
       if (!(cause instanceof DOMException && cause.name === "AbortError")) {
         console.error("Не удалось отправить задачу; черновик сохранён для безопасного повтора", cause);
       }
     }
     finally {
-      submitting.current.release();
+      submitting.release(releaseOutcome);
       if (mounted.current) setSending(false);
     }
   }
@@ -622,8 +656,8 @@ export function Conversation({
 
     {connected && turnBusy && <div className="border-t border-border bg-[#141815] px-3 pt-2 sm:px-5 md:px-8" role="group" aria-label="Как передать следующее сообщение">
       <div className="mx-auto flex max-w-4xl gap-2">
-        <button type="button" aria-pressed={followUpMode === "queue"} onClick={() => setFollowUpMode("queue")} className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${followUpMode === "queue" ? "border-[#60714f] bg-[#20291b] text-[#d5f49c]" : "border-border text-muted"}`}>В очередь</button>
-        <button type="button" aria-pressed={followUpMode === "steer"} onClick={() => setFollowUpMode("steer")} className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${followUpMode === "steer" ? "border-[#60714f] bg-[#20291b] text-[#d5f49c]" : "border-border text-muted"}`}>Направить сейчас</button>
+        <button type="button" aria-pressed={followUpMode === "queue"} disabled={composerLocked} onClick={() => selectFollowUpMode("queue")} className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${followUpMode === "queue" ? "border-[#60714f] bg-[#20291b] text-[#d5f49c]" : "border-border text-muted"}`}>В очередь</button>
+        <button type="button" aria-pressed={followUpMode === "steer"} disabled={composerLocked} onClick={() => selectFollowUpMode("steer")} className={`min-h-9 rounded-lg border px-3 text-xs font-medium ${followUpMode === "steer" ? "border-[#60714f] bg-[#20291b] text-[#d5f49c]" : "border-border text-muted"}`}>Направить сейчас</button>
       </div>
     </div>}
     <form className="safe-area-bottom border-t border-border bg-[#141815] px-3 py-3 sm:px-5 md:px-8" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
@@ -637,38 +671,38 @@ export function Conversation({
       </section>}
       {appPickerOpen && <section className="mx-auto mb-2 max-h-56 max-w-4xl overflow-y-auto rounded-xl border border-border bg-panel p-3" aria-label="Выбрать приложение Codex">
         <div className="mb-2 flex items-center justify-between gap-2"><h2 className="text-xs font-semibold">Подключённые приложения</h2><button type="button" className="min-h-8 px-2 text-xs text-muted" onClick={() => setAppPickerOpen(false)}>Закрыть</button></div>
-        {!appPickerLoading && !appPickerError && callableApps.length > 0 && <Input aria-label="Поиск подключённого приложения" value={appSearch} onChange={(event) => setAppSearch(event.target.value)} placeholder="Найти приложение…" maxLength={120} />}
+        {!appPickerLoading && !appPickerError && callableApps.length > 0 && <Input aria-label="Поиск подключённого приложения" value={appSearch} onChange={(event) => setAppSearch(event.target.value)} placeholder="Найти приложение…" maxLength={120} disabled={composerLocked} />}
         {appPickerLoading ? <p className="py-2 text-xs text-muted">Загружаю приложения…</p>
           : appPickerError ? <p role="alert" className="py-2 text-xs text-[#ffc3bd]">{appPickerError}</p>
             : filteredCallableApps.length ? <ul className="space-y-1">{filteredCallableApps.map((app) => {
               const chosen = selectedAppIds.includes(app.id);
-              return <li key={app.id}><button type="button" className="flex min-h-11 w-full items-center justify-between gap-3 rounded-lg px-2 py-2 text-left hover:bg-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" aria-pressed={chosen} aria-label={`${chosen ? "Убрать" : "Добавить"} приложение ${app.name}`} onClick={() => toggleSelectedApp(app.id)}><span className="min-w-0"><span className="block truncate text-xs font-medium">{app.name}</span>{app.description && <span className="mt-0.5 block truncate text-[11px] text-muted">{app.description}</span>}</span><span className="shrink-0 text-xs text-accent">{chosen ? "Добавлено" : "Добавить"}</span></button></li>;
+              return <li key={app.id}><button type="button" disabled={composerLocked} className="flex min-h-11 w-full items-center justify-between gap-3 rounded-lg px-2 py-2 text-left hover:bg-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" aria-pressed={chosen} aria-label={`${chosen ? "Убрать" : "Добавить"} приложение ${app.name}`} onClick={() => toggleSelectedApp(app.id)}><span className="min-w-0"><span className="block truncate text-xs font-medium">{app.name}</span>{app.description && <span className="mt-0.5 block truncate text-[11px] text-muted">{app.description}</span>}</span><span className="shrink-0 text-xs text-accent">{chosen ? "Добавлено" : "Добавить"}</span></button></li>;
             })}</ul> : callableApps.length ? <p className="py-2 text-xs text-muted">Приложения по этому запросу не найдены.</p> : <p className="py-2 text-xs text-muted">Нет подключённых приложений, доступных для этого сеанса.</p>}
         {!appPickerLoading && !appPickerError && availableApps.some((app) => !app.callable || !app.accessible || !app.enabled) && <p className="mt-2 text-[10px] leading-4 text-muted">Недоступные приложения можно подключить в настройках Codex на компьютере.</p>}
       </section>}
-      {images.length > 0 && <div className="mx-auto mb-2 flex max-w-4xl gap-2 overflow-x-auto">{images.map((image, index) => <div key={`${image.name}-${index}`} className="relative h-16 w-20 shrink-0 overflow-hidden rounded-lg border border-border"><img src={image.preview} alt={image.name} className="h-full w-full object-cover" /><button type="button" aria-label={`Убрать ${image.name}`} className="absolute right-1 top-1 rounded-full bg-black/75 px-1.5 text-xs" onClick={() => setImages((current) => current.filter((_, i) => i !== index))}>×</button></div>)}</div>}
-      {attachments.length > 0 && <ul className="mx-auto mb-2 flex max-w-4xl flex-wrap gap-2" aria-label="Прикреплённые файлы">{attachments.map((file) => <li key={file.id} className="flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-border bg-panel px-2.5 py-1.5 text-xs"><FileText size={14} className="shrink-0 text-accent" /><span className="max-w-[min(64vw,20rem)] truncate" title={file.name}>{file.name}</span><span className="shrink-0 text-[10px] text-muted">{(file.size / 1024).toFixed(file.size < 10_240 ? 1 : 0)} КБ</span><button type="button" className="min-h-7 min-w-7 rounded-md text-muted hover:bg-elevated" aria-label={`Убрать файл ${file.name}`} disabled={uploadingAttachments || submitting.current.isAttachmentProtected(file.id)} onClick={() => void removeDocument(file.id)}><X size={13} /></button></li>)}</ul>}
+      {images.length > 0 && <div className="mx-auto mb-2 flex max-w-4xl gap-2 overflow-x-auto">{images.map((image, index) => <div key={`${image.name}-${index}`} className="relative h-16 w-20 shrink-0 overflow-hidden rounded-lg border border-border"><img src={image.preview} alt={image.name} className="h-full w-full object-cover" /><button type="button" aria-label={`Убрать ${image.name}`} disabled={composerLocked} className="absolute right-1 top-1 rounded-full bg-black/75 px-1.5 text-xs" onClick={() => session && onComposerDraftChange(session.id, (current) => ({ ...current, images: current.images.filter((candidate) => candidate !== image) }))}>×</button></div>)}</div>}
+      {attachments.length > 0 && <ul className="mx-auto mb-2 flex max-w-4xl flex-wrap gap-2" aria-label="Прикреплённые файлы">{attachments.map((file) => <li key={file.id} className="flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-border bg-panel px-2.5 py-1.5 text-xs"><FileText size={14} className="shrink-0 text-accent" /><span className="max-w-[min(64vw,20rem)] truncate" title={file.name}>{file.name}</span><span className="shrink-0 text-[10px] text-muted">{(file.size / 1024).toFixed(file.size < 10_240 ? 1 : 0)} КБ</span><button type="button" className="min-h-7 min-w-7 rounded-md text-muted hover:bg-elevated" aria-label={`Убрать файл ${file.name}`} disabled={composerLocked || uploadingAttachments || submitting.isAttachmentProtected(file.id)} onClick={() => void removeDocument(file.id)}><X size={13} /></button></li>)}</ul>}
       {selectedAppIds.length > 0 && <ul className="mx-auto mb-2 flex max-w-4xl flex-wrap gap-2" aria-label="Выбранные приложения">{selectedAppIds.map((id) => {
         const app = availableApps.find((candidate) => candidate.id === id);
         const name = app?.name ?? id;
-        return <li key={id} className="flex min-w-0 items-center gap-1 rounded-lg border border-[#46533d] bg-[#20291b] px-2 py-1 text-xs text-[#d5f49c]"><Plug size={12} className="shrink-0" /><span className="max-w-[min(48vw,14rem)] truncate">{name}</span><button type="button" className="min-h-7 min-w-7 rounded-md text-muted hover:bg-elevated" aria-label={`Убрать приложение ${name}`} onClick={() => toggleSelectedApp(id)}><X size={13} /></button></li>;
+        return <li key={id} className="flex min-w-0 items-center gap-1 rounded-lg border border-[#46533d] bg-[#20291b] px-2 py-1 text-xs text-[#d5f49c]"><Plug size={12} className="shrink-0" /><span className="max-w-[min(48vw,14rem)] truncate">{name}</span><button type="button" className="min-h-7 min-w-7 rounded-md text-muted hover:bg-elevated" aria-label={`Убрать приложение ${name}`} disabled={composerLocked} onClick={() => toggleSelectedApp(id)}><X size={13} /></button></li>;
       })}</ul>}
       <div className="mx-auto mb-2 flex max-w-4xl items-center gap-2">
         <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label="Выбрать навык Codex" disabled={!connected} onClick={() => void toggleSkillPicker()}><Sparkles size={15} />Навыки</Button>
-        <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label="Выбрать приложение Codex" disabled={!connected} onClick={() => void toggleAppPicker()}><Plug size={15} />Приложения</Button>
+        <Button type="button" variant="outline" className="min-h-9 px-3 text-xs" aria-label="Выбрать приложение Codex" disabled={!connected || composerLocked} onClick={() => void toggleAppPicker()}><Plug size={15} />Приложения</Button>
       </div>
       <div className="mx-auto flex max-w-4xl items-end gap-2">
         <label className="flex min-h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-xl border border-border bg-[#1b211c] text-muted hover:text-accent" aria-label="Прикрепить фото">
           <ImagePlus size={19} />
-          <input type="file" className="sr-only" accept="image/jpeg,image/png,image/webp" multiple disabled={preparing || images.length >= 3} onChange={(event) => { void attach(event.target.files); event.target.value = ""; }} />
+          <input type="file" className="sr-only" accept="image/jpeg,image/png,image/webp" multiple disabled={composerLocked || preparing || images.length >= 3} onChange={(event) => { void attach(event.target.files); event.target.value = ""; }} />
         </label>
         <label className={`flex min-h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-border bg-[#1b211c] text-muted ${connected && attachments.length < 5 && !uploadingAttachments ? "cursor-pointer hover:text-accent" : "cursor-not-allowed opacity-45"}`} aria-label="Прикрепить файл">
           {uploadingAttachments ? <LoaderCircle size={18} className="animate-spin" /> : <Paperclip size={18} />}
           <span className="sr-only">Прикрепить текстовый файл, PDF или ZIP</span>
-          <input type="file" className="sr-only" accept=".txt,.md,.markdown,.json,.json5,.jsonl,.csv,.tsv,.log,.xml,.yaml,.yml,.toml,.ini,.cfg,.conf,.ts,.tsx,.js,.jsx,.mjs,.py,.go,.rs,.java,.kt,.html,.css,.sql,.sh,.ps1,.patch,.diff,.pdf,.zip,text/*,application/pdf,application/zip" multiple disabled={!connected || attachments.length >= 5 || uploadingAttachments} onChange={(event) => { void attachDocuments(event.target.files); event.target.value = ""; }} />
+          <input type="file" className="sr-only" accept=".txt,.md,.markdown,.json,.json5,.jsonl,.csv,.tsv,.log,.xml,.yaml,.yml,.toml,.ini,.cfg,.conf,.ts,.tsx,.js,.jsx,.mjs,.py,.go,.rs,.java,.kt,.html,.css,.sql,.sh,.ps1,.patch,.diff,.pdf,.zip,text/*,application/pdf,application/zip" multiple disabled={!connected || composerLocked || attachments.length >= 5 || uploadingAttachments} onChange={(event) => { void attachDocuments(event.target.files); event.target.value = ""; }} />
         </label>
-        <div className="min-w-0 flex-1"><Textarea value={draftText} onChange={(event) => onDraftTextChange(session.id, event.target.value)} onKeyDown={submitOnEnter} placeholder={!connected ? "Подключите сеанс, чтобы отправить задачу" : turnBusy && followUpMode === "steer" ? "Направление для текущей задачи…" : turnBusy ? "Следующая задача в очереди…" : "Задача для Codex…"} disabled={!connected} rows={2} className="min-h-[48px] max-h-40 resize-none py-3" aria-label="Сообщение Codex" /></div>
-        <Button type="submit" className="min-h-12 w-12 shrink-0 px-0" disabled={!connected || (!draftText.trim() && images.length === 0 && attachments.length === 0) || preparing || uploadingAttachments || sending || (followUpMode === "steer" && turnBusy && attachments.length > 0)} aria-label={sending ? "Отправка запроса" : followUpMode === "steer" && turnBusy ? "Направить текущую задачу" : "Отправить задачу"}>{preparing || uploadingAttachments || sending ? <LoaderCircle className="animate-spin" size={18} /> : <Send size={18} />}</Button>
+        <div className="min-w-0 flex-1"><Textarea value={draftText} onChange={(event) => onDraftTextChange(session.id, event.target.value)} onKeyDown={submitOnEnter} placeholder={!connected ? "Подключите сеанс, чтобы отправить задачу" : turnBusy && followUpMode === "steer" ? "Направление для текущей задачи…" : turnBusy ? "Следующая задача в очереди…" : "Задача для Codex…"} disabled={!connected || composerLocked} rows={2} className="min-h-[48px] max-h-40 resize-none py-3" aria-label="Сообщение Codex" /></div>
+        <Button type="submit" className="min-h-12 w-12 shrink-0 px-0" disabled={!connected || (!draftText.trim() && images.length === 0 && attachments.length === 0) || preparing || uploadingAttachments || submissionInFlight || (followUpMode === "steer" && turnBusy && attachments.length > 0)} aria-label={submissionInFlight ? "Отправка запроса" : followUpMode === "steer" && turnBusy ? "Направить текущую задачу" : "Отправить задачу"}>{preparing || uploadingAttachments || submissionInFlight ? <LoaderCircle className="animate-spin" size={18} /> : <Send size={18} />}</Button>
       </div>
       <div className="mx-auto mt-2 flex max-w-4xl items-center justify-between text-[10px] text-[#758077]">
         <span>{connected ? "Enter отправляет · Shift+Enter переносит строку" : "История доступна без подключения"}</span>

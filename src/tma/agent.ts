@@ -65,6 +65,7 @@ import { normalizeThreadStatus } from "./live.js";
 import { SttService } from "../app/stt.js";
 import type { MobilePromptAttachment } from "../mobile/attachments.js";
 import { mobileAttachmentContext } from "../mobile/attachments.js";
+import { MobileSubmissionRejectedError } from "../mobile/submission.js";
 
 const log=createLogger("tma:agent");
 const MAX_IMG=3*1024*1024;
@@ -2821,7 +2822,8 @@ export class MiniAppAgent {
             // Once this call starts, a crash or ambiguous error may mean Codex
             // already accepted the task; do not automatically resend.
             dispatched=true;
-            const result=await registry.submitPrompt(chatId,input);
+            const result=await registry.submitPrompt(chatId,input,
+              context?.surface==="mobile"?{preserveAttachmentsOnBlocked:true}:undefined);
             const answer={result:result.kind==="submitted"?result.outcome:result.kind};
             this.promptJournal.complete(key,answer);
             return answer;
@@ -2830,6 +2832,7 @@ export class MiniAppAgent {
               this.promptJournal.uncertain(key);
             }else{
               this.promptJournal.clearBeforeDispatch(key);
+              throw new MobileSubmissionRejectedError(error instanceof Error ? error.message : "Задание не было принято", error);
             }
             throw error;
           }

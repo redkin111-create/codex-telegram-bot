@@ -50,6 +50,11 @@ type RoutedPrompt =
   | { kind: "submitted"; runtime: SessionRuntime; outcome: "ran" | "queued" }
   | { kind: "held" | "blocked" };
 
+export interface SubmitPromptOptions {
+  /** Keep caller-owned mobile uploads available when a submission is blocked before acceptance. */
+  preserveAttachmentsOnBlocked?: boolean;
+}
+
 export class ChatController {
   private readonly runtimes: SessionRuntime[] = [];
   private fg: SessionRuntime | undefined;
@@ -176,10 +181,10 @@ export class ChatController {
     return { rt, result, alreadyControlled: false };
   }
 
-  async submitPrompt(input: PromptInput): Promise<RoutedPrompt> {
+  async submitPrompt(input: PromptInput, options: SubmitPromptOptions = {}): Promise<RoutedPrompt> {
     if (this.watchOnly) {
       if (this.pendingPrompt) {
-        this.cleanupAttachments(input);
+        if (!options.preserveAttachmentsOnBlocked) this.cleanupAttachments(input);
         await this.sendNotice("Уже есть одно ожидающее сообщение. Сначала отправьте его в продолжение или отмените кнопкой.", "info");
         return { kind: "blocked" };
       }
@@ -199,7 +204,7 @@ export class ChatController {
       return { kind: "submitted", runtime, outcome };
     } catch (error) {
       if (!(error instanceof LiveSessionConflictError) || !runtime.sessionId) throw error;
-      const accepted = await this.holdPromptForHandoff(input, runtime);
+      const accepted = await this.holdPromptForHandoff(input, runtime, options);
       return { kind: accepted ? "held" : "blocked" };
     }
   }
@@ -465,9 +470,9 @@ export class ChatController {
     }, 5 * 60_000);
   }
 
-  private async holdPromptForHandoff(input: PromptInput, runtime: SessionRuntime): Promise<boolean> {
+  private async holdPromptForHandoff(input: PromptInput, runtime: SessionRuntime, options: SubmitPromptOptions): Promise<boolean> {
     if (this.pendingPrompt) {
-      this.cleanupAttachments(input);
+      if (!options.preserveAttachmentsOnBlocked) this.cleanupAttachments(input);
       await this.sendNotice("Уже есть одно ожидающее сообщение. Сначала отправьте его в продолжение или отмените кнопкой.", "info");
       return false;
     }

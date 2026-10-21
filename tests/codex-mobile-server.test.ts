@@ -6,6 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { MobileAuthStore } from "../src/mobile/auth.js";
+import { MobileSubmissionRejectedError } from "../src/mobile/submission.js";
 import type { MobileAccountController } from "../src/mobile/accounts.js";
 import { createMobileServer, type MobileServerOptions } from "../src/mobile/server.js";
 import type { LiveEvent, TmaLiveFeed } from "../src/tma/live.js";
@@ -39,6 +40,8 @@ async function startFixture(extensions: Record<string, unknown> = {}) {
   const feed = new FixtureFeed();
   const calls: Array<{ op: string; userId: number; args: Record<string, unknown>; attachments?: unknown[] }> = [];
   let failNext = false;
+  let nextSendResult: unknown = { result: "queued" };
+  let nextExecutionError: Error | undefined;
   let mobileSendLookup: (ownerId: number, args: Record<string, unknown>) => { found: boolean; result?: unknown } = () => ({ found: false });
   let downloadValue: unknown = { name: "release.zip", size: 4, bytes: Buffer.from([0x50, 0x4b, 0x03, 0x04]) };
   let readImageValue: unknown = { name: "pixel.png", mime: "image/png", data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString("base64") };
@@ -74,11 +77,12 @@ async function startFixture(extensions: Record<string, unknown> = {}) {
     lookupMobileSend(ownerId: number, args: Record<string, unknown>) { return mobileSendLookup(ownerId, args); },
     async execute(job: { op: string; userId: number; args: Record<string, unknown> }, attachments?: unknown[]) {
       calls.push({ ...job, ...(attachments ? { attachments } : {}) });
+      if (nextExecutionError) { const error = nextExecutionError; nextExecutionError = undefined; throw error; }
       if (failNext) { failNext = false; throw new Error("Codex runtime unavailable"); }
       if (job.op === "snapshot") return { projects: [{ path: "C:\\work\\demo", name: "demo" }], sessions: [{ id: allowedSession, title: "Demo" }] };
       if (job.op === "history") return { entries: [{ role: "assistant", text: "Safe fixture history" }], images: [] };
       if (job.op === "image") return { name: "screen.png", mime: "image/png", data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString("base64") };
-      return { ok: true, op: job.op };
+      return job.op === "send" ? nextSendResult : { ok: true, op: job.op };
     },
     async executeMobile(job: { op: string; userId: number; args: Record<string, unknown> }) {
       calls.push(job);
@@ -148,6 +152,8 @@ async function startFixture(extensions: Record<string, unknown> = {}) {
   assert.ok(address && typeof address !== "string");
   const origin = `http://127.0.0.1:${address.port}`;
   return { server, auth, feed, calls, approvalDecisions, approvalId, accountCalls, dataDir, origin, failNext: () => { failNext = true; },
+    setNextSendResult: (value: unknown) => { nextSendResult = value; },
+    setNextExecutionError: (value: Error) => { nextExecutionError = value; },
     setMobileSendLookup: (lookup: typeof mobileSendLookup) => { mobileSendLookup = lookup; },
     setMobileOAuthResult: (value: unknown) => { mobileOAuthResult = value; },
     setDownloadValue: (value: unknown) => { downloadValue = value; }, setReadImageValue: (value: unknown) => { readImageValue = value; } };
@@ -428,6 +434,16 @@ test("mobile document uploads require CSRF and an owned session, then attach ser
       } }),
     });
     assert.equal(crossSession.status, 403);
+    assert.equal((await crossSession.json() as { submissionOutcome?: string }).submissionOutcome, "rejected",
+      "the server explicitly confirms that it denied this send before execution");
+
+    const csrfRejected = await fetch(f.origin + "/api/operations", {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "content-type": "application/json" },
+      body: JSON.stringify({ op: "send", args: { sessionId: allowedSession, text: "do not dispatch" } }),
+    });
+    assert.equal(csrfRejected.status, 403);
+    assert.equal((await csrfRejected.json() as { submissionOutcome?: string }).submissionOutcome, undefined,
+      "a generic 403 without a server outcome must stay ambiguous to the client");
 
     const fakeId = "99999999-9999-4999-8999-999999999999";
     const sent = await fetch(f.origin + "/api/operations", {
@@ -452,6 +468,12 @@ test("mobile document uploads require CSRF and an owned session, then attach ser
     assert.equal(prepared.name, "notes.md");
     assert.equal(prepared.text, bytes);
     assert.equal(prepared.path, undefined);
+
+    const consumed = await fetch(`${f.origin}/api/attachments/${descriptor.id}?sessionId=${allowedSession}`, {
+      method: "DELETE",
+      headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken },
+    });
+    assert.equal(consumed.status, 404, "the accepted queue item owns its uploaded attachment now");
 
     const retried = await fetch(f.origin + "/api/operations", {
       method: "POST",
@@ -478,6 +500,68 @@ test("mobile document uploads require CSRF and an owned session, then attach ser
   } finally { await cleanup(f.server, f.dataDir); }
 });
 
+test("a confirmed pre-dispatch rejection tells mobile it is safe to unlock and remove the attachment", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const uploadUrl = new URL("/api/attachments", f.origin);
+    uploadUrl.searchParams.set("sessionId", allowedSession);
+    uploadUrl.searchParams.set("name", "retry.txt");
+    const upload = await fetch(uploadUrl, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "text/plain" },
+      body: "keep this draft",
+    });
+    const attachment = await upload.json() as { id: string };
+    f.setNextExecutionError(new MobileSubmissionRejectedError("Codex сейчас офлайн"));
+    const response = await fetch(f.origin + "/api/operations", {
+      method: "POST",
+      headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ op: "send", args: {
+        sessionId: allowedSession, text: "Прочитай файл", requestId: "mobile-file-refused-0001", attachmentIds: [attachment.id],
+      } }),
+    });
+
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), { error: "Codex сейчас офлайн", submissionOutcome: "rejected" });
+    const removed = await fetch(`${f.origin}/api/attachments/${attachment.id}?sessionId=${allowedSession}`, {
+      method: "DELETE",
+      headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken },
+    });
+    assert.deepEqual(await removed.json(), { removed: true }, "the rejected request must release its upload claim");
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("a blocked send is a confirmed refusal and leaves its attachment available for correction", async () => {
+  const f = await startFixture();
+  try {
+    const login = await pair(f.origin, f.auth);
+    const uploadUrl = new URL("/api/attachments", f.origin);
+    uploadUrl.searchParams.set("sessionId", allowedSession);
+    uploadUrl.searchParams.set("name", "retry.txt");
+    const upload = await fetch(uploadUrl, {
+      method: "POST", headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "text/plain" },
+      body: "keep this draft",
+    });
+    const attachment = await upload.json() as { id: string };
+    f.setNextSendResult({ result: "blocked" });
+    const response = await fetch(f.origin + "/api/operations", {
+      method: "POST",
+      headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ op: "send", args: {
+        sessionId: allowedSession, text: "Прочитай файл", requestId: "mobile-file-blocked-0001", attachmentIds: [attachment.id],
+      } }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { result: "blocked" });
+    const removed = await fetch(`${f.origin}/api/attachments/${attachment.id}?sessionId=${allowedSession}`, {
+      method: "DELETE",
+      headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken },
+    });
+    assert.deepEqual(await removed.json(), { removed: true });
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
 test("a durable attachment send replay is checked before resolving expired upload IDs", async () => {
   const f = await startFixture();
   try {
@@ -499,6 +583,76 @@ test("a durable attachment send replay is checked before resolving expired uploa
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { result: "already-sent" });
     assert.equal(f.calls.some((call) => call.op === "send"), false, "a replay must return before missing upload IDs can block or resend it");
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("an accepted attachment send survives a dropped HTTP response and replays the same request once", async () => {
+  const requestId = "mobile-lost-response-0001";
+  const acceptedResult = { result: "ran" };
+  let dispatchCount = 0;
+  let accepted!: () => void;
+  let finished!: () => void;
+  const acceptedSignal = new Promise<void>((resolve) => { accepted = resolve; });
+  const finishedSignal = new Promise<void>((resolve) => { finished = resolve; });
+  let recordedResult: unknown;
+  const agent = {
+    async canReadSession(sessionId: string, ownerId: number) {
+      return ownerId === 101 && sessionId === allowedSession;
+    },
+    lookupMobileSend(ownerId: number, args: Record<string, unknown>) {
+      assert.equal(ownerId, 101);
+      assert.equal(args.requestId, requestId);
+      return recordedResult === undefined ? { found: false } : { found: true, result: recordedResult };
+    },
+    async execute(job: { op: string; userId: number; args: Record<string, unknown> }, attachments?: Array<{ id: string }>) {
+      assert.equal(job.op, "send");
+      assert.equal(job.args.requestId, requestId);
+      assert.equal(attachments?.length, 1);
+      dispatchCount++;
+      recordedResult = acceptedResult;
+      accepted();
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      finished();
+      return acceptedResult;
+    },
+  };
+  const f = await startFixture({ agent });
+  try {
+    const login = await pair(f.origin, f.auth);
+    const uploadUrl = new URL("/api/attachments", f.origin);
+    uploadUrl.searchParams.set("sessionId", allowedSession);
+    uploadUrl.searchParams.set("name", "queued.txt");
+    const upload = await fetch(uploadUrl, {
+      method: "POST",
+      headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "text/plain" },
+      body: "Queued work must retain this file.",
+    });
+    assert.equal(upload.status, 201);
+    const attachment = await upload.json() as { id: string };
+    const headers = {
+      origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken,
+      "content-type": "application/json",
+    };
+    const body = JSON.stringify({ op: "send", args: {
+      sessionId: allowedSession, text: "Use the queued file", requestId, attachmentIds: [attachment.id],
+    } });
+    const controller = new AbortController();
+    const firstResponse = fetch(f.origin + "/api/operations", {
+      method: "POST", headers, body, signal: controller.signal,
+    });
+    await acceptedSignal;
+    controller.abort();
+    await assert.rejects(firstResponse, (error: unknown) => error instanceof Error && error.name === "AbortError");
+    await finishedSignal;
+
+    const replay = await fetch(f.origin + "/api/operations", { method: "POST", headers, body });
+    assert.equal(replay.status, 200);
+    assert.deepEqual(await replay.json(), acceptedResult);
+    assert.equal(dispatchCount, 1, "retrying the lost response must not execute the accepted job again");
+    const consumed = await fetch(`${f.origin}/api/attachments/${attachment.id}?sessionId=${allowedSession}`, {
+      method: "DELETE", headers,
+    });
+    assert.equal(consumed.status, 404, "the accepted job keeps ownership of its attachment after the client disconnects");
   } finally { await cleanup(f.server, f.dataDir); }
 });
 

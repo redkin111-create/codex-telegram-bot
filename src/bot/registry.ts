@@ -19,7 +19,7 @@ import { subagentSummary } from "../render/subagent.js";
 import type { SessionStore } from "../sessions/store.js";
 import type { TelegramSessionRegistry } from "../sessions/telegram-registry.js";
 import type { AccountRotator } from "./account-rotator.js";
-import { ChatController } from "./chat-controller.js";
+import { ChatController, type SubmitPromptOptions } from "./chat-controller.js";
 import type { SessionRuntime } from "./session-runtime.js";
 import type { PromptInput } from "../app/types.js";
 import { OutgoingArtifactStore } from "./outgoing-artifacts.js";
@@ -96,8 +96,8 @@ export class RuntimeRegistry {
     return this.controller(chatId).runtimeForSession(sessionId);
   }
 
-  submitPrompt(chatId: number, input: PromptInput) {
-    return this.controller(chatId).submitPrompt(input);
+  submitPrompt(chatId: number, input: PromptInput, options?: SubmitPromptOptions) {
+    return this.controller(chatId).submitPrompt(input, options);
   }
 
   sendArtifact(chatId: number, token: string): Promise<boolean> {

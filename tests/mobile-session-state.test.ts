@@ -69,6 +69,15 @@ test("a rapid second Enter cannot start another send until the first settles", (
   assert.equal(lock.tryAcquire(), true);
 });
 
+test("a confirmed server refusal unlocks attachments so the user can replace or remove them", () => {
+  const lock = new MobileSubmissionLock();
+  assert.equal(lock.tryAcquire(["file-a"]), true);
+  lock.release("rejected");
+
+  assert.equal(lock.isLocked, false);
+  assert.equal(lock.isAttachmentProtected("file-a"), false);
+});
+
 test("unmount cleanup removes only this session's unsubmitted attachments", () => {
   const attachments = [
     { id: "draft-a", name: "draft.txt", size: 1, kind: "text" as const },
@@ -106,6 +115,27 @@ test("an uncertain send keeps its attachment protected after the submission lock
   );
   lock.resolveAttachments(["sent-a"]);
   assert.equal(lock.isAttachmentProtected("sent-a"), false);
+});
+
+test("an uncertain send can only be retried with its original fingerprint", () => {
+  const lock = new MobileSubmissionLock();
+  assert.equal(lock.tryAcquire(), true);
+  lock.markUncertainSubmission("original-payload");
+  lock.release("uncertain");
+
+  assert.equal(lock.hasUncertainSubmission, true);
+  assert.equal(lock.canRetryFingerprint("original-payload"), true);
+  assert.equal(lock.canRetryFingerprint("edited-payload"), false);
+});
+
+test("an accepted queued send releases UI protection without classifying its files as uncertain", () => {
+  const lock = new MobileSubmissionLock();
+  assert.equal(lock.tryAcquire(["queued-file"]), true);
+  lock.resolveAttachments(["queued-file"]);
+  lock.release("accepted");
+
+  assert.equal(lock.isLocked, false);
+  assert.equal(lock.isAttachmentProtected("queued-file"), false);
 });
 
 test("late data from the previous session is ignored and the new session starts empty", () => {

@@ -609,7 +609,21 @@ test("failed attach restores the previous watch-only watcher and keeps its pendi
     assert.equal(controller.count(), 1);
     assert.equal(controller.list()[0]?.sessionId, original.sessionId);
     assert.equal(original.isWatching, true);
-    assert.equal((await controller.submitPrompt(textPrompt("второе сообщение"))).kind, "blocked");
+    const mobileAttachment = join(incoming, "mobile-retry.txt");
+    writeFileSync(mobileAttachment, "keep for mobile retry", "utf8");
+    const mobileRetry = textPrompt("второе сообщение с мобильным файлом");
+    mobileRetry.attachmentPaths = [mobileAttachment];
+    assert.equal((await controller.submitPrompt(mobileRetry, { preserveAttachmentsOnBlocked: true })).kind, "blocked");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(existsSync(mobileAttachment), true, "a blocked mobile upload stays available for editing or retry");
+
+    const telegramAttachment = join(incoming, "telegram-blocked.txt");
+    writeFileSync(telegramAttachment, "discard the blocked Telegram upload", "utf8");
+    const telegramRetry = textPrompt("заблокированная Telegram отправка");
+    telegramRetry.attachmentPaths = [telegramAttachment];
+    assert.equal((await controller.submitPrompt(telegramRetry)).kind, "blocked");
+    for (let i = 0; existsSync(telegramAttachment) && i < 100; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(existsSync(telegramAttachment), false, "default Telegram cleanup remains unchanged");
     assert.equal(existsSync(attachment), true);
   } finally {
     controller.dispose();

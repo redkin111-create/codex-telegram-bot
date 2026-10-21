@@ -7,6 +7,7 @@ import { createServer, type Server } from "node:http";
 import { deflateSync } from "node:zlib";
 import { MobileAuthStore } from "../../src/mobile/auth.js";
 import type { MobilePromptAttachment } from "../../src/mobile/attachments.js";
+import { MobileSubmissionRejectedError } from "../../src/mobile/submission.js";
 import { createMobileServer } from "../../src/mobile/server.js";
 import { requestedMobileSkillNames } from "../../src/mobile/skill-selection.js";
 import { MobileApprovalBroker, MobileElicitationBroker } from "../../src/mobile/approvals.js";
@@ -179,6 +180,9 @@ const history = new Map<string, Array<{ role: "user" | "assistant" | "tool"; tex
   [secondSession, [{ role: "assistant", text: "API fixture для переключения сеанса.", timestamp: Date.now() - 15_000 }]],
 ]);
 const controlled = new Map<string, { busy: boolean; queue: Array<{ id: string; text: string }>; paused: boolean }>();
+const mobileSendResults = new Map<string, { fingerprint: string; result: { result: "ran" | "queued" } }>();
+let rejectNextMobileSend = false;
+let delayNextMobileSendAcknowledgement = false;
 let selected = firstSession;
 const fixtureSettings = { model: "fixture", mode: "code", reasoning: "medium" };
 const fixtureGoals = new Map<string, { threadId: string; objective: string; status: "active" | "paused"; tokenBudget: number | null; tokensUsed: number; timeUsedSeconds: number; createdAt: number; updatedAt: number }>();
@@ -277,11 +281,37 @@ const voiceAgent = new MiniAppAgent({
   },
 });
 
+function fixtureMobileSendKey(args: Record<string, unknown>): string | undefined {
+  if (typeof args.sessionId !== "string" || typeof args.requestId !== "string") return undefined;
+  return JSON.stringify([args.sessionId, args.requestId]);
+}
+
+function fixtureMobileSendFingerprint(args: Record<string, unknown>, attachmentIds?: readonly string[]): string {
+  const ids = attachmentIds ?? (Array.isArray(args.attachmentIds)
+    ? args.attachmentIds.filter((id): id is string => typeof id === "string")
+    : []);
+  return JSON.stringify([
+    args.sessionId ?? "", args.text ?? "", args.images ?? [], ids, args.appIds ?? [],
+  ]);
+}
+
+async function delayMobileSendAcknowledgementIfRequested(): Promise<void> {
+  if (!delayNextMobileSendAcknowledgement) return;
+  delayNextMobileSendAcknowledgement = false;
+  await new Promise((resolveDelay) => setTimeout(resolveDelay, 1_500));
+}
+
 const agent = {
   async canReadSession(sessionId: string, id: number) {
     return id === ownerId && (sessions.some((session) => session.id === sessionId) || archivedSessions.some((session) => session.id === sessionId));
   },
-  lookupMobileSend() { return { found: false }; },
+  lookupMobileSend(_ownerId: number, args: Record<string, unknown>) {
+    const key = fixtureMobileSendKey(args);
+    const saved = key ? mobileSendResults.get(key) : undefined;
+    if (!saved) return { found: false };
+    if (saved.fingerprint !== fixtureMobileSendFingerprint(args)) throw new Error("ID тестовой отправки использован с другим заданием");
+    return { found: true, result: saved.result };
+  },
   async execute(job: TmaJob, attachments: readonly MobilePromptAttachment[] = []): Promise<unknown> {
     const args = job.args;
     if (job.op === "snapshot") {
@@ -333,6 +363,17 @@ const agent = {
       return { sessionId };
     }
     if (job.op === "send") {
+      const sendKey = fixtureMobileSendKey(args);
+      const fingerprint = fixtureMobileSendFingerprint(args, attachments.map((file) => file.id));
+      const previous = sendKey ? mobileSendResults.get(sendKey) : undefined;
+      if (previous) {
+        if (previous.fingerprint !== fingerprint) throw new Error("ID тестовой отправки использован с другим заданием");
+        return previous.result;
+      }
+      if (rejectNextMobileSend) {
+        rejectNextMobileSend = false;
+        throw new MobileSubmissionRejectedError("Тест: Codex отказался до принятия задания");
+      }
       const appIds = Array.isArray(args.appIds) ? args.appIds.filter((id): id is string => typeof id === "string") : [];
       if (appIds.some((id) => id !== "calendar")) throw new Error("Fixture Codex App недоступно");
       const fileContext = attachments.map((file) => file.text !== undefined
@@ -345,7 +386,10 @@ const agent = {
       if (runtime.busy) {
         runtime.queue.push({ id: randomUUID(), text: message || "Проверить прикреплённое фото" });
         controlled.set(sessionId, runtime);
-        return { result: "queued" };
+        const result = { result: "queued" as const };
+        if (sendKey) mobileSendResults.set(sendKey, { fingerprint, result });
+        await delayMobileSendAcknowledgementIfRequested();
+        return result;
       }
       const entries = history.get(sessionId) ?? [];
       entries.push({ role: "user", text: message || "Проверка фото", timestamp: Date.now() });
@@ -359,7 +403,10 @@ const agent = {
       controlled.set(sessionId, runtime);
       feed.status(sessionId, "working", "Codex работает (тест)");
       feed.publish(sessionId, { kind: "text", text: "Запрос принят тестовой средой" });
-      return { result: "submitted" };
+      const result = { result: "ran" as const };
+      if (sendKey) mobileSendResults.set(sendKey, { fingerprint, result });
+      await delayMobileSendAcknowledgementIfRequested();
+      return result;
     }
     if (job.op === "cancel") {
       const runtime = controlled.get(sessionId);
@@ -1308,6 +1355,12 @@ process.stdin.on("data", (chunk: string) => {
       } else if (command.command === "sectionDeleteReset") {
         fixtureSectionDeleteFailure = false;
         process.stdout.write("Fixture Codex section deletion error disabled.\n");
+      } else if (command.command === "rejectNextMobileSend") {
+        rejectNextMobileSend = true;
+        process.stdout.write("Fixture will reject the next mobile send before acceptance.\n");
+      } else if (command.command === "delayNextMobileSendAcknowledgement") {
+        delayNextMobileSendAcknowledgement = true;
+        process.stdout.write("Fixture will delay the next mobile send acknowledgement.\n");
       }
     } catch { process.stdout.write("Fixture control command was ignored.\n"); }
   }

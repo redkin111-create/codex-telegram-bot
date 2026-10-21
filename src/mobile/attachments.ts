@@ -175,6 +175,18 @@ export class MobileAttachmentStore {
     }
   }
 
+  release(ids: readonly string[], deviceId: string, requestId: string): void {
+    for (const id of ids) {
+      const entry = this.entries.get(id);
+      if (entry?.deviceId === deviceId && entry.claimedBy === requestId) delete entry.claimedBy;
+    }
+    const key = JSON.stringify([deviceId, requestId]);
+    const replay = this.resolvedRequests.get(key);
+    if (replay && replay.ids.length === ids.length && replay.ids.every((id, index) => id === ids[index])) {
+      this.resolvedRequests.delete(key);
+    }
+  }
+
   async remove(ownerId: number, deviceId: string, sessionId: string, id: string): Promise<boolean> {
     await this.pruneExpired();
     const entry = this.entries.get(id);

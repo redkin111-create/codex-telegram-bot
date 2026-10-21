@@ -8,6 +8,7 @@ import type { MiniAppAgent, MobileLocalJob, MobileLocalOperation } from "../tma/
 import type { LiveElicitation, LiveEvent, TmaLiveFeed } from "../tma/live.js";
 import { MobileAuthStore } from "./auth.js";
 import type { MobileAccountController } from "./accounts.js";
+import { isMobileSubmissionRejectedError } from "./submission.js";
 import { forwardMcpOAuthCallback, mcpOAuthCallbackTarget, validateMcpOAuthCallback, type McpOAuthCallbackTarget } from "./oauth-callback.js";
 import { parseCodexThreadReadState } from "../acp/codex-protocol.js";
 
@@ -60,6 +61,11 @@ function json(res: ServerResponse, status: number, payload: unknown): void {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(JSON.stringify(payload));
+}
+
+function isBlockedMobileSubmission(result: unknown): boolean {
+  return Boolean(result && typeof result === "object" && !Array.isArray(result) &&
+    (result as Record<string, unknown>).result === "blocked");
 }
 
 function securityHeaders(res: ServerResponse): void {
@@ -680,7 +686,9 @@ export function createMobileServer(options: MobileServerOptions): Server {
       }
       const args = { ...(body.args as Record<string, unknown>) };
       if (typeof args.sessionId === "string" && !await options.agent.canReadSession(args.sessionId, device.ownerId)) {
-        json(res, 403, { error: "Доступ к сеансу запрещён" }); return;
+        json(res, 403, body.op === "send"
+          ? { error: "Доступ к сеансу запрещён", submissionOutcome: "rejected" }
+          : { error: "Доступ к сеансу запрещён" }); return;
       }
       let promptAttachments: MobilePromptAttachment[] = [];
       let attachmentIds: string[] = [];
@@ -689,7 +697,9 @@ export function createMobileServer(options: MobileServerOptions): Server {
         delete args.attachmentIds;
         delete args.mobileAttachments;
         if (rawIds !== undefined && (!Array.isArray(rawIds) || rawIds.some((id) => typeof id !== "string"))) {
-          json(res, 400, { error: "Список вложений недопустим" }); return;
+          json(res, 400, body.op === "send"
+            ? { error: "Список вложений недопустим", submissionOutcome: "rejected" }
+            : { error: "Список вложений недопустим" }); return;
         }
         attachmentIds = (rawIds ?? []) as string[];
         if (body.op === "steer" && attachmentIds.length > 0) {
@@ -697,7 +707,7 @@ export function createMobileServer(options: MobileServerOptions): Server {
         }
         if (attachmentIds.length > 0) {
           if (typeof args.sessionId !== "string" || typeof args.requestId !== "string") {
-            json(res, 400, { error: "Для вложения нужен выбранный сеанс и идентификатор запроса" }); return;
+            json(res, 400, { error: "Для вложения нужен выбранный сеанс и идентификатор запроса", submissionOutcome: "rejected" }); return;
           }
           if (body.op === "send") {
             try {
@@ -709,7 +719,11 @@ export function createMobileServer(options: MobileServerOptions): Server {
             promptAttachments = await attachments.resolveForPrompt(
               device.ownerId, device.id, args.sessionId, attachmentIds, args.requestId,
             );
-          } catch (error) { json(res, 403, { error: safeError(error) }); return; }
+          } catch (error) {
+            json(res, 403, body.op === "send"
+              ? { error: safeError(error), submissionOutcome: "rejected" }
+              : { error: safeError(error) }); return;
+          }
         }
       } else {
         delete args.attachmentIds;
@@ -767,11 +781,24 @@ export function createMobileServer(options: MobileServerOptions): Server {
       try {
         const result = await execute(body.op as TmaOperation, device.ownerId, args, promptAttachments);
         if (attachmentIds.length > 0 && typeof args.requestId === "string") {
-          attachments.complete(attachmentIds, device.id, args.requestId);
+          if (body.op === "send" && isBlockedMobileSubmission(result)) {
+            attachments.release(attachmentIds, device.id, args.requestId);
+          } else {
+            attachments.complete(attachmentIds, device.id, args.requestId);
+          }
         }
         json(res, 200, result);
       }
-      catch (error) { json(res, 502, { error: safeError(error) }); }
+      catch (error) {
+        if (body.op === "send" && isMobileSubmissionRejectedError(error)) {
+          if (attachmentIds.length > 0 && typeof args.requestId === "string") {
+            attachments.release(attachmentIds, device.id, args.requestId);
+          }
+          json(res, 502, { error: safeError(error), submissionOutcome: "rejected" });
+        } else {
+          json(res, 502, { error: safeError(error) });
+        }
+      }
       return;
     }
     if (path === "/api/events" && method === "POST") {

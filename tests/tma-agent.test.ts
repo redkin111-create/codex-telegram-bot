@@ -240,11 +240,13 @@ test("mobile sends file attachments and selected skills into the shared runtime 
     list:()=>[],
   };
   const submitted:Array<{text:string;appIds?:string[];skillNames?:string[];attachmentNames?:string[];attachmentContext?:string;attachmentPaths?:string[];displayText?:string}>=[];
+  const submissionOptions:Array<{preserveAttachmentsOnBlocked?:boolean}|undefined>=[];
   const registry={
     controller:()=>controller,
     get:()=>runtime,
-    async submitPrompt(_userId:number,input:{text:string;appIds?:string[];skillNames?:string[];attachmentNames?:string[];attachmentContext?:string;attachmentPaths?:string[];displayText?:string}){
+    async submitPrompt(_userId:number,input:{text:string;appIds?:string[];skillNames?:string[];attachmentNames?:string[];attachmentContext?:string;attachmentPaths?:string[];displayText?:string},options?:{preserveAttachmentsOnBlocked?:boolean}){
       submitted.push(input);
+      submissionOptions.push(options);
       return {kind:"submitted",outcome:"accepted"};
     },
   } as unknown as RuntimeRegistry;
@@ -261,7 +263,7 @@ test("mobile sends file attachments and selected skills into the shared runtime 
     },[
       {id:"11111111-1111-4111-8111-111111111111",name:"notes.ts",mimeType:"text/plain",size:text.length,text},
       {id:"22222222-2222-4222-8222-222222222222",name:binary.name,mimeType:"application/pdf",size:18,path:binary.path},
-    ]);
+    ],{surface:"mobile"});
     assert.deepEqual(result,{result:"accepted"});
     assert.equal(prepareForegroundCalls,1,"sending to an already-foreground restored session must rebind it to the current Codex process");
     assert.equal(submitted.length,1);
@@ -275,6 +277,8 @@ test("mobile sends file attachments and selected skills into the shared runtime 
     assert.equal(input.displayText,"(Проверь документы.)\n\n$browser-skill Открой example.com");
     assert.deepEqual(input.appIds,["calendar"]);
     assert.deepEqual(input.skillNames,["browser-skill"]);
+    assert.equal(submissionOptions[0]?.preserveAttachmentsOnBlocked,true,
+      "mobile ownership keeps a file alive when shared runtime submission returns blocked");
     assert.match(input.attachmentContext??"",/notes\.ts/);
     assert.match(input.attachmentContext??"",/report\.pdf/);
     await assert.rejects(agent.execute({

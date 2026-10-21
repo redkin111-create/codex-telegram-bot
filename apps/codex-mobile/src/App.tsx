@@ -1,11 +1,11 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FolderOpen, GitBranch, LoaderCircle, Menu, RefreshCw, Shield, ShieldAlert, SlidersHorizontal, Terminal } from "lucide-react";
 import {
-  logout, MobileApiError, openEventStream, readActivity, readApprovals, readElicitations,
+  logout, MobileApiError, mobileSubmissionOutcome, openEventStream, readActivity, readApprovals, readElicitations,
   readAppInventory, readHistory, readSession, readSkillInventory, readSnapshot, removeAttachment, resolveApproval, resolveElicitation, runOperation, uploadAttachment,
 } from "./api.js";
 import { coalesceInFlight } from "./single-flight.js";
-import { clearSessionDraftIfUnchanged, isCurrentMobileAuthScope, isCurrentMobileSessionSync, mobileDraftKey, PendingMobileSendIds, mobileSendFingerprint, setSessionDraft, updateCurrentSessionState, type MobileAuthScope } from "./lib/session-state.js";
+import { clearSessionDraftIfUnchanged, emptyMobileComposerDraft, isCurrentMobileAuthScope, isCurrentMobileSessionSync, mobileDraftKey, MobileSubmissionLock, PendingMobileSendIds, mobileSendFingerprint, setSessionDraft, updateCurrentSessionState, type MobileAuthScope, type MobileComposerDraft } from "./lib/session-state.js";
 import { consumeMobileEventStream, MobileEventBuffer } from "./lib/event-stream.js";
 import { ApprovalPanel } from "./components/approval-panel.js";
 import { ElicitationPanel } from "./components/elicitation-panel.js";
@@ -58,6 +58,7 @@ export default function App() {
   const [searchMoreLoading, setSearchMoreLoading] = useState(false);
   const [sessionPages, setSessionPages] = useState<Record<string, SessionPage>>({});
   const [draftsBySession, setDraftsBySession] = useState<Record<string, string>>({});
+  const [composerDraftsBySession, setComposerDraftsBySession] = useState<Record<string, MobileComposerDraft>>({});
   const [draftScopeEpoch, setDraftScopeEpoch] = useState(0);
   const [sessionSwitchNotice, setSessionSwitchNotice] = useState("");
   const [sessionViewState, setSessionViewState] = useState<{ sessionId: string; value: MobileSessionView }>({ sessionId: "", value: emptySessionView() });
@@ -83,6 +84,7 @@ export default function App() {
   }
   const lastSelectedSessionId = useRef("");
   const pendingSend = useRef(new PendingMobileSendIds());
+  const submissionLocks = useRef(new Map<string, MobileSubmissionLock>());
   const searchGeneration = useRef(0);
   const sessionPageRequests = useRef(new Map<string, object>());
   const sessionPagesGeneration = useRef(0);
@@ -96,6 +98,24 @@ export default function App() {
   const sessionView = sessionViewState.sessionId === selectedId ? sessionViewState.value : { ...emptySessionView(), loading: Boolean(selectedId) };
   const { history, activity, queue, events, loading, streamConnected, pendingApproval, approvalOpen, pendingElicitation, elicitationOpen } = sessionView;
 
+  function submissionLockFor(sessionId: string): MobileSubmissionLock {
+    let lock = submissionLocks.current.get(sessionId);
+    if (!lock) {
+      lock = new MobileSubmissionLock();
+      submissionLocks.current.set(sessionId, lock);
+    }
+    return lock;
+  }
+
+  function updateComposerDraft(sessionId: string, update: (current: MobileComposerDraft) => MobileComposerDraft) {
+    const key = mobileDraftKey(device?.id ?? "", draftScopeEpoch, sessionId);
+    setComposerDraftsBySession((current) => {
+      const previous = current[key] ?? emptyMobileComposerDraft();
+      const next = update(previous);
+      return next === previous ? current : { ...current, [key]: next };
+    });
+  }
+
   useEffect(() => {
     if (!selectedId) {
       setSessionSwitchNotice("");
@@ -104,7 +124,7 @@ export default function App() {
     const previous = lastSelectedSessionId.current;
     lastSelectedSessionId.current = selectedId;
     if (!previous || previous === selectedId) return;
-    setSessionSwitchNotice("Текстовый черновик остаётся в прошлом сеансе. Прикреплённые файлы, изображения и выбранные apps очищены.");
+    setSessionSwitchNotice("Текст и фото хранятся отдельно. Неотправленные файлы очищаются при переключении; незавершённая отправка сохраняет свои файлы и приложения.");
     const timeout = setTimeout(() => setSessionSwitchNotice(""), 8_000);
     return () => clearTimeout(timeout);
   }, [selectedId]);
@@ -120,7 +140,9 @@ export default function App() {
     snapshotRequest.current = undefined;
     setRefreshing(false);
     setDraftsBySession({});
+    setComposerDraftsBySession({});
     setDraftScopeEpoch((epoch) => epoch + 1);
+    submissionLocks.current.clear();
     setDevice(undefined);
     setCsrf("");
     setSnapshot(undefined);
@@ -664,13 +686,53 @@ export default function App() {
     if (mode === "steer" && attachments.length) throw new Error("Файлы можно отправить в очередь, но не добавить к активному ходу");
     const payload = { sessionId: targetSessionId, text, images, attachments, mode, appIds };
     const fingerprint = mobileSendFingerprint(payload);
+    const submissionLock = submissionLockFor(targetSessionId);
+    if (!submissionLock.canRetryFingerprint(fingerprint)) {
+      const cause = new Error("Результат предыдущей отправки неизвестен. Восстановите исходный текст, файлы и режим, затем повторите именно этот запрос.");
+      setError(cause.message);
+      throw cause;
+    }
     const requestId = pendingSend.current.getOrCreate(fingerprint, () => crypto.randomUUID());
-    await operation(mode === "steer" ? "steer" : "send", {
-      sessionId: targetSessionId, text, images: images.map(({ name, mimeType, data }) => ({ name, mimeType, data })),
-      attachmentIds: attachments.map((file) => file.id), appIds, requestId,
-    });
-    pendingSend.current.complete(fingerprint, requestId);
-    setTimeout(() => { void refreshSnapshot(); }, 500);
+    const draftKey = mobileDraftKey(device?.id ?? "", draftScopeEpoch, targetSessionId);
+    try {
+      const result = await operation<{ result?: string; steered?: boolean }>(mode === "steer" ? "steer" : "send", {
+        sessionId: targetSessionId, text, images: images.map(({ name, mimeType, data }) => ({ name, mimeType, data })),
+        attachmentIds: attachments.map((file) => file.id), appIds, requestId,
+      });
+      if (result?.result === "blocked") {
+        throw new MobileApiError("Сеанс Codex не принял задание. Черновик и вложения сохранены; можно изменить запрос или повторить попытку.", 200, "rejected");
+      }
+      if (result?.result !== "ran" && result?.result !== "queued" && result?.result !== "held" && result?.steered !== true) {
+        throw new Error("Сервер не подтвердил результат отправки. Сохраните черновик и повторите отправку, чтобы проверить прежний запрос.");
+      }
+      pendingSend.current.complete(fingerprint, requestId);
+      setComposerDraftsBySession((current) => {
+        const draft = current[draftKey];
+        if (!draft) return current;
+        const sentAttachmentIds = new Set(attachments.map((file) => file.id));
+        const remainingImages = draft.images.filter((image) => !images.includes(image));
+        const remainingAttachments = draft.attachments.filter((file) => !sentAttachmentIds.has(file.id));
+        const sameApps = draft.appIds.length === appIds.length && draft.appIds.every((id, index) => id === appIds[index]);
+        const nextAppIds = sameApps && draft.appIds.length > 0 ? [] : draft.appIds;
+        const nextMode = draft.mode === mode ? "queue" : draft.mode;
+        if (remainingImages.length === draft.images.length && remainingAttachments.length === draft.attachments.length &&
+            nextAppIds === draft.appIds && nextMode === draft.mode) return current;
+        return { ...current, [draftKey]: { ...draft, images: remainingImages, attachments: remainingAttachments, appIds: nextAppIds, mode: nextMode } };
+      });
+      setTimeout(() => { void refreshSnapshot(); }, 500);
+    } catch (cause) {
+      if (mobileSubmissionOutcome(cause) === "rejected") {
+        pendingSend.current.complete(fingerprint, requestId);
+        setError(cause instanceof Error ? cause.message : "Сервер подтвердил отказ до принятия задания.");
+      } else {
+        submissionLock.markUncertainSubmission(fingerprint);
+        const detail = cause instanceof DOMException && cause.name === "AbortError"
+          ? "Соединение прервано"
+          : cause instanceof Error ? cause.message : "Не удалось связаться с Codex";
+        setError(`${detail} Результат отправки неизвестен; повторите тот же запрос, чтобы проверить его без дублирования.`);
+      }
+      throw cause;
+    }
   }
 
   async function loadEditableTurns(cursor?: string): Promise<MobileEditableTurns> {
@@ -751,7 +813,9 @@ export default function App() {
     authScope.current = { generation: authScope.current.generation + 1, deviceId: nextDevice.id };
     snapshotRequest.current = undefined;
     setDraftsBySession({});
+    setComposerDraftsBySession({});
     setDraftScopeEpoch((epoch) => epoch + 1);
+    submissionLocks.current.clear();
     setSnapshot(undefined);
     setSelectedProject("");
     setSelectedId("");
@@ -800,6 +864,9 @@ export default function App() {
         onCreateSection={createThreadSection} onRenameSection={renameThreadSection} onDeleteSection={deleteThreadSection}
         onMoveSession={moveSessionToSection} onUpdateReadState={updateSessionReadState} />
       <Conversation key={selectedId} session={selectedSession} draftText={draftsBySession[mobileDraftKey(device?.id ?? "", draftScopeEpoch, selectedId)] ?? ""}
+        composerDraft={composerDraftsBySession[mobileDraftKey(device?.id ?? "", draftScopeEpoch, selectedId)] ?? emptyMobileComposerDraft()}
+        submissionLock={submissionLockFor(selectedId)}
+        onComposerDraftChange={updateComposerDraft}
         sessionSwitchNotice={sessionSwitchNotice}
         onDraftTextChange={(sessionId, text) => setDraftsBySession((current) => setSessionDraft(current, mobileDraftKey(device?.id ?? "", draftScopeEpoch, sessionId), text))}
         onClearDraft={(sessionId, sentText) => setDraftsBySession((current) => clearSessionDraftIfUnchanged(current, mobileDraftKey(device?.id ?? "", draftScopeEpoch, sessionId), sentText))}

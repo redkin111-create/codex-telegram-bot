@@ -1,22 +1,17 @@
 import type {
   MobileAccountAction, MobileAccountsSnapshot, MobileActivity, MobileApproval, MobileAttachment, MobileCapabilities, MobileDevice, MobileElicitation, MobileElicitationAction, MobileFile, MobileFileListing, MobileGitConflictStages, MobileGitDiff, MobileGitStatus, MobileHistory, MobileOperation, MobileSnapshot,
 } from "./types.js";
-
-export class MobileApiError extends Error {
-  constructor(message: string, readonly status: number) {
-    super(message);
-    this.name = "MobileApiError";
-  }
-}
+import { MobileApiError, mobileApiErrorFromPayload } from "./lib/mobile-api-error.js";
+export { isConfirmedMobileSubmissionRejection, mobileSubmissionOutcome, MobileApiError } from "./lib/mobile-api-error.js";
 
 async function jsonRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
   if (init.body !== undefined) headers.set("Content-Type", "application/json");
   const response = await fetch(path, { ...init, headers, credentials: "same-origin", cache: "no-store" });
-  const payload = await response.json().catch(() => ({})) as { error?: unknown } & T;
+  const payload = await response.json().catch(() => ({})) as { error?: unknown; submissionOutcome?: unknown } & T;
   if (!response.ok) {
-    throw new MobileApiError(typeof payload.error === "string" ? payload.error : `Ошибка сервера (${response.status})`, response.status);
+    throw mobileApiErrorFromPayload(typeof payload.error === "string" ? payload.error : `Ошибка сервера (${response.status})`, response.status, payload);
   }
   return payload;
 }

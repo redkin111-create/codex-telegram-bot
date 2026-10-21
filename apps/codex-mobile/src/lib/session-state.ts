@@ -30,11 +30,26 @@ export function mobileDraftKey(deviceId: string, authEpoch: number, sessionId: s
 
 export class MobileSubmissionLock {
   private locked = false;
+  private uncertainSubmission = false;
+  private uncertainFingerprint?: string;
   private readonly activeAttachmentIds = new Set<string>();
   private readonly uncertainAttachmentIds = new Set<string>();
 
   get isLocked(): boolean {
     return this.locked;
+  }
+
+  get hasUncertainSubmission(): boolean {
+    return this.uncertainSubmission;
+  }
+
+  canRetryFingerprint(fingerprint: string): boolean {
+    return !this.uncertainSubmission || this.uncertainFingerprint === fingerprint;
+  }
+
+  markUncertainSubmission(fingerprint: string): void {
+    this.uncertainSubmission = true;
+    this.uncertainFingerprint = fingerprint;
   }
 
   tryAcquire(attachmentIds: readonly string[] = []): boolean {
@@ -44,9 +59,14 @@ export class MobileSubmissionLock {
     return true;
   }
 
-  release(): void {
+  release(outcome: "accepted" | "rejected" | "uncertain" = "uncertain"): void {
     this.locked = false;
-    for (const id of this.activeAttachmentIds) this.uncertainAttachmentIds.add(id);
+    this.uncertainSubmission = outcome === "uncertain";
+    if (outcome !== "uncertain") this.uncertainFingerprint = undefined;
+    for (const id of this.activeAttachmentIds) {
+      if (outcome === "uncertain") this.uncertainAttachmentIds.add(id);
+      else this.uncertainAttachmentIds.delete(id);
+    }
     this.activeAttachmentIds.clear();
   }
 
@@ -65,6 +85,17 @@ export class MobileSubmissionLock {
 export interface MobileAttachmentSnapshot {
   sessionId?: string;
   attachments: readonly MobileAttachment[];
+}
+
+export interface MobileComposerDraft {
+  images: PromptImage[];
+  attachments: MobileAttachment[];
+  mode: FollowUpMode;
+  appIds: string[];
+}
+
+export function emptyMobileComposerDraft(): MobileComposerDraft {
+  return { images: [], attachments: [], mode: "queue", appIds: [] };
 }
 
 export function mobileAttachmentsForCleanup(

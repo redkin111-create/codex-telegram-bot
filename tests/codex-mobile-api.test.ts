@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { asLiveEvent } from "../apps/codex-mobile/src/lib/live-event.js";
+import { isConfirmedMobileSubmissionRejection, mobileApiErrorFromPayload, mobileSubmissionOutcome } from "../apps/codex-mobile/src/lib/mobile-api-error.js";
 
 const sessionId="11111111-1111-4111-8111-111111111111";
 
@@ -55,4 +56,20 @@ test("mobile SSE exposes only an MCP elicitation signal, never its form values o
     id:11,sessionId,kind:"elicitation",at:126,label:"Open <img onerror=alert(1)>",
   })});
   assert.equal(unsafe,undefined);
+});
+
+test("mobile API marks a refusal only when the server explicitly confirms it",()=>{
+  const genericClientError=mobileApiErrorFromPayload("Доступ запрещён",403,{error:"Доступ запрещён"});
+  const serverConfirmedRejection=mobileApiErrorFromPayload("Codex сейчас офлайн",502,{
+    error:"Codex сейчас офлайн",submissionOutcome:"rejected",
+  });
+  const malformedMarker=mobileApiErrorFromPayload("Unexpected",400,{submissionOutcome:true});
+
+  assert.equal(isConfirmedMobileSubmissionRejection(genericClientError),false,
+    "an HTTP status by itself must not clear attachment protection");
+  assert.equal(isConfirmedMobileSubmissionRejection(serverConfirmedRejection),true);
+  assert.equal(isConfirmedMobileSubmissionRejection(malformedMarker),false);
+  assert.equal(mobileSubmissionOutcome(new DOMException("Request aborted", "AbortError")),"uncertain",
+    "client-side aborts do not prove the server rejected a submitted task");
+  assert.equal(mobileSubmissionOutcome(serverConfirmedRejection),"rejected");
 });
