@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { MobileAuthStore } from "../src/mobile/auth.js";
+import { MobileAttachmentStore } from "../src/mobile/attachments.js";
 import { MobileSubmissionRejectedError } from "../src/mobile/submission.js";
 import type { MobileAccountController } from "../src/mobile/accounts.js";
 import { createMobileServer, type MobileServerOptions } from "../src/mobile/server.js";
@@ -700,6 +701,64 @@ test("mobile attachment upload rejects foreign sessions, unsupported binaries an
     const relativePath = relative(join(f.dataDir, "telegram-incoming"), prepared.path!);
     assert.ok(relativePath && !relativePath.startsWith(".."));
     assert.equal(JSON.stringify(descriptor).includes(prepared.path), false);
+  } finally { await cleanup(f.server, f.dataDir); }
+});
+
+test("device logout and revocation remove unclaimed uploads but preserve claimed files", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "codex-mobile-attachment-cleanup-"));
+  try {
+    const store = new MobileAttachmentStore(dataDir);
+    const pdf = Buffer.from("%PDF-1.7\nfixture document");
+    const pending = await store.add(101, "device-one", allowedSession, "pending.pdf", "application/pdf", pdf);
+    const claimed = await store.add(101, "device-one", allowedSession, "claimed.pdf", "application/pdf", pdf);
+    await store.resolveForPrompt(101, "device-one", allowedSession, [claimed.id], "mobile-claimed-request-001");
+
+    await store.clearUnclaimedForDevice(101, "device-one");
+
+    const files = await readdir(join(dataDir, "telegram-incoming"));
+    assert.equal(files.length, 1);
+    assert.match(files[0]!, /claimed\.pdf$/);
+    assert.doesNotMatch(files[0]!, /pending\.pdf$/);
+  } finally { await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test("mobile logout and device revocation clean their unclaimed uploads", async () => {
+  const f = await startFixture();
+  try {
+    const first = await pair(f.origin, f.auth);
+    const second = await pair(f.origin, f.auth);
+    const pdf = Buffer.from("%PDF-1.7\nfixture document");
+    const upload = async (login: Awaited<ReturnType<typeof pair>>, name: string) => {
+      const url = new URL("/api/attachments", f.origin);
+      url.searchParams.set("sessionId", allowedSession);
+      url.searchParams.set("name", name);
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { origin: f.origin, cookie: login.sessionCookie, "x-csrf-token": login.csrfToken, "content-type": "application/pdf" },
+        body: pdf,
+      });
+      assert.equal(response.status, 201);
+    };
+    const incoming = join(f.dataDir, "telegram-incoming");
+    await upload(first, "first.pdf");
+    await upload(second, "second.pdf");
+    assert.equal((await readdir(incoming)).length, 2);
+
+    const revoke = await fetch(`${f.origin}/api/devices/${second.deviceId}`, {
+      method: "DELETE",
+      headers: { origin: f.origin, cookie: first.sessionCookie, "x-csrf-token": first.csrfToken },
+    });
+    assert.equal(revoke.status, 200);
+    const afterRevoke = await readdir(incoming);
+    assert.equal(afterRevoke.length, 1);
+    assert.match(afterRevoke[0]!, /first\.pdf$/);
+
+    const logout = await fetch(f.origin + "/api/logout", {
+      method: "POST",
+      headers: { origin: f.origin, cookie: first.sessionCookie, "x-csrf-token": first.csrfToken },
+    });
+    assert.equal(logout.status, 200);
+    assert.deepEqual(await readdir(incoming), []);
   } finally { await cleanup(f.server, f.dataDir); }
 });
 

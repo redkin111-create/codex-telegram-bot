@@ -373,6 +373,7 @@ export function createMobileServer(options: MobileServerOptions): Server {
       return;
     }
     if (path === "/api/logout" && method === "POST") {
+      await attachments.clearUnclaimedForDevice(device.ownerId, device.id);
       options.auth.revokeDevice(device.ownerId, device.id);
       clearCookie(res, SESSION_COOKIE);
       clearCookie(res, CSRF_COOKIE, false);
@@ -386,6 +387,7 @@ export function createMobileServer(options: MobileServerOptions): Server {
     const revoke = /^\/api\/devices\/([a-f0-9-]{36})$/.exec(path);
     if (revoke && method === "DELETE") {
       const revoked = options.auth.revokeDevice(device.ownerId, revoke[1]!);
+      if (revoked) await attachments.clearUnclaimedForDevice(device.ownerId, revoke[1]!);
       json(res, revoked ? 200 : 404, revoked ? { revoked: true } : { error: "Устройство не найдено" });
       return;
     }

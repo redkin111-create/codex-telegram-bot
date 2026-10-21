@@ -196,6 +196,17 @@ export class MobileAttachmentStore {
     return true;
   }
 
+  async clearUnclaimedForDevice(ownerId: number, deviceId: string): Promise<void> {
+    for (const [id, entry] of this.entries) {
+      if (entry.ownerId !== ownerId || entry.deviceId !== deviceId || entry.claimedBy) continue;
+      this.entries.delete(id);
+      if (entry.path && this.dataDir) await removeIncomingAttachment(this.dataDir, entry.path);
+    }
+    for (const [key, request] of this.resolvedRequests) {
+      if (request.ownerId === ownerId && request.deviceId === deviceId) this.resolvedRequests.delete(key);
+    }
+  }
+
   private descriptor(entry: StoredMobileAttachment, kind: MobileAttachmentDescriptor["kind"]): MobileAttachmentDescriptor {
     return { id: entry.id, name: entry.name, size: entry.size, kind };
   }
