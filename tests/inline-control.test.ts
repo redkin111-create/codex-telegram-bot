@@ -609,7 +609,21 @@ test("failed attach restores the previous watch-only watcher and keeps its pendi
     assert.equal(controller.count(), 1);
     assert.equal(controller.list()[0]?.sessionId, original.sessionId);
     assert.equal(original.isWatching, true);
-    assert.equal((await controller.submitPrompt(textPrompt("второе сообщение"))).kind, "blocked");
+    const mobileAttachment = join(incoming, "mobile-retry.txt");
+    writeFileSync(mobileAttachment, "keep for mobile retry", "utf8");
+    const mobileRetry = textPrompt("второе сообщение с мобильным файлом");
+    mobileRetry.attachmentPaths = [mobileAttachment];
+    assert.equal((await controller.submitPrompt(mobileRetry, { preserveAttachmentsOnBlocked: true })).kind, "blocked");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(existsSync(mobileAttachment), true, "a blocked mobile upload stays available for editing or retry");
+
+    const telegramAttachment = join(incoming, "telegram-blocked.txt");
+    writeFileSync(telegramAttachment, "discard the blocked Telegram upload", "utf8");
+    const telegramRetry = textPrompt("заблокированная Telegram отправка");
+    telegramRetry.attachmentPaths = [telegramAttachment];
+    assert.equal((await controller.submitPrompt(telegramRetry)).kind, "blocked");
+    for (let i = 0; existsSync(telegramAttachment) && i < 100; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(existsSync(telegramAttachment), false, "default Telegram cleanup remains unchanged");
     assert.equal(existsSync(attachment), true);
   } finally {
     controller.dispose();
@@ -660,6 +674,48 @@ test("watch-only exits on controlled-session switches, attach, resume, and new s
     assert.equal(watchedForNew.isWatching, false);
     assert(controller.count() >= 4);
     assert(a.sessionId);
+  } finally {
+    controller.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("switching to the restored foreground session rebinds it to the current Codex runtime", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-tg-restored-foreground-"));
+  const sessionId = "restored-session";
+  const resumed: Array<{ id: string; cwd: string }> = [];
+  const acp = Object.assign(new EventEmitter(), {
+    loadSession: async (id: string, cwd: string) => { resumed.push({ id, cwd }); },
+  }) as unknown as AcpClient;
+  Object.defineProperty(acp, "supportsLoadSession", { value: true });
+  let currentSettings = {
+    ...defaultSettings(),
+    projectPath: dir,
+    projectName: "project",
+    sessionId,
+    controlledSessions: [{ sessionId, projectPath: dir, projectName: "project" }],
+    foregroundSessionId: sessionId,
+  };
+  const settings = {
+    get: () => currentSettings,
+    update: (_id: number, patch: Partial<typeof currentSettings>) => { currentSettings = { ...currentSettings, ...patch }; },
+  };
+  const controller = new ChatController(
+    { sendMessage: async () => ({ message_id: 1 }) } as never,
+    505,
+    acp,
+    { workspace: dir, dataDir: dir } as AppConfig,
+    settings as never,
+    { jsonlPath: (id: string) => join(dir, `${id}.jsonl`) } as never,
+    () => {},
+    () => {},
+  );
+
+  try {
+    assert(controller.runtimeForSession(sessionId));
+    const result = await controller.switchTo(sessionId);
+    assert.equal(result?.alreadyForeground, true);
+    assert.deepEqual(resumed, [{ id: sessionId, cwd: dir }]);
   } finally {
     controller.dispose();
     rmSync(dir, { recursive: true, force: true });

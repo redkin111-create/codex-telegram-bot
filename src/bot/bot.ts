@@ -76,6 +76,9 @@ export interface BotBundle {
   registry: RuntimeRegistry;
   scheduler: Scheduler;
   updater: Updater;
+  accounts: AccountManager;
+  usage: UsageService;
+  accountRotator: AccountRotatorImpl;
 }
 
 export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBundle> {
@@ -278,5 +281,5 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
   // Remove any navigation surface left over from before a restart.
   void deps.ephemeral.cleanupAll().catch(() => {});
 
-  return { bot, registry, scheduler: new Scheduler(tasks, taskRunner), updater };
+  return { bot, registry, scheduler: new Scheduler(tasks, taskRunner), updater, accounts, usage, accountRotator };
 }

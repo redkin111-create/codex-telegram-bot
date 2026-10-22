@@ -187,7 +187,9 @@ export function loadConfig(): AppConfig {
   const cfg: AppConfig = {
     token,
     allowedUsers: new Set(allowedUsers),
-    codexCliPath: resolveCodexPath(process.env.CODEX_CLI_PATH?.trim()),
+    codexCliPath: resolveCodexPath(process.env.CODEX_CLI_PATH?.trim(), {
+      requireCodeModeHost: bool(process.env.CODEX_MOBILE_ENABLED, false),
+    }),
     codexHome,
     workspace,
     agent: process.env.CODEX_AGENT?.trim() || undefined,
@@ -241,12 +243,11 @@ export function loadConfig(): AppConfig {
  * npm install exposes a `codex.cmd` shim (the native `codex.exe` is buried in a
  * vendor dir), so a bare `spawn("codex")` fails with ENOENT — resolving the
  * real path here (and launching via a shell, see {@link codexLaunch}) fixes it. */
-export function resolveCodexPath(explicit?: string): string {
-  if (explicit) return expandHome(explicit);
-
-  const onPath = whichCodex();
-  if (onPath) return onPath;
-
+export function resolveCodexPath(
+  explicit?: string,
+  options: { requireCodeModeHost?: boolean } = {},
+): string {
+  const requested = explicit ? expandHome(explicit) : undefined;
   const win = process.platform === "win32";
   const nodeDir = dirname(process.execPath); // nvm/npm often place shims next to node
   const appData = process.env.APPDATA;
@@ -267,10 +268,26 @@ export function resolveCodexPath(explicit?: string): string {
         "/opt/homebrew/bin/codex",
         "/usr/bin/codex",
       ];
-  for (const c of candidates) {
-    if (existsSync(c)) return c;
+  const discovered = whichCodex();
+  const ordered = [...new Set([requested, discovered, ...candidates].filter((value): value is string => !!value))];
+  const found = ordered.filter((candidate) => existsSync(candidate));
+  if (options.requireCodeModeHost) {
+    const compatible = found.find(hasCodexCodeModeHost);
+    if (compatible) return compatible;
+    const host = win ? "codex-code-mode-host.exe" : "codex-code-mode-host";
+    const checked = found.length > 0 ? found.join(", ") : (requested ?? "PATH");
+    throw new Error(
+      `Codex Mobile requires a Codex CLI installation with its companion code-mode host (${host}); none was found beside the detected CLI (${checked}). Update Codex or set CODEX_CLI_PATH to a complete installation, then restart.`,
+    );
   }
-  return "codex"; // last resort — PATH lookup at spawn time
+
+  // Keep a configured path when no better installed candidate is available.
+  return found[0] ?? requested ?? "codex"; // last resort — PATH lookup at spawn time
+}
+
+export function hasCodexCodeModeHost(codexPath: string): boolean {
+  const filename = process.platform === "win32" ? "codex-code-mode-host.exe" : "codex-code-mode-host";
+  return existsSync(join(dirname(codexPath), filename));
 }
 
 /** Locate `codex` on PATH via the OS resolver (respects Windows PATHEXT). */

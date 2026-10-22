@@ -8,6 +8,7 @@ import { join } from "node:path";
 import type { AppConfig } from "../src/config.js";
 import type { AcpClient } from "../src/acp/client.js";
 import type { RuntimeRegistry } from "../src/bot/registry.js";
+import { MiniAppAgent } from "../src/tma/agent.js";
 import { enabledLocalTma, startLocalTma } from "../src/tma/local.js";
 
 function sign(token: string, userId: number): string {
@@ -48,8 +49,11 @@ test("Local bot service starts a localhost gateway and serves Codex sessions end
     controller:()=>controller,
     get:()=>runtime,
   } as unknown as RuntimeRegistry;
-  const svc=await startLocalTma(cfg,acp,registry,{port:0});
+  const sharedAgent=new MiniAppAgent({cfg,acp,registry},"http://127.0.0.1:3301","test-secret-that-is-long-enough-to-pass-validation");
+  const svc=await startLocalTma(cfg,acp,registry,{port:0,agent:sharedAgent});
   try {
+    assert.equal(svc.agent,sharedAgent,"mobile and Telegram Mini App must share one agent adapter");
+    assert.ok(svc.feed,"the local feed should be available to other local clients");
     assert(svc.origin.startsWith("http://127.0.0.1:"));
     for(let i=0;i<150;i++){
       const health=await fetch(svc.origin+"/api/health").then(x=>x.json()) as {online:boolean};

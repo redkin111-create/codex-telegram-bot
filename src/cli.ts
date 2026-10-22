@@ -10,8 +10,9 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ENV_PATH, INSTANCE_DIR, PROJECT_ROOT } from "./config.js";
+import { ENV_PATH, INSTANCE_DIR, PROJECT_ROOT, loadConfig } from "./config.js";
 import { buildLaunchSpec, getController } from "./service/index.js";
+import { approveMobilePairing } from "./mobile/control.js";
 
 const HELP = `Codex Telegram Bot — CLI
 
@@ -27,6 +28,7 @@ Usage: codex-tg <command>
   restart             Restart the service
   status              Show install + running status
   logs [n]            Show the last n log lines (default 100)
+  mobile approve <code> [owner-id]  Approve a phone pairing on this computer
   help                Show this help
 `;
 
@@ -85,6 +87,10 @@ async function main(): Promise<void> {
       printLogs(arg ? Number(arg) || 100 : 100);
       break;
 
+    case "mobile":
+      await mobileCommand(args.slice(1));
+      break;
+
     case "help":
     case "--help":
     case "-h":
@@ -96,6 +102,21 @@ async function main(): Promise<void> {
       console.log(HELP);
       process.exit(1);
   }
+}
+
+async function mobileCommand(args: string[]): Promise<void> {
+  const [action, code, ownerText] = args;
+  if (action !== "approve" || !code) {
+    throw new Error("Usage: codex-tg mobile approve <code> [owner-id]");
+  }
+  const cfg = loadConfig();
+  const allowed = [...cfg.allowedUsers];
+  const ownerId = ownerText ? Number(ownerText) : allowed.length === 1 ? Number(allowed[0]) : NaN;
+  if (!Number.isSafeInteger(ownerId) || !allowed.includes(String(ownerId))) {
+    throw new Error("Укажите owner ID из ALLOWED_USERS: codex-tg mobile approve <code> <owner-id>");
+  }
+  await approveMobilePairing({ code, ownerId, dataDir: cfg.dataDir });
+  console.log(`Устройство подтверждено для owner ${ownerId}.`);
 }
 
 function preflight(): void {

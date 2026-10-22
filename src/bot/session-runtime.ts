@@ -185,6 +185,11 @@ export class SessionRuntime {
   get isBusy(): boolean {
     return this.busy;
   }
+  /** True when changing the shared Codex login could interrupt pending work. */
+  get hasPendingWork(): boolean {
+    return this.busy || Boolean(this.sessionInitialization) || this.queueDispatching
+      || Boolean(this.queueInFlight) || this.queue.length > 0;
+  }
   /** Closing is safe only when neither a turn, session attach, queued
    * dispatch nor live watch can still produce callbacks for this runtime. */
   get canClose(): boolean {
@@ -195,7 +200,11 @@ export class SessionRuntime {
     return this.queue.length;
   }
   get queuedPrompts(): QueuedPrompt[] {
-    return this.queue.map(({ id, input }) => ({ id, input: { ...input, images: [...input.images] } }));
+    return this.queue.map(({ id, input }) => ({ id, input: {
+      ...input,
+      images: [...input.images],
+      ...(input.localImages ? { localImages: [...input.localImages] } : {}),
+    } }));
   }
   get isQueuePaused(): boolean {
     return this.queuePaused;
@@ -408,16 +417,19 @@ export class SessionRuntime {
     return { ok: true };
   }
 
-  async setAgentPref(agent: string): Promise<void> {
+  async setAgentPref(agent: string): Promise<{ ok: boolean; error?: string }> {
     this.settings.update(this.chatId, { agent });
     if (agent && this.sessionLive && this.sessionId && this.acp.hasMode(agent)) {
       try {
         await this.acp.setMode(this.sessionId, agent);
       } catch (e) {
         log.warn(`set_mode(${agent}) failed: ${(e as Error).message}`);
+        this.changed();
+        return { ok: false, error: (e as Error).message };
       }
     }
     this.changed();
+    return { ok: true };
   }
 
   setReasoningPref(effort: ReasoningEffort): void {

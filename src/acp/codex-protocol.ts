@@ -55,6 +55,34 @@ export interface CodexThreadResponse {
   thread: CodexThread;
 }
 
+export interface CodexThreadForkResponse {
+  thread: CodexThread & Partial<CodexThreadSummary>;
+  cwd?: string;
+  model?: string;
+  modelProvider?: string;
+}
+
+export type CodexReviewTarget =
+  | { type: "uncommittedChanges" }
+  | { type: "baseBranch"; branch: string }
+  | { type: "commit"; sha: string; title?: string }
+  | { type: "custom"; instructions: string };
+export type CodexReviewDelivery = "inline" | "detached";
+export interface CodexReviewStartResponse { reviewThreadId: string; turn: CodexTurn; }
+
+export type CodexThreadGoalStatus = "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete";
+
+export interface CodexThreadGoal {
+  threadId: string;
+  objective: string;
+  status: CodexThreadGoalStatus;
+  tokenBudget: number | null;
+  tokensUsed: number;
+  timeUsedSeconds: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface CodexThreadResumeParams {
   threadId: string;
 }
@@ -101,6 +129,16 @@ export type CodexThreadSource =
   | { custom: string }
   | { subAgent: CodexSubAgentSource };
 
+/** User-created sidebar section returned by Codex app-server. */
+export const CODEX_PINNED_THREAD_SECTION_ID = "01984de2-8f74-7c91-a3b2-5c5e937cf318";
+export const CODEX_PINNED_THREAD_SECTION_NAME = "Pinned";
+
+export interface CodexThreadSection {
+  id: string;
+  name: string;
+  appearance?: { icon?: string | null; color?: string | null } | null;
+}
+
 export interface CodexThreadSummary {
   id: string;
   sessionId?: string;
@@ -113,9 +151,54 @@ export interface CodexThreadSummary {
   recencyAt: number | null;
   status?: string | { type?: string };
   source?: CodexThreadSource;
+  /** Current model selection when the running app-server exposes it. */
+  model?: string | null;
+  /** Current reasoning effort when the running app-server exposes it. */
+  reasoningEffort?: string | null;
   projectId?: string;
   parentThreadId?: string;
+  section?: CodexThreadSection | null;
   ephemeral?: boolean;
+  /** Present only when the app-server exposes native read-state receipts. */
+  readStateMetadataAvailable?: boolean;
+  readStateEligible?: boolean;
+  readState?: CodexThreadReadState;
+}
+
+export interface CodexThreadSettingsUpdateParams {
+  threadId: string;
+  model?: string | null;
+  effort?: string | null;
+  collaborationMode?: {
+    mode: "default" | "plan";
+    settings: { model: string; reasoning_effort: string | null; developer_instructions: string | null };
+  } | null;
+}
+
+export type CodexThreadUnreadPosition =
+  | { type: "threadStart" }
+  | { type: "turn"; turnId: string };
+
+export interface CodexThreadReadState {
+  firstUnread: CodexThreadUnreadPosition | null;
+  revision: string;
+}
+
+/** Accept only the small, documented read-state shape returned by app-server. */
+export function parseCodexThreadReadState(value: unknown): CodexThreadReadState | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const state = value as Record<string, unknown>;
+  if (typeof state.revision !== "string" || !state.revision || state.revision.length > 512) return undefined;
+  let firstUnread: CodexThreadUnreadPosition | null;
+  if (state.firstUnread === null) firstUnread = null;
+  else if (state.firstUnread && typeof state.firstUnread === "object" && !Array.isArray(state.firstUnread)) {
+    const position = state.firstUnread as Record<string, unknown>;
+    if (position.type === "threadStart") firstUnread = { type: "threadStart" };
+    else if (position.type === "turn" && typeof position.turnId === "string" && position.turnId.length > 0 && position.turnId.length <= 200) {
+      firstUnread = { type: "turn", turnId: position.turnId };
+    } else return undefined;
+  } else return undefined;
+  return { firstUnread, revision: state.revision };
 }
 
 export interface CodexThreadListParams {
@@ -134,6 +217,32 @@ export interface CodexThreadListResponse {
   threads?: CodexThreadSummary[];
   data?: CodexThreadSummary[];
   nextCursor?: string | null;
+  readStates?: Record<string, unknown> | null;
+}
+
+export interface CodexBackgroundTerminal {
+  itemId: string;
+  processId: string;
+}
+
+export interface CodexMobileEditableTurn {
+  turnId: string;
+  text: string;
+  skillNames: string[];
+  /** Opaque Codex App IDs; never expose native app:// paths to the browser. */
+  appIds?: string[];
+  attachmentCount: number;
+  editable: boolean;
+  /** Server-only replay data. MiniAppAgent must omit these fields from browser responses. */
+  resendImages?: Array<{ mimeType: string; data: string }>;
+  resendLocalImages?: string[];
+}
+
+export interface CodexMobileEditableTurnsPage {
+  latestTurnId?: string;
+  turns: CodexMobileEditableTurn[];
+  /** Raw app-server cursor; MiniAppAgent must replace it with an owner-scoped opaque reference. */
+  nextCursor?: string;
 }
 
 // ── turns ────────────────────────────────────────────────────────────────────
@@ -141,7 +250,9 @@ export interface CodexThreadListResponse {
 export type CodexUserInput =
   | { type: "text"; text: string }
   | { type: "image"; url: string }
-  | { type: "localImage"; path: string };
+  | { type: "localImage"; path: string }
+  | { type: "skill"; name: string; path: string }
+  | { type: "mention"; name: string; path: string };
 
 export interface CodexTurnStartParams {
   threadId: string;
@@ -327,14 +438,23 @@ export interface CodexSkillInfo {
   description?: string;
   path?: string;
   enabled?: boolean;
+  scope?: "user" | "repo" | "system" | "admin";
 }
 
 export interface CodexMcpServerStatus {
   name: string;
+  runtimeStatus?: "notStarted" | "starting" | "connected" | "authenticationRequired" | "failed" | "cancelled" | "disabled" | null;
+  serverInfo?: { name?: string | null; version?: string | null } | null;
   tools?: Record<string, unknown>;
+  toolsError?: string | null;
   resources?: unknown[];
   resourceTemplates?: unknown[];
   authStatus?: unknown;
+}
+
+export interface CodexMcpElicitationResponse {
+  action: "accept" | "decline" | "cancel";
+  content: Record<string, unknown> | null;
 }
 
 export interface CodexAccountInfo {

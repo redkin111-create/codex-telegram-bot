@@ -30,6 +30,8 @@ export interface AccountRotator {
   activate(id: string): Promise<void>;
   /** Hold the process-global credential lock through switch, restart and use. */
   runExclusive<T>(id: string, operation: () => Promise<T>): Promise<T>;
+  /** Hold the same process-global credential lock without switching the account. */
+  runLocked<T>(operation: () => Promise<T>): Promise<T>;
 }
 
 export class AccountRotatorImpl implements AccountRotator {
@@ -56,12 +58,18 @@ export class AccountRotatorImpl implements AccountRotator {
   }
 
   async runExclusive<T>(id: string, operation: () => Promise<T>): Promise<T> {
+    return this.runLocked(async () => {
+      await this.activateExclusive(id);
+      return operation();
+    });
+  }
+
+  async runLocked<T>(operation: () => Promise<T>): Promise<T> {
     let release!: () => void;
     const previous = this.activationTail;
     this.activationTail = new Promise<void>((resolve) => { release = resolve; });
     await previous;
     try {
-      await this.activateExclusive(id);
       return await operation();
     } finally {
       release();

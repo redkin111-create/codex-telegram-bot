@@ -9,6 +9,8 @@ highly sensitive.
 ### Required hardening
 
 1. **Always set `ALLOWED_USERS`.** With it empty, startup is refused (fail closed). Set it to your own numeric Telegram ID(s).
+   Codex Mobile checks this list for existing paired devices too. After changing
+   the configuration, restart the service to apply the new list.
 2. **Use a private Telegram chat only.** The bot ignores group/channel messages even from allowed user IDs, to keep code and tokens out of shared chats.
 3. **Keep `.env` private.** It contains your bot token. It is git-ignored by
    default — never commit it.
@@ -23,9 +25,14 @@ highly sensitive.
 
 ### What the bot does NOT do
 
-- It does not transmit your code or secrets anywhere except to Telegram (your
-  messages) and to Codex CLI (which talks to its own backend).
-- It does not open any inbound network port.
+- Enabled interfaces send conversation output and requested files to authorized
+  Telegram chats and paired browsers. Codex CLI contacts its backend; optional
+  speech-to-text and MCP integrations contact their configured services.
+- The Telegram-only bot does not need an inbound HTTP port. Optional Mini App
+  and Codex Mobile services open HTTP listeners on loopback by default.
+  A reverse proxy or Tailscale Funnel can make those services reachable from
+  the internet; their authentication must remain enabled. `TMA_HOST` can change
+  the Mini App listener address, so keep it on loopback when using a local proxy.
 - It does not intentionally commit or log `.env` secrets. Codex still has the host user's effective filesystem permissions: review commands and keep secrets outside the workspace.
 
 ## Reporting a vulnerability

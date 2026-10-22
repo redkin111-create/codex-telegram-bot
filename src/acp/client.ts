@@ -9,14 +9,23 @@
  * unchanged. The class name `AcpClient` is kept for import compatibility.
  */
 import { type ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { statSync } from "node:fs";
+import { isAbsolute } from "node:path";
+import { REASONING_LEVELS, type ReasoningEffort } from "../app/types.js";
 import { codexLaunchInfo, codexSpawn } from "../app/codex-cli.js";
+import { hasCodexCodeModeHost } from "../config.js";
 import { createLogger } from "../logger.js";
 import { killPid } from "../sessions/process.js";
 import { AcpError, isAccountExhaustedError, isContextExhaustedError, isTransientAcpError, toAcpError } from "./errors.js";
+import { mobileMcpResourceUriMatchesTemplate, normalizeMobileMcpResourceResult, normalizeMobileMcpToolResult, validateMobileMcpArguments } from "./mobile-mcp.js";
 import { decideApproval, decidePermissionsApproval } from "./approvals.js";
 import { handleServerRequest, type ServerHandlerOptions } from "./server-handlers.js";
 import { JsonRpcTransport } from "./transport.js";
+import { installedPluginExists, resolveRemotePluginInstall } from "./plugins.js";
+import { requireManagedMarketplace, validateMobileMarketplaceRef, validateMobileMarketplaceSource } from "./marketplaces.js";
+import { parseCodexThreadReadState } from "./codex-protocol.js";
 import {
   commandString,
   itemToUpdates,
@@ -32,12 +41,20 @@ import type {
   CodexCollaborationModeInfo,
   CodexCollaborationModeListResult,
   CodexItem,
+  CodexMcpElicitationResponse,
   CodexMcpServerStatus,
   CodexAccountInfo,
   CodexRateLimitSnapshot,
   CodexModelInfo,
   CodexModelListResult,
   CodexThreadResponse,
+  CodexThreadForkResponse,
+  CodexThreadGoal,
+  CodexThreadGoalStatus,
+  CodexReviewTarget,
+  CodexReviewDelivery,
+  CodexReviewStartResponse,
+  CodexUserInput,
   CodexTokenUsage,
   CodexTurn,
   CodexTurnResponse,
@@ -48,6 +65,12 @@ import type {
   CodexThreadListParams,
   CodexThreadListResponse,
   CodexThreadSummary,
+  CodexThreadReadState,
+  CodexThreadSection,
+  CodexThreadSettingsUpdateParams,
+  CodexBackgroundTerminal,
+  CodexMobileEditableTurn,
+  CodexMobileEditableTurnsPage,
 } from "./codex-protocol.js";
 import type {
   ContentBlock,
@@ -61,12 +84,130 @@ import type {
 } from "./types.js";
 
 const log = createLogger("codex:client");
+const MOBILE_APP_ID_PATTERN = /^[a-z0-9][a-z0-9_.:@-]{0,199}$/i;
+const MOBILE_EDITABLE_TURN_PAGE_SIZE = 20;
+const MOBILE_EDITABLE_TURN_MAX_PAGES = 500;
+const MOBILE_EDITABLE_TURN_CURSOR_MAX_LENGTH = 8192;
+
+function mobileAppRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function mobileAppList(value: unknown): Record<string, unknown>[] {
+  const data = mobileAppRecord(value)?.data;
+  return Array.isArray(data) ? data.flatMap((entry) => {
+    const app = mobileAppRecord(entry);
+    return app ? [app] : [];
+  }) : [];
+}
+
+function codexAppSlug(name: string): string {
+  return name.normalize("NFKD").toLowerCase()
+    .replace(/\p{M}/gu, "")
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function parseMobileEditableImage(url: unknown): { mimeType: string; data: string } | undefined {
+  if (typeof url !== "string") return undefined;
+  const match = /^data:(image\/(?:jpeg|png|webp));base64,((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?)$/i.exec(url);
+  if (!match) return undefined;
+  const mimeType = match[1]!.toLowerCase();
+  const data = match[2]!;
+  if (data.length < 16 || data.length > Math.ceil((1536 * 1024) / 3) * 4 + 4) return undefined;
+  const bytes = Buffer.from(data, "base64");
+  if (bytes.length < 16 || bytes.length > 1536 * 1024 || bytes.toString("base64") !== data) return undefined;
+  const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  const png = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  const webp = bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP";
+  if (!(mimeType === "image/jpeg" && jpeg || mimeType === "image/png" && png || mimeType === "image/webp" && webp)) return undefined;
+  return { mimeType, data };
+}
+
+function parseMobileEditableTurn(value: unknown, retainReplayData = false): CodexMobileEditableTurn | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.id !== "string" || !/^[a-z0-9_-]{8,128}$/i.test(record.id) || !Array.isArray(record.items)) return undefined;
+  const userMessages = record.items.filter((item) => item && typeof item === "object" &&
+    (item as Record<string, unknown>).type === "userMessage") as Array<Record<string, unknown>>;
+  if (userMessages.length !== 1 || !Array.isArray(userMessages[0]!.content)) return undefined;
+  const skillNames: string[] = [];
+  const appIds: string[] = [];
+  const appTokens: string[] = [];
+  const text: string[] = [];
+  const resendImages: Array<{ mimeType: string; data: string }> = [];
+  const resendLocalImages: string[] = [];
+  let attachmentCount = 0;
+  let hasUnsupportedContent = false;
+  for (const value of userMessages[0]!.content) {
+    if (!value || typeof value !== "object") { hasUnsupportedContent = true; continue; }
+    const item = value as Record<string, unknown>;
+    if (item.type === "text" && typeof item.text === "string") {
+      if (item.text_elements !== undefined && (!Array.isArray(item.text_elements) || item.text_elements.length > 0)) hasUnsupportedContent = true;
+      else text.push(item.text);
+    }
+    else if (item.type === "skill" && typeof item.name === "string" && /^[a-z0-9][a-z0-9._-]{0,79}$/i.test(item.name)) skillNames.push(item.name);
+    else if (item.type === "mention") {
+      const path = typeof item.path === "string" ? item.path : "";
+      const appId = path.startsWith("app://") ? path.slice("app://".length) : "";
+      const name = typeof item.name === "string"
+        ? item.name.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 160)
+        : "";
+      const slug = name ? codexAppSlug(name) : "";
+      if (!MOBILE_APP_ID_PATTERN.test(appId) || path !== `app://${appId}` || !slug) hasUnsupportedContent = true;
+      else {
+        appIds.push(appId);
+        appTokens.push(`$${slug}`);
+      }
+    }
+    else if (item.type === "image") {
+      attachmentCount++;
+      const image = parseMobileEditableImage(item.url);
+      if (!image || resendImages.length + resendLocalImages.length >= 5) hasUnsupportedContent = true;
+      else if (retainReplayData) resendImages.push(image);
+    }
+    else if (item.type === "localImage") {
+      attachmentCount++;
+      const path = item.path;
+      if (typeof path !== "string" || !path || path.length > 32768 || /[\u0000-\u001f\u007f]/.test(path) || !isAbsolute(path) || resendImages.length + resendLocalImages.length >= 5) {
+        hasUnsupportedContent = true;
+      } else if (retainReplayData) resendLocalImages.push(path);
+    }
+    else { attachmentCount++; hasUnsupportedContent = true; }
+  }
+  const joinedText = text.join("\n").trim();
+  const uniqueAppTokens = [...new Set(appTokens)];
+  const appTokenPrefix = uniqueAppTokens.length ? `${uniqueAppTokens.join(" ")}\n\n` : "";
+  const editableText = appTokenPrefix && joinedText.startsWith(appTokenPrefix)
+    ? joinedText.slice(appTokenPrefix.length).trim()
+    : joinedText;
+  const status = typeof record.status === "string" ? record.status : "";
+  const terminalTurn = status === "completed" || status === "interrupted" || status === "failed";
+  return {
+    turnId: record.id,
+    text: editableText,
+    skillNames: [...new Set(skillNames)],
+    ...(appIds.length ? { appIds: [...new Set(appIds)] } : {}),
+    attachmentCount,
+    ...(resendImages.length ? { resendImages } : {}),
+    ...(resendLocalImages.length ? { resendLocalImages } : {}),
+    editable: Boolean(joinedText) && !hasUnsupportedContent && terminalTurn,
+  };
+}
 
 /** Per-thread metadata (context usage %, effort, credits) surfaced to the UI. */
 export interface SessionMetadata {
   contextUsagePercentage?: number;
   effort?: string;
   credits?: number;
+}
+
+export interface CodexDeviceCodeLogin {
+  loginId: string;
+  verificationUrl: string;
+  userCode: string;
 }
 
 // Re-exported so existing importers of these from "../acp/client.js" keep working.
@@ -77,6 +218,8 @@ export interface AcpClientOptions {
   workspace: string;
   /** When true, run every command/edit with no approval prompts (full auto). */
   trustAllTools: boolean;
+  /** Expose Codex's local tool host for mobile skills and integrations. */
+  codeModeHost?: boolean;
   /** Allow network access in workspace-write mode without broadening file access. */
   networkAccess?: boolean;
   /** Optional CODEX_HOME override (config/sessions/auth live here). */
@@ -87,6 +230,13 @@ export interface AcpClientOptions {
   promptIdleTimeoutMs?: number;
   /** Optional absolute safety cap for a single turn; disabled by default. */
   promptMaxMs?: number;
+}
+
+export function buildAcpAppServerArgs(options: Pick<AcpClientOptions, "trustAllTools" | "codeModeHost">): string[] {
+  const args = ["app-server"];
+  if (!options.trustAllTools) args.push("--enable", "request_permissions_tool");
+  if (options.codeModeHost) args.push("--enable", "code_mode_host");
+  return args;
 }
 
 interface Pending {
@@ -154,14 +304,18 @@ export class AcpClient extends EventEmitter {
 
   private readonly metadata = new Map<string, SessionMetadata>();
   private readonly threadCwd = new Map<string, string>();
-  private readonly threadModel = new Map<string, string>();
-  private readonly threadMode = new Map<string, string>();
+  private readonly threadModel = new Map<string, string | null>();
+  private readonly threadMode = new Map<string, string | null>();
+  private readonly threadEffort = new Map<string, string | null>();
   private readonly collaborationModes = new Map<string, CodexCollaborationModeInfo>();
   private readonly subagents = new Map<string, SubagentInfo>();
+  /** Threads with an active native Codex realtime voice transport. */
+  private readonly realtimeThreads = new Set<string>();
   /** itemId -> threadId, so text/reasoning deltas route to the right thread. */
   private readonly itemThread = new Map<string, string>();
 
   permissionHandler?: (params: RequestPermissionParams) => Promise<PermissionOutcome>;
+  elicitationHandler?: (params: Record<string, unknown>) => Promise<CodexMcpElicitationResponse>;
 
   get isConnected(): boolean {
     return this.connected;
@@ -183,8 +337,10 @@ export class AcpClient extends EventEmitter {
   private async connect(): Promise<void> {
     this.connected = false;
     this.subagents.clear();
-    const args = ["app-server"];
-    if (!this.opts.trustAllTools) args.push("--enable", "request_permissions_tool");
+    const args = buildAcpAppServerArgs(this.opts);
+    if (this.opts.codeModeHost && !hasCodexCodeModeHost(this.opts.codexCliPath)) {
+      log.error("code-mode host is enabled, but its companion executable is missing beside the configured Codex CLI; set CODEX_CLI_PATH to a complete Codex installation");
+    }
     const env = { ...process.env } as NodeJS.ProcessEnv;
     if (this.opts.codexHome) env.CODEX_HOME = this.opts.codexHome;
     log.info(`spawning: ${codexLaunchInfo(this.opts.codexCliPath)} app-server`);
@@ -241,6 +397,519 @@ export class AcpClient extends EventEmitter {
   /** Load live Codex inventories. Each endpoint is independent and best-effort. */
   async refreshInventories(): Promise<void> {
     await Promise.all([this.loadModels(), this.loadCapabilities()]);
+  }
+
+  /** Best-effort plugin and app inventory from the already running app-server. */
+  async mobileIntegrationInventory(cwd?: string, threadId?: string): Promise<{
+    pluginCatalog?: unknown;
+    installedPlugins?: unknown;
+    apps?: unknown;
+    installedApps?: unknown;
+  }> {
+    const pluginParams = cwd ? { cwds: [cwd] } : {};
+    const appParams = { limit: 100, ...(threadId ? { threadId } : {}) };
+    const [pluginCatalog, installedPlugins, apps, installedApps] = await Promise.all([
+      this.request("plugin/list", pluginParams).catch(() => undefined),
+      this.request("plugin/installed", {}).catch(() => undefined),
+      this.request("app/list", appParams).catch(() => undefined),
+      this.request("app/installed", {}).catch(() => undefined),
+    ]);
+    return { pluginCatalog, installedPlugins, apps, installedApps };
+  }
+
+  /** Read only the plugin catalog needed by the mobile settings panel. */
+  async mobilePluginInventory(cwd?: string): Promise<{ pluginCatalog?: unknown; installedPlugins?: unknown }> {
+    const params = cwd ? { cwds: [cwd] } : {};
+    const [pluginCatalog, installedPlugins] = await Promise.all([
+      this.request("plugin/list", params).catch(() => undefined),
+      this.request("plugin/installed", {}).catch(() => undefined),
+    ]);
+    return { pluginCatalog, installedPlugins };
+  }
+
+  /** Read only the app catalog needed by the mobile composer. */
+  async mobileAppInventory(threadId: string): Promise<{ apps?: unknown; installedApps?: unknown }> {
+    const params = { limit: 100, threadId };
+    const [apps, installedApps] = await Promise.all([
+      this.request("app/list", params).catch(() => undefined),
+      this.request("app/installed", {}).catch(() => undefined),
+    ]);
+    return { apps, installedApps };
+  }
+
+  /** Add a remote marketplace through Codex's native configuration RPC. */
+  async addMobileMarketplace(sourceValue: string, refValue?: string): Promise<{ marketplaceName: string; alreadyAdded: boolean }> {
+    const source = validateMobileMarketplaceSource(sourceValue);
+    const refName = validateMobileMarketplaceRef(refValue);
+    let response: unknown;
+    try {
+      response = await this.request("marketplace/add", { source, ...(refName ? { refName } : {}) });
+    } catch {
+      throw new AcpError("Codex не смог добавить каталог плагинов");
+    }
+    await this.refreshInventories();
+    const marketplaceName = (response as { marketplaceName?: unknown } | undefined)?.marketplaceName;
+    if (typeof marketplaceName !== "string" || !marketplaceName || marketplaceName.length > 120 ||
+        /[\u0000-\u001f\u007f\\/:]/.test(marketplaceName)) {
+      throw new AcpError("Codex добавил каталог, но не вернул его имя; обновите список");
+    }
+    return { marketplaceName, alreadyAdded: (response as { alreadyAdded?: unknown }).alreadyAdded === true };
+  }
+
+  /** Remove only a named marketplace that the live global Codex catalog marks as manageable. */
+  async removeMobileMarketplace(marketplaceName: string): Promise<void> {
+    let catalog: unknown;
+    try { catalog = await this.request("plugin/list", {}); }
+    catch { throw new AcpError("Codex не смог проверить список каталогов плагинов"); }
+    const name = requireManagedMarketplace(catalog, marketplaceName);
+    try { await this.request("marketplace/remove", { marketplaceName: name }); }
+    catch { throw new AcpError("Codex не смог удалить каталог плагинов"); }
+    await this.refreshInventories();
+  }
+
+  /** Upgrade one marketplace after checking it is present in the current Codex catalog. */
+  async upgradeMobileMarketplace(marketplaceName: string): Promise<void> {
+    let catalog: unknown;
+    try { catalog = await this.request("plugin/list", {}); }
+    catch { throw new AcpError("Codex не смог проверить список каталогов плагинов"); }
+    const name = requireManagedMarketplace(catalog, marketplaceName);
+    try { await this.request("marketplace/upgrade", { marketplaceName: name }); }
+    catch { throw new AcpError("Codex не смог обновить каталог плагинов"); }
+    await this.refreshInventories();
+  }
+
+  /** Start Codex's native OAuth flow for one MCP server already configured in an authorized thread. */
+  async startMobileMcpOAuthLogin(name: string, threadId: string): Promise<{ authorizationUrl: string }> {
+    if (!name.trim() || name.length > 120 || !threadId.trim() || threadId.length > 128) {
+      throw new Error("Неверные параметры входа в MCP-сервер");
+    }
+    const response = await this.request("mcpServer/oauth/login", { name, threadId }) as { authorizationUrl?: unknown };
+    if (typeof response?.authorizationUrl !== "string") {
+      throw new AcpError("Codex не вернул ссылку для входа в MCP-сервер");
+    }
+    try {
+      const authorizationUrl = new URL(response.authorizationUrl);
+      if (authorizationUrl.protocol !== "https:" || authorizationUrl.username || authorizationUrl.password) {
+        throw new Error("unsafe URL");
+      }
+      return { authorizationUrl: authorizationUrl.href };
+    } catch {
+      throw new AcpError("Codex вернул небезопасную ссылку входа; разрешены только HTTPS-ссылки");
+    }
+  }
+
+  /** List Codex shell processes that are still running for one authorized thread. */
+  async listMobileBackgroundTerminals(threadId: string): Promise<CodexBackgroundTerminal[]> {
+    if (!/^[a-z0-9_-]{8,128}$/i.test(threadId)) throw new Error("Неверный сеанс Codex для списка фоновых процессов");
+    const byProcessId = new Map<string, CodexBackgroundTerminal>();
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 100; page++) {
+      const params = { threadId, limit: 100, ...(cursor ? { cursor } : {}) };
+      const response = await this.request("thread/backgroundTerminals/list", params) as {
+        data?: unknown;
+        nextCursor?: unknown;
+      };
+      if (!Array.isArray(response?.data)) throw new AcpError("Codex вернул неверный список фоновых процессов");
+      for (const value of response.data) {
+        if (!value || typeof value !== "object") continue;
+        const item = value as Record<string, unknown>;
+        if (typeof item.itemId !== "string" || !/^[a-z0-9_-]{1,200}$/i.test(item.itemId) ||
+            typeof item.processId !== "string" || !/^[a-z0-9._-]{1,128}$/i.test(item.processId)) continue;
+        byProcessId.set(item.processId, { itemId: item.itemId, processId: item.processId });
+      }
+      const next = typeof response.nextCursor === "string" && response.nextCursor.length <= 2048
+        ? response.nextCursor : undefined;
+      if (!next || next === cursor || seenCursors.has(next)) break;
+      seenCursors.add(next);
+      cursor = next;
+    }
+    return [...byProcessId.values()];
+  }
+
+  /** Terminate only a process Codex still reports as belonging to this thread. */
+  async terminateMobileBackgroundTerminal(threadId: string, processId: string): Promise<void> {
+    if (!/^[a-z0-9_-]{8,128}$/i.test(threadId) || !/^[a-z0-9._-]{1,128}$/i.test(processId)) {
+      throw new Error("Укажите фоновый процесс из списка сеанса Codex");
+    }
+    const processes = await this.listMobileBackgroundTerminals(threadId);
+    if (!processes.some((process) => process.processId === processId)) {
+      throw new AcpError("Фоновый процесс не найден в выбранном сеансе");
+    }
+    const result = await this.request("thread/backgroundTerminals/terminate", { threadId, processId }) as { terminated?: unknown };
+    if (result?.terminated !== true) throw new AcpError("Codex не подтвердил остановку фонового процесса");
+  }
+
+  /** Read only the newest user turn in a form that can be safely edited on mobile. */
+  async readMobileLatestEditableTurn(threadId: string): Promise<CodexMobileEditableTurn | undefined> {
+    if (!/^[a-z0-9_-]{8,128}$/i.test(threadId)) throw new Error("Неверный сеанс Codex для редактирования запроса");
+    const response = await this.request("thread/turns/list", {
+      threadId, limit: 1, sortDirection: "desc", itemsView: "full",
+    }) as { data?: unknown };
+    if (!Array.isArray(response?.data)) throw new AcpError("Codex вернул неверный список запросов");
+    return parseMobileEditableTurn(response.data[0]);
+  }
+
+  /** Read a bounded list of recent user turns, newest first, for safe mobile editing. */
+  async readMobileEditableTurns(threadId: string): Promise<CodexMobileEditableTurn[]> {
+    return (await this.readMobileEditableTurnsPage(threadId)).turns;
+  }
+
+  /** Read one native cursor page of editable user turns without exposing replay data. */
+  async readMobileEditableTurnsPage(threadId: string, cursor?: string): Promise<CodexMobileEditableTurnsPage> {
+    return await this.readMobileEditableTurnsPageInternal(threadId, cursor);
+  }
+
+  private async readMobileEditableTurnsPageInternal(threadId: string, cursor?: string, retainTurnId?: string): Promise<CodexMobileEditableTurnsPage> {
+    if (!/^[a-z0-9_-]{8,128}$/i.test(threadId)) throw new Error("Неверный сеанс Codex для редактирования запроса");
+    if (cursor !== undefined && (!cursor || cursor.length > MOBILE_EDITABLE_TURN_CURSOR_MAX_LENGTH)) {
+      throw new Error("Неверная страница истории Codex");
+    }
+    const response = await this.request("thread/turns/list", {
+      threadId, limit: MOBILE_EDITABLE_TURN_PAGE_SIZE, ...(cursor ? { cursor } : {}), sortDirection: "desc", itemsView: "full",
+    }) as { data?: unknown; nextCursor?: unknown };
+    if (!Array.isArray(response?.data)) throw new AcpError("Codex вернул неверный список запросов");
+    const turns = response.data.flatMap((turn) => {
+      const record = turn && typeof turn === "object" ? turn as Record<string, unknown> : undefined;
+      const parsed = parseMobileEditableTurn(turn, record?.id === retainTurnId);
+      return parsed ? [parsed] : [];
+    });
+    if (response.nextCursor !== undefined && response.nextCursor !== null &&
+        (typeof response.nextCursor !== "string" || !response.nextCursor || response.nextCursor.length > MOBILE_EDITABLE_TURN_CURSOR_MAX_LENGTH)) {
+      throw new AcpError("Codex вернул неверный указатель страницы запросов");
+    }
+    const nextCursor = typeof response.nextCursor === "string" ? response.nextCursor : undefined;
+    if (cursor && nextCursor === cursor) throw new AcpError("Codex повторил указатель страницы запросов");
+    return {
+      ...(!cursor && turns[0] ? { latestTurnId: turns[0].turnId } : {}),
+      turns,
+      ...(nextCursor ? { nextCursor } : {}),
+    };
+  }
+
+  /** Revalidate the selected turn and latest-turn snapshot before changing history. */
+  async revertMobileThread(
+    threadId: string,
+    beforeTurnId: string,
+    expectedLatestTurnId?: string,
+    appIds: string[] = [],
+    onBeforeRevert?: () => void,
+  ): Promise<CodexMobileEditableTurn> {
+    if (!/^[a-z0-9_-]{8,128}$/i.test(threadId) || !/^[a-z0-9_-]{8,128}$/i.test(beforeTurnId)) {
+      throw new Error("Неверный запрос для редактирования истории Codex");
+    }
+    let page = await this.readMobileEditableTurnsPageInternal(threadId, undefined, beforeTurnId);
+    const latestTurnId = page.latestTurnId;
+    if (!latestTurnId || (expectedLatestTurnId && latestTurnId !== expectedLatestTurnId)) {
+      throw new AcpError("История Codex изменилась. Обновите список запросов перед редактированием");
+    }
+    let selected = page.turns.find((turn) => turn.turnId === beforeTurnId);
+    let cursor = page.nextCursor;
+    const seenCursors = new Set<string>();
+    let pagesRead = 1;
+    while (!selected && cursor) {
+      if (pagesRead >= MOBILE_EDITABLE_TURN_MAX_PAGES || seenCursors.has(cursor)) {
+        throw new AcpError("Не удалось проверить выбранный старый запрос. Обновите список запросов и повторите попытку");
+      }
+      seenCursors.add(cursor);
+      page = await this.readMobileEditableTurnsPageInternal(threadId, cursor, beforeTurnId);
+      selected = page.turns.find((turn) => turn.turnId === beforeTurnId);
+      cursor = page.nextCursor;
+      pagesRead++;
+    }
+    if (!selected) throw new AcpError("Выбранный запрос больше не найден. Обновите список запросов перед редактированием");
+    if (!selected.editable) throw new AcpError("Выбранный запрос нельзя безопасно редактировать с телефона");
+    for (const path of selected.resendLocalImages ?? []) {
+      try {
+        if (!statSync(path).isFile()) throw new Error("not a file");
+      } catch {
+        throw new AcpError("Исходное изображение недоступно. История не изменена; восстановите вложение в Codex Desktop и повторите попытку");
+      }
+    }
+    await this.resolveMobileAppMentions(threadId, appIds.length ? appIds : selected.appIds ?? []);
+    onBeforeRevert?.();
+    const result = await this.request("thread/revert", { threadId, beforeTurnId }) as {
+      thread?: { id?: unknown };
+    };
+    if (result?.thread?.id !== threadId) throw new AcpError("Codex не подтвердил изменение истории сеанса");
+    return selected;
+  }
+
+  /** Read only the MCP connections already associated with one Codex thread. */
+  async listMobileMcpServers(threadId: string): Promise<CodexMcpServerStatus[]> {
+    const servers: CodexMcpServerStatus[] = [];
+    let cursor: string | undefined;
+    do {
+      const response = await this.request("mcpServerStatus/list", {
+        threadId, detail: "full", limit: 100, ...(cursor ? { cursor } : {}),
+      }) as { data?: CodexMcpServerStatus[]; nextCursor?: string | null };
+      servers.push(...(response?.data ?? []));
+      cursor = response?.nextCursor ?? undefined;
+    } while (cursor);
+    return servers;
+  }
+
+  /** Invoke one MCP tool on the already-connected Codex thread after a live catalog check. */
+  async callMobileMcpTool(
+    threadId: string,
+    serverName: string,
+    toolName: string,
+    argumentValue: unknown,
+  ): Promise<ReturnType<typeof normalizeMobileMcpToolResult>> {
+    if (!threadId.trim() || threadId.length > 128 || /[\u0000-\u001f\u007f]/.test(threadId) ||
+        !serverName.trim() || serverName.length > 120 || /[\u0000-\u001f\u007f]/.test(serverName) ||
+        !toolName.trim() || toolName.length > 120 || /[\u0000-\u001f\u007f]/.test(toolName)) {
+      throw new Error("Выберите MCP-сервер и инструмент из текущего сеанса Codex");
+    }
+    const argumentsValue = validateMobileMcpArguments(argumentValue);
+    const servers = await this.listMobileMcpServers(threadId);
+    const server = servers.find((entry) => entry.name === serverName);
+    if (!server || server.runtimeStatus !== "connected") {
+      throw new Error("Сервер MCP не подключён к выбранному сеансу Codex");
+    }
+    if (!server.tools || !Object.hasOwn(server.tools, toolName)) {
+      throw new Error("MCP-инструмент не найден в текущем каталоге сеанса Codex");
+    }
+    let response: unknown;
+    try {
+      response = await this.request("mcpServer/tool/call", {
+        threadId, server: serverName, tool: toolName, arguments: argumentsValue,
+      });
+    } catch {
+      throw new AcpError("Codex не смог выполнить MCP-инструмент");
+    }
+    return normalizeMobileMcpToolResult(response);
+  }
+
+  /** Read one MCP resource only after confirming it still belongs to the live thread catalog. */
+  async readMobileMcpResource(
+    threadId: string,
+    serverName: string,
+    uri: string,
+    uriTemplate?: string,
+  ): Promise<ReturnType<typeof normalizeMobileMcpResourceResult>> {
+    if (!threadId.trim() || threadId.length > 128 || /[\u0000-\u001f\u007f]/.test(threadId) ||
+        !serverName.trim() || serverName.length > 120 || /[\u0000-\u001f\u007f]/.test(serverName) ||
+        !uri.trim() || uri.length > 2048 || /[\u0000-\u001f\u007f]/.test(uri)) {
+      throw new Error("Выберите ресурс из текущего сеанса Codex");
+    }
+    const servers = await this.listMobileMcpServers(threadId);
+    const server = servers.find((entry) => entry.name === serverName);
+    if (!server || server.runtimeStatus !== "connected") {
+      throw new Error("Сервер MCP не подключён к выбранному сеансу Codex");
+    }
+    if (uriTemplate) {
+      if (!mobileMcpResourceUriMatchesTemplate(uriTemplate, uri) || !server.resourceTemplates?.some((entry) => {
+        return entry !== null && typeof entry === "object" && !Array.isArray(entry) &&
+          (entry as Record<string, unknown>).uriTemplate === uriTemplate;
+      })) {
+        throw new Error("MCP-шаблон не найден в текущем каталоге сеанса Codex");
+      }
+    } else if (!server.resources?.some((entry) => {
+      return entry !== null && typeof entry === "object" && !Array.isArray(entry) &&
+        (entry as Record<string, unknown>).uri === uri;
+    })) {
+      throw new Error("MCP-ресурс не найден в текущем каталоге сеанса Codex");
+    }
+    let response: unknown;
+    try {
+      response = await this.request("mcpServer/resource/read", { threadId, server: serverName, uri });
+    } catch {
+      throw new AcpError("Codex не смог прочитать MCP-ресурс");
+    }
+    return normalizeMobileMcpResourceResult(response);
+  }
+
+  /** Read the current skill inventory for one authorized project directory. */
+  async listMobileSkills(cwd: string): Promise<CodexSkillInfo[]> {
+    const response = await this.request("skills/list", { cwds: [cwd], forceReload: true }) as {
+      data?: Array<{ skills?: CodexSkillInfo[] }>;
+    };
+    return (response?.data ?? []).flatMap((entry) => entry.skills ?? [])
+      .filter((skill) => typeof skill.name === "string" && skill.name.length > 0);
+  }
+
+  /** Toggle one uniquely identified user/repo skill through Codex's config API. */
+  async setMobileSkillEnabled(name: string, enabled: boolean, cwd: string): Promise<boolean> {
+    if (!name.trim() || name.length > 160 || typeof enabled !== "boolean") {
+      throw new Error("Неверные параметры навыка Codex");
+    }
+    const matches = (await this.listMobileSkills(cwd)).filter((skill) => skill.name === name);
+    if (matches.length === 0) throw new Error("Навык не найден в текущем проекте Codex");
+    if (matches.length > 1) throw new Error("Навык нельзя однозначно выбрать по названию");
+    const skill = matches[0]!;
+    if (skill.scope !== "user" && skill.scope !== "repo") {
+      throw new Error("Этот навык управляется Codex или администратором, его нельзя менять с телефона");
+    }
+    const response = await this.request("skills/config/write", { name, enabled }) as { effectiveEnabled?: unknown };
+    if (typeof response?.effectiveEnabled !== "boolean") {
+      throw new AcpError("Codex не подтвердил итоговое состояние навыка");
+    }
+    return response.effectiveEnabled;
+  }
+
+  /** Resolve selected skill names to Codex-owned paths for explicit turn input. */
+  private async inputForThread(sessionId: string, content: ContentBlock[]): Promise<CodexUserInput[]> {
+    const input = toCodexInput(content);
+    const names = [...new Set(content
+      .filter((block) => block.type === "skill" && typeof block.name === "string")
+      .map((block) => block.name!.trim())
+      .filter(Boolean))];
+    const rawAppIds = content
+      .filter((block) => block.type === "appMention")
+      .map((block) => block.id);
+    if (rawAppIds.some((id) => typeof id !== "string" || !MOBILE_APP_ID_PATTERN.test(id))) {
+      throw new AcpError("Выбран неверный идентификатор Codex App");
+    }
+    const appIds = [...new Set(rawAppIds as string[])];
+
+    const { mentions, appTokens } = await this.resolveMobileAppMentions(sessionId, appIds);
+    if (names.length === 0 && appIds.length === 0) return input;
+
+    const cwd = this.threadCwd.get(sessionId);
+    if (names.length) {
+      if (!cwd) throw new AcpError("Для выбранного навыка не определена папка проекта Codex");
+      const inventory = await this.listMobileSkills(cwd);
+      for (const name of names) {
+        const matches = inventory.filter((skill) => skill.name === name);
+        if (matches.length !== 1 || matches[0]!.enabled === false || !matches[0]!.path) {
+          throw new AcpError("Выбранный навык Codex отключён, недоступен или неоднозначен");
+        }
+        input.push({ type: "skill", name, path: matches[0]!.path! });
+      }
+    }
+    if (mentions.length) {
+      const appTokenText = appTokens.join(" ");
+      const firstText = input.find((item): item is Extract<CodexUserInput, { type: "text" }> => item.type === "text");
+      if (firstText) firstText.text = `${appTokenText}\n\n${firstText.text}`;
+      else input.unshift({ type: "text", text: appTokenText });
+      input.push(...mentions);
+    }
+    return input;
+  }
+
+  /** Re-resolve every selected app against the live catalog for this exact Codex thread. */
+  private async resolveMobileAppMentions(sessionId: string, appIds: string[]): Promise<{
+    mentions: Array<Extract<CodexUserInput, { type: "mention" }>>;
+    appTokens: string[];
+  }> {
+    if (!appIds.length) return { mentions: [], appTokens: [] };
+    if (appIds.some((id) => !MOBILE_APP_ID_PATTERN.test(id))) {
+      throw new AcpError("Выбран неверный идентификатор Codex App");
+    }
+    const [catalog, installed] = await Promise.all([
+      this.request("app/list", { limit: 100, threadId: sessionId }).catch(() => undefined),
+      this.request("app/installed", {}).catch(() => undefined),
+    ]);
+    const catalogApps = mobileAppList(catalog);
+    const installedApps = mobileAppRecord(installed)?.apps;
+    const installedRecords = Array.isArray(installedApps)
+      ? installedApps.flatMap((entry) => {
+        const app = mobileAppRecord(entry);
+        return app ? [app] : [];
+      })
+      : [];
+    const mentions: Array<Extract<CodexUserInput, { type: "mention" }>> = [];
+    const appTokens: string[] = [];
+    for (const id of [...new Set(appIds)]) {
+      const matches = catalogApps.filter((app) => app.id === id);
+      const installedMatches = installedRecords.filter((app) => app.id === id);
+      const app = matches[0];
+      const state = installedMatches[0];
+      if (matches.length !== 1 || installedMatches.length !== 1 ||
+          app?.isAccessible !== true || app.isEnabled === false ||
+          state?.callable !== true || state.enabled === false) {
+        throw new AcpError("Выбранное Codex App сейчас недоступно или не подключено для этого сеанса");
+      }
+      const name = typeof app.name === "string"
+        ? app.name.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 160)
+        : "";
+      const safeName = name || id;
+      const slug = codexAppSlug(safeName);
+      if (!slug) throw new AcpError("У выбранного Codex App не получилось определить имя для вызова");
+      appTokens.push(`$${slug}`);
+      mentions.push({ type: "mention", name: safeName, path: `app://${id}` });
+    }
+    return { mentions, appTokens };
+  }
+
+  /** Install only a remote plugin that is present and installable in Codex's live catalog. */
+  async installMobilePlugin(pluginId: string, marketplaceName: string, cwd: string): Promise<unknown> {
+    const [catalog, installed] = await Promise.all([
+      this.request("plugin/list", { cwds: [cwd] }),
+      this.request("plugin/installed", {}),
+    ]);
+    if (installedPluginExists(installed, pluginId)) throw new Error("Плагин уже установлен");
+    const target = resolveRemotePluginInstall(catalog, pluginId, marketplaceName);
+    const result = await this.request("plugin/install", {
+      ...target,
+      installAttemptId: randomUUID(),
+    });
+    await this.refreshInventories();
+    return result;
+  }
+
+  /** Remove only a plugin that the running Codex app-server reports as installed. */
+  async uninstallMobilePlugin(pluginId: string): Promise<void> {
+    const installed = await this.request("plugin/installed", {});
+    if (!installedPluginExists(installed, pluginId)) throw new Error("Плагин не найден среди установленных в Codex");
+    await this.request("plugin/uninstall", { pluginId });
+    await this.refreshInventories();
+  }
+
+  /** Toggle an installed plugin in Codex's user config and confirm its effective runtime state. */
+  async setMobilePluginEnabled(pluginId: string, enabled: boolean, cwd: string): Promise<boolean> {
+    if (!/^[a-z0-9][a-z0-9_.:@-]{0,199}$/i.test(pluginId) || typeof enabled !== "boolean" || !cwd.trim() || cwd.length > 4096) {
+      throw new Error("Неверные параметры плагина Codex");
+    }
+    const findMatches = (value: unknown) => {
+      const inventory = mobileAppRecord(value);
+      if (!Array.isArray(inventory?.marketplaces)) return [];
+      return inventory.marketplaces.flatMap((rawMarketplace) => {
+        const marketplace = mobileAppRecord(rawMarketplace);
+        return Array.isArray(marketplace?.plugins)
+          ? marketplace.plugins.flatMap((rawPlugin) => {
+            const plugin = mobileAppRecord(rawPlugin);
+            return plugin?.id === pluginId ? [plugin] : [];
+          })
+          : [];
+      });
+    };
+    const readState = async () => {
+      const [catalog, installed] = await Promise.all([
+        this.request("plugin/list", { cwds: [cwd] }),
+        this.request("plugin/installed", {}),
+      ]);
+      const catalogMatches = findMatches(catalog);
+      const installedMatches = findMatches(installed).filter((plugin) => plugin.installed === true);
+      if (catalogMatches.length === 0 || installedMatches.length === 0) {
+        throw new Error("Плагин не найден среди установленных в текущем проекте Codex");
+      }
+      if (catalogMatches.length !== 1 || installedMatches.length !== 1) {
+        throw new Error("Плагин нельзя однозначно выбрать в Codex");
+      }
+      const catalogPlugin = catalogMatches[0]!;
+      const installedPlugin = installedMatches[0]!;
+      if (catalogPlugin.availability === "DISABLED_BY_ADMIN" || installedPlugin.availability === "DISABLED_BY_ADMIN") {
+        throw new Error("Этот плагин отключён политикой администратора");
+      }
+      return { catalogPlugin, installedPlugin };
+    };
+
+    const current = await readState();
+    if (current.catalogPlugin.enabled === enabled && current.installedPlugin.enabled === enabled) return enabled;
+
+    await this.request("config/value/write", {
+      keyPath: `plugins.${JSON.stringify(pluginId)}.enabled`,
+      value: enabled,
+      mergeStrategy: "upsert",
+    });
+    await this.refreshInventories();
+    const updated = await readState();
+    if (updated.catalogPlugin.enabled !== enabled || updated.installedPlugin.enabled !== enabled) {
+      throw new AcpError("Codex не подтвердил итоговое состояние плагина");
+    }
+    return enabled;
   }
 
   private async loadCapabilities(): Promise<void> {
@@ -316,6 +985,42 @@ export class AcpClient extends EventEmitter {
       rateLimits: l?.rateLimits,
       rateLimitsByLimitId: l?.rateLimitsByLimitId ?? undefined,
     };
+  }
+
+  /** Start Codex's native ChatGPT device-code sign-in without exposing tokens to the caller. */
+  async startChatgptDeviceCodeLogin(): Promise<CodexDeviceCodeLogin> {
+    const response = await this.request("account/login/start", { type: "chatgptDeviceCode" }) as Record<string, unknown>;
+    const loginId = typeof response?.loginId === "string" ? response.loginId : "";
+    const verificationUrl = typeof response?.verificationUrl === "string" ? response.verificationUrl : "";
+    const userCode = typeof response?.userCode === "string" ? response.userCode : "";
+    const validLoginId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(loginId);
+    const cancelInvalidLogin = async () => {
+      if (validLoginId) await this.request("account/login/cancel", { loginId }).catch(() => undefined);
+    };
+    if (response?.type !== "chatgptDeviceCode" || !validLoginId) {
+      await cancelInvalidLogin();
+      throw new Error("Codex вернул неверный ответ для входа по коду");
+    }
+    let url: URL;
+    try { url = new URL(verificationUrl); }
+    catch { await cancelInvalidLogin(); throw new Error("Codex вернул неверную ссылку входа"); }
+    if (url.protocol !== "https:" || url.hostname !== "auth.openai.com" || url.pathname !== "/codex/device" || url.username || url.password || url.search || url.hash) {
+      await cancelInvalidLogin();
+      throw new Error("Codex вернул небезопасную ссылку входа");
+    }
+    if (!/^[A-Z0-9-]{4,32}$/.test(userCode)) {
+      await cancelInvalidLogin();
+      throw new Error("Codex вернул неверный одноразовый код");
+    }
+    return { loginId, verificationUrl: url.toString(), userCode };
+  }
+
+  /** Cancel only a login that this client started and still tracks locally. */
+  async cancelAccountLogin(loginId: string): Promise<void> {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(loginId)) {
+      throw new Error("Неверный ID входа Codex");
+    }
+    await this.request("account/login/cancel", { loginId });
   }
 
   /** Populate the model catalogue via `model/list` (best-effort). */
@@ -433,10 +1138,41 @@ export class AcpClient extends EventEmitter {
   async listThreadsPage(params: CodexThreadListParams = {}): Promise<{ threads: CodexThreadSummary[]; nextCursor?: string }> {
     const response = await this.request("thread/list", params) as CodexThreadListResponse;
     const threads = response?.threads ?? response?.data ?? [];
+    const rawReadStates = response?.readStates;
+    const readStates = rawReadStates && typeof rawReadStates === "object" && !Array.isArray(rawReadStates) ? rawReadStates : undefined;
+    const readStateMetadataAvailable = readStates !== undefined;
     return {
-      threads: Array.isArray(threads) ? threads.filter((thread) => typeof thread?.id === "string") : [],
+      threads: Array.isArray(threads) ? threads.filter((thread) => typeof thread?.id === "string").map((thread) => {
+        if (!readStateMetadataAvailable) return thread;
+        const receipt = readStates && Object.hasOwn(readStates, thread.id) ? parseCodexThreadReadState(readStates[thread.id]) : undefined;
+        return {
+          ...thread,
+          readStateMetadataAvailable: true,
+          readStateEligible: receipt !== undefined,
+          ...(receipt ? { readState: receipt } : {}),
+        };
+      }) : [],
       nextCursor: typeof response?.nextCursor === "string" ? response.nextCursor : undefined,
     };
+  }
+
+  /** Update Codex's native read receipt using the exact revision shown to the caller. */
+  async updateThreadReadState(threadId: string, expectedRevision: string, operation: "read" | "unread"): Promise<CodexThreadReadState> {
+    if (typeof threadId !== "string" || !threadId.trim() || threadId.length > 200 || /[\u0000-\u001f\u007f]/.test(threadId)) {
+      throw new Error("Неверный идентификатор сеанса для изменения статуса прочтения");
+    }
+    if (typeof expectedRevision !== "string" || !expectedRevision || expectedRevision.length > 512) {
+      throw new Error("Codex не предоставил версию статуса прочтения");
+    }
+    if (operation !== "read" && operation !== "unread") throw new Error("Неизвестное действие со статусом прочтения");
+    const response = await this.request("thread/readState/update", {
+      threadId,
+      expectedRevision,
+      operation: { type: operation },
+    }) as { readState?: unknown };
+    const receipt = parseCodexThreadReadState(response?.readState);
+    if (!receipt) throw new Error("Codex вернул недопустимый статус прочтения");
+    return receipt;
   }
 
   /** Read every page of the Codex conversation catalogue. */
@@ -457,6 +1193,210 @@ export class AcpClient extends EventEmitter {
     return [...byId.values()];
   }
 
+  /** Read all user-created sidebar sections through the shared app-server. */
+  async listThreadSections(): Promise<CodexThreadSection[]> {
+    const byId = new Map<string, CodexThreadSection>();
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 1000; page++) {
+      const params = cursor ? { limit: 100, cursor } : { limit: 100 };
+      const response = await this.request("threadSection/list", params) as {
+        data?: CodexThreadSection[];
+        sections?: CodexThreadSection[];
+        nextCursor?: string | null;
+      };
+      const sections = response?.data ?? response?.sections ?? [];
+      if (Array.isArray(sections)) {
+        for (const section of sections) {
+          if (typeof section?.id === "string" && typeof section.name === "string") byId.set(section.id, section);
+        }
+      }
+      const next = typeof response?.nextCursor === "string" ? response.nextCursor : undefined;
+      if (!next || next === cursor || seenCursors.has(next)) break;
+      seenCursors.add(next);
+      cursor = next;
+    }
+    return [...byId.values()];
+  }
+
+  async createThreadSection(name: string): Promise<CodexThreadSection> {
+    const response = await this.request("threadSection/create", { name }) as { section?: CodexThreadSection };
+    if (!response?.section?.id || typeof response.section.name !== "string") throw new AcpError("threadSection/create returned no section");
+    return response.section;
+  }
+
+  async renameThreadSection(sectionId: string, name: string): Promise<CodexThreadSection> {
+    const response = await this.request("threadSection/update", { sectionId, name }) as { section?: CodexThreadSection };
+    if (!response?.section?.id || typeof response.section.name !== "string") throw new AcpError("threadSection/update returned no section");
+    return response.section;
+  }
+
+  async deleteThreadSection(sectionId: string): Promise<void> {
+    await this.request("threadSection/delete", { sectionId });
+  }
+
+  async moveThreadToSection(threadId: string, sectionId: string | null): Promise<void> {
+    await this.request("thread/section/move", { threadId, sectionId });
+  }
+
+  /** Rename a persisted Codex thread using the app-server's native metadata API. */
+  async setThreadName(threadId: string, name: string): Promise<void> {
+    await this.request("thread/name/set", { threadId, name });
+  }
+
+  /** Archive a persisted Codex thread without deleting its history. */
+  async archiveThread(threadId: string): Promise<void> {
+    await this.request("thread/archive", { threadId });
+  }
+
+  /** Restore a previously archived Codex thread. */
+  async unarchiveThread(threadId: string): Promise<void> {
+    await this.request("thread/unarchive", { threadId });
+  }
+
+  /** Permanently delete an archived local Codex thread through the app-server. */
+  async deleteThread(threadId: string): Promise<void> {
+    await this.request("thread/delete", { threadId });
+  }
+
+  /** Fork an idle persisted thread through the same Codex app-server process. */
+  async forkThread(threadId: string, options: { ephemeral?: boolean; excludeTurns?: boolean } = {}): Promise<CodexThreadForkResponse> {
+    const response = await this.request("thread/fork", { threadId, ...options }) as CodexThreadForkResponse;
+    if (!response?.thread?.id) throw new AcpError("thread/fork returned no thread id");
+    if (response.cwd) this.threadCwd.set(response.thread.id, response.cwd);
+    if (response.model) this.threadModel.set(response.thread.id, response.model);
+    return response;
+  }
+
+  /** Start Codex's experimental WebRTC voice transport on the existing thread. */
+  async listRealtimeVoices(): Promise<{ voices: string[]; defaultVoice: string }> {
+    const response = await this.request("thread/realtime/listVoices", {}) as {
+      voices?: { v1?: unknown; v2?: unknown; v3?: unknown; defaultV1?: unknown; defaultV2?: unknown };
+    };
+    const source = response?.voices ?? {};
+    const safeVoices = [source.v1, source.v2, source.v3]
+      .flatMap((group) => Array.isArray(group) ? group : [])
+      .filter((voice): voice is string => typeof voice === "string" && /^[a-z][a-z0-9_]{0,31}$/i.test(voice));
+    const voices = [...new Set(safeVoices)].slice(0, 64);
+    const preferred = [source.defaultV2, source.defaultV1].find((voice): voice is string =>
+      typeof voice === "string" && voices.includes(voice));
+    return { voices, defaultVoice: preferred ?? voices[0] ?? "" };
+  }
+
+  async startRealtime(threadId: string, offerSdp: string, voice?: string): Promise<string> {
+    if (!/^[a-z0-9_-]{8,128}$/i.test(threadId)) throw new Error("Неверный сеанс Codex для голосового режима");
+    if (typeof offerSdp !== "string" || offerSdp.length > 128_000 || !/^v=0\r?$/m.test(offerSdp) ||
+        !/^m=audio\s/m.test(offerSdp) || !/^m=application\s/m.test(offerSdp)) {
+      throw new Error("Браузер не сформировал корректное аудиосоединение");
+    }
+    if (voice !== undefined && (typeof voice !== "string" || !/^[a-z][a-z0-9_]{0,31}$/i.test(voice))) {
+      throw new Error("Неверный голос Codex");
+    }
+    if (this.realtimeThreads.has(threadId)) throw new Error("Голосовой режим уже подключён к этому сеансу");
+
+    let resolveSdp!: (sdp: string) => void;
+    let rejectSdp!: (error: Error) => void;
+    const answer = new Promise<string>((resolve, reject) => { resolveSdp = resolve; rejectSdp = reject; });
+    const onNotification = (method: string, value: unknown) => {
+      const params = value && typeof value === "object" ? value as Record<string, unknown> : {};
+      if (params.threadId !== threadId) return;
+      if (method === "thread/realtime/sdp") {
+        const sdp = params.sdp;
+        if (typeof sdp === "string" && sdp.length <= 128_000 && /^v=0\r?$/m.test(sdp)) {
+          this.realtimeThreads.add(threadId);
+          resolveSdp(sdp);
+        } else rejectSdp(new Error("Неверный SDP-ответ Codex"));
+      } else if (method === "thread/realtime/error" || method === "thread/realtime/closed") {
+        rejectSdp(new Error("Codex закрыл голосовое соединение"));
+      }
+    };
+    this.on("notification", onNotification);
+    let timeout: NodeJS.Timeout | undefined;
+    try {
+      const timedOut = new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error("Codex не ответил на запрос голосового соединения")), 20_000);
+        timeout.unref();
+      });
+      const startup = (async () => {
+        await this.request("thread/realtime/start", {
+          threadId,
+          outputModality: "audio",
+          transport: { type: "webrtc", sdp: offerSdp },
+          ...(voice ? { voice } : {}),
+        });
+        return await answer;
+      })();
+      return await Promise.race([startup, timedOut]);
+    } catch {
+      this.realtimeThreads.delete(threadId);
+      void this.request("thread/realtime/stop", { threadId }).catch(() => undefined);
+      throw new AcpError("Codex не смог начать голосовой сеанс. Проверьте вход и поддержку Live в текущей версии Codex.");
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      this.off("notification", onNotification);
+    }
+  }
+
+  /** Stop only the realtime transport attached to this existing thread. */
+  async stopRealtime(threadId: string): Promise<void> {
+    if (!/^[a-z0-9_-]{8,128}$/i.test(threadId)) throw new Error("Неверный сеанс Codex для остановки голоса");
+    if (!this.realtimeThreads.has(threadId)) return;
+    await this.request("thread/realtime/stop", { threadId });
+    this.realtimeThreads.delete(threadId);
+  }
+
+  isRealtimeActive(threadId: string): boolean {
+    return this.realtimeThreads.has(threadId);
+  }
+
+  hasActiveTurn(threadId: string): boolean {
+    return this.turns.has(threadId);
+  }
+
+  async getThreadGoal(threadId: string): Promise<CodexThreadGoal | undefined> {
+    const response = await this.request("thread/goal/get", { threadId }) as { goal?: CodexThreadGoal | null };
+    return response?.goal ?? undefined;
+  }
+
+  async setThreadGoal(threadId: string, input: {
+    objective?: string;
+    status?: CodexThreadGoalStatus;
+    tokenBudget?: number | null;
+  }): Promise<CodexThreadGoal> {
+    if (input.objective !== undefined && (!input.objective.trim() || input.objective.length > 1000)) {
+      throw new Error("Цель должна содержать от 1 до 1000 символов");
+    }
+    if (input.status !== undefined && !["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"].includes(input.status)) {
+      throw new Error("Неизвестный статус цели");
+    }
+    if (input.tokenBudget !== undefined && input.tokenBudget !== null &&
+        (!Number.isSafeInteger(input.tokenBudget) || input.tokenBudget < 1 || input.tokenBudget > 1_000_000_000)) {
+      throw new Error("Бюджет должен быть целым числом от 1 до 1 000 000 000 токенов");
+    }
+    if (input.objective === undefined && input.status === undefined && input.tokenBudget === undefined) {
+      throw new Error("Укажите, что нужно изменить в цели");
+    }
+    const response = await this.request("thread/goal/set", { threadId, origin: "user", ...input }) as { goal?: CodexThreadGoal };
+    if (!response?.goal) throw new AcpError("thread/goal/set returned no goal");
+    return response.goal;
+  }
+
+  async clearThreadGoal(threadId: string): Promise<{ cleared: boolean }> {
+    return await this.request("thread/goal/clear", { threadId, origin: "user" }) as { cleared: boolean };
+  }
+
+  async compactThread(threadId: string): Promise<void> {
+    if (this.hasActiveTurn(threadId)) throw new Error("Нельзя сократить контекст во время активного хода Codex");
+    await this.request("thread/compact/start", { threadId });
+  }
+
+  /** Start Codex's native reviewer on an existing thread. */
+  async reviewThread(threadId: string, target: CodexReviewTarget, delivery: CodexReviewDelivery = "inline"): Promise<CodexReviewStartResponse> {
+    const response = await this.request("review/start", { threadId, target, delivery }) as CodexReviewStartResponse;
+    if (!response?.reviewThreadId || !response.turn?.id) throw new AcpError("review/start returned no review thread or turn");
+    return response;
+  }
+
   hasMode(id: string): boolean {
     return this.collaborationModes.has(id);
   }
@@ -467,9 +1407,78 @@ export class AcpClient extends EventEmitter {
     return this.availableModels.some((m) => m.modelId === id);
   }
 
+  /** Read the live thread model and effort settings without hydrating history. */
+  async readMobileThreadSettings(threadId: string): Promise<{ model?: string | null; effort?: string | null }> {
+    if (!/^[a-z0-9_-]{8,128}$/i.test(threadId)) throw new Error("Неверный сеанс Codex для чтения настроек");
+    const response = await this.request("thread/read", { threadId, includeTurns: false }) as {
+      thread?: { id?: unknown; model?: unknown; reasoningEffort?: unknown; reasoning_effort?: unknown };
+    };
+    const thread = response?.thread;
+    if (thread?.id !== threadId) throw new AcpError("Codex не подтвердил настройки выбранного сеанса");
+    const model = typeof thread.model === "string" ? thread.model : thread.model === null ? null : undefined;
+    const rawEffort = Object.prototype.hasOwnProperty.call(thread, "reasoningEffort")
+      ? thread.reasoningEffort
+      : thread.reasoning_effort;
+    const effort = typeof rawEffort === "string" ? rawEffort : rawEffort === null ? null : undefined;
+    if (model !== undefined) this.threadModel.set(threadId, model);
+    if (effort !== undefined) this.threadEffort.set(threadId, effort);
+    return { ...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}) };
+  }
+
+  /** Persist mobile model/mode/reasoning choices on the owned native Codex thread. */
+  async updateMobileThreadSettings(
+    threadId: string,
+    patch: { modelId?: string | null; modeId?: string | null; effort?: string | null },
+  ): Promise<void> {
+    if (!/^[a-z0-9_-]{8,128}$/i.test(threadId)) throw new Error("Неверный сеанс Codex для изменения настроек");
+    if (patch.modelId === undefined && patch.modeId === undefined && patch.effort === undefined) {
+      throw new Error("Выберите настройку Codex для изменения");
+    }
+    const modelId = patch.modelId === "default" ? null : patch.modelId;
+    const modeId = patch.modeId === "default" ? null : patch.modeId;
+    if (modelId !== undefined && modelId !== null && (!modelId.trim() || modelId.length > 160 || !this.hasModel(modelId))) {
+      throw new Error("Эта модель сейчас недоступна");
+    }
+    if (modeId !== undefined && modeId !== null && (modeId.length > 100 || !this.hasMode(modeId))) {
+      throw new Error("Этот режим сейчас недоступен");
+    }
+    if (patch.effort !== undefined && patch.effort !== null && !REASONING_LEVELS.includes(patch.effort as ReasoningEffort)) {
+      throw new Error("Недопустимый уровень рассуждений");
+    }
+
+    const params: CodexThreadSettingsUpdateParams = { threadId };
+    if (modelId !== undefined) params.model = modelId;
+    if (patch.effort !== undefined) params.effort = patch.effort;
+    if (modeId !== undefined) {
+      if (modeId === null) params.collaborationMode = null;
+      else {
+        const mode = this.collaborationModes.get(modeId);
+        if (!mode?.mode) throw new Error("Нативная настройка этого режима сейчас недоступна");
+        const configuredModel = modelId !== undefined
+          ? modelId
+          : this.threadModel.has(threadId) ? this.threadModel.get(threadId) : this.currentModelId;
+        const configuredEffort = patch.effort !== undefined
+          ? patch.effort
+          : this.threadEffort.get(threadId) ?? mode.reasoning_effort ?? null;
+        params.collaborationMode = {
+          mode: mode.mode,
+          settings: {
+            model: configuredModel ?? mode.model ?? "",
+            reasoning_effort: configuredEffort,
+            developer_instructions: null,
+          },
+        };
+      }
+    }
+    await this.request("thread/settings/update", params);
+    if (modelId !== undefined) this.threadModel.set(threadId, modelId);
+    if (modeId !== undefined) this.threadMode.set(threadId, modeId);
+    if (patch.effort !== undefined) this.threadEffort.set(threadId, patch.effort);
+  }
+
   /** Resolve the model id to send for a thread: per-thread → default → none. */
   private modelFor(threadId: string | undefined): string | undefined {
-    const pref = (threadId && this.threadModel.get(threadId)) || this.currentModelId;
+    const pref = threadId && this.threadModel.has(threadId) ? this.threadModel.get(threadId) : this.currentModelId;
     if (!pref || pref === "auto") return undefined;
     return pref;
   }
@@ -518,19 +1527,28 @@ export class AcpClient extends EventEmitter {
       };
       const model = this.modelFor(sessionId);
       if (model) params.model = model;
-      const mode = this.collaborationModes.get(this.threadMode.get(sessionId) ?? "");
+      const effort = this.threadEffort.get(sessionId);
+      if (effort) params.effort = effort;
+      const modeId = this.threadMode.has(sessionId) ? this.threadMode.get(sessionId) : this.currentModeId;
+      const mode = this.collaborationModes.get(modeId ?? "");
       if (mode?.mode) {
+        const modeModel = this.threadModel.has(sessionId) ? model : mode.model ?? model;
+        const modeEffort = this.threadEffort.has(sessionId) ? effort ?? null : mode.reasoning_effort ?? null;
         params.collaborationMode = {
           mode: mode.mode,
           settings: {
-            model: mode.model ?? model ?? "",
-            reasoning_effort: mode.reasoning_effort ?? null,
+            model: modeModel ?? "",
+            reasoning_effort: modeEffort,
             developer_instructions: null,
           },
         };
       }
 
-      this.request("turn/start", params)
+      void this.inputForThread(sessionId, content)
+        .then((input) => {
+          params.input = input;
+          return this.request("turn/start", params);
+        })
         .then((res) => {
           const turn = (res as CodexTurnResponse)?.turn;
           const p = this.turns.get(sessionId);
@@ -564,6 +1582,26 @@ export class AcpClient extends EventEmitter {
       if (turnId) await this.request("turn/interrupt", { threadId: sessionId, turnId });
     } catch (e) {
       log.debug("interrupt failed:", (e as Error).message);
+    }
+  }
+
+  /** True only while this shared app-server client owns a steerable turn. */
+  canSteer(sessionId: string): boolean {
+    return this.connected && !!this.turns.get(sessionId)?.turnId;
+  }
+
+  /** Add user guidance to the active turn without starting another turn. */
+  async steer(sessionId: string, content: ContentBlock[]): Promise<void> {
+    const active = this.turns.get(sessionId);
+    if (!this.connected || !active?.turnId) throw new AcpError("Нет активной задачи Codex, которую можно направить");
+    const expectedTurnId = active.turnId;
+    const response = await this.request("turn/steer", {
+      threadId: sessionId,
+      expectedTurnId,
+      input: await this.inputForThread(sessionId, content),
+    }) as { turnId?: unknown };
+    if (typeof response?.turnId !== "string" || response.turnId !== expectedTurnId) {
+      throw new AcpError("Codex не подтвердил, к какой активной задаче применено направление");
     }
   }
 
@@ -704,6 +1742,15 @@ export class AcpClient extends EventEmitter {
     params: Record<string, unknown>,
   ): Promise<void> {
     try {
+      if (method === "mcpServer/elicitation/request") {
+        let result: CodexMcpElicitationResponse = { action: "decline", content: null };
+        if (this.elicitationHandler) {
+          try { result = await this.elicitationHandler(params); }
+          catch { result = { action: "cancel", content: null }; }
+        }
+        this.send({ id, result });
+        return;
+      }
       if (method === "item/permissions/requestApproval") {
         const result = await decidePermissionsApproval(params, this.opts.trustAllTools, this.permissionHandler);
         this.send({ id, result });
@@ -728,6 +1775,9 @@ export class AcpClient extends EventEmitter {
   /** Decide a Codex exec/patch approval → "accept" | "acceptForSession" | "decline". */
   private routeNotification(method: string, params: unknown): void {
     const p = (params as Record<string, unknown>) ?? {};
+    if ((method === "thread/realtime/closed" || method === "thread/realtime/error") && typeof p.threadId === "string") {
+      this.realtimeThreads.delete(p.threadId);
+    }
     const threadHint = this.resolveThread(p);
     if (threadHint) this.lastActivity.set(threadHint, Date.now());
 

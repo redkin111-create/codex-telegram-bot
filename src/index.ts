@@ -4,8 +4,13 @@
  * shutdown between them.
  */
 import { AcpClient } from "./acp/client.js";
-import { startMiniAppAgent } from "./tma/agent.js";
+import { MiniAppAgent, startMiniAppAgent } from "./tma/agent.js";
 import { enabledLocalTma, startLocalTma, type LocalTmaService } from "./tma/local.js";
+import { TmaLiveFeed } from "./tma/live.js";
+import { codexMobileEnabled, startCodexMobileService, type CodexMobileService } from "./mobile/service.js";
+import { MobileApprovalBroker, MobileElicitationBroker } from "./mobile/approvals.js";
+import { MobileAccountController } from "./mobile/accounts.js";
+import { isLoopbackListenerOwnedByProcess } from "./mobile/oauth-callback.js";
 import { createBot } from "./bot/bot.js";
 import { CANONICAL_DIR, loadConfig } from "./config.js";
 import { InstanceLock } from "./app/instance-lock.js";
@@ -17,6 +22,7 @@ async function main(): Promise<void> {
   process.stdout.write("\u{1F916} Codex Telegram Bot — starting…\n");
 
   const cfg = loadConfig();
+  const mobileEnabled = codexMobileEnabled();
   setLogLevel(cfg.logLevel);
   enableFileLogging(cfg.logFile);
   const log = createLogger("main");
@@ -45,6 +51,7 @@ async function main(): Promise<void> {
     codexCliPath: cfg.codexCliPath,
     workspace: cfg.workspace,
     trustAllTools: cfg.trustAllTools,
+    codeModeHost: mobileEnabled,
     networkAccess: cfg.codexNetworkAccess,
     codexHome: cfg.codexHome,
     autoRestart: cfg.acpAutoRestart,
@@ -52,7 +59,7 @@ async function main(): Promise<void> {
   });
 
   await acp.start();
-  const { bot, registry, scheduler, updater } = await createBot(cfg, acp);
+  const { bot, registry, scheduler, updater, accounts, usage, accountRotator } = await createBot(cfg, acp);
   // TMA_LOCAL runs the UI, gateway and outbound Codex bridge in this existing
   // service. No VPS required. Failures never prevent the Telegram bot starting.
   let localTma: LocalTmaService | undefined;
@@ -65,6 +72,50 @@ async function main(): Promise<void> {
   }
   // Legacy remote gateway mode remains supported for existing deployments.
   const miniApp = enabledLocalTma() ? undefined : startMiniAppAgent({ cfg, acp, registry });
+  let mobile: CodexMobileService | undefined;
+  let mobileOwnedFeed: TmaLiveFeed | undefined;
+  let restoreMobileHandlers: (() => void) | undefined;
+  if (mobileEnabled) {
+    try {
+      // Use the adapters created by local TMA / remote TMA when available.
+      // Mobile-only mode creates an in-process adapter, but never starts its
+      // outbound TMA loop and never spawns another Codex app-server.
+      const agent = localTma?.agent ?? miniApp ?? new MiniAppAgent({ cfg, acp, registry });
+      const feed = localTma?.feed ?? new TmaLiveFeed(acp);
+      if (!localTma) mobileOwnedFeed = feed;
+      const previousApproval = acp.permissionHandler;
+      const approvals = new MobileApprovalBroker(feed, registry, cfg.allowedUsers, previousApproval);
+      acp.permissionHandler = approvals.handle;
+      const previousElicitation = acp.elicitationHandler;
+      const elicitations = new MobileElicitationBroker(feed, registry, cfg.allowedUsers);
+      acp.elicitationHandler = elicitations.handle;
+      restoreMobileHandlers = () => {
+        if (acp.permissionHandler === approvals.handle) acp.permissionHandler = previousApproval;
+        if (acp.elicitationHandler === elicitations.handle) acp.elicitationHandler = previousElicitation;
+      };
+      const mobileAccounts = new MobileAccountController({
+        allowedOwners: cfg.allowedUsers,
+        accounts,
+        usage,
+        rotator: accountRotator,
+        acp,
+        registry,
+      });
+      mobile = await startCodexMobileService(cfg, agent, feed, {
+        approvals,
+        elicitations,
+        accounts: mobileAccounts,
+        isCodexOAuthCallbackListener: (callback) =>
+          isLoopbackListenerOwnedByProcess(acp.pid, callback.hostname, Number(callback.port)),
+      });
+    } catch (error) {
+      restoreMobileHandlers?.();
+      restoreMobileHandlers = undefined;
+      mobileOwnedFeed?.dispose();
+      mobileOwnedFeed = undefined;
+      log.error("Could not start Codex Mobile (Telegram bot remains available):", error);
+    }
+  }
   scheduler.start();
   await updater.start();
 
@@ -76,6 +127,10 @@ async function main(): Promise<void> {
     scheduler.stop();
     updater.stop();
     miniApp?.stop();
+    restoreMobileHandlers?.();
+    restoreMobileHandlers = undefined;
+    void mobile?.stop().catch(error => log.warn("Codex Mobile shutdown:", error));
+    mobileOwnedFeed?.dispose();
     void localTma?.stop().catch(error => log.warn("TMA shutdown:", error));
     registry.disposeAll();
     void bot.stop().catch(() => {});

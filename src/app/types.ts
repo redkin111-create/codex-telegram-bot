@@ -51,6 +51,12 @@ export interface PromptImage {
 export interface PromptInput {
   text: string;
   images: PromptImage[];
+  /** Existing Codex history images, resolved on the host and never accepted from the mobile API. */
+  localImages?: string[];
+  /** Safe skill names explicitly selected by the user; local paths are resolved by ACP. */
+  skillNames?: string[];
+  /** Codex App IDs explicitly selected by the user; ACP revalidates them for this thread. */
+  appIds?: string[];
   /** Safe labels for file attachments; paths remain inside the prompt only. */
   attachmentNames?: string[];
   /** Attachment-specific prompt context kept separate from the editable caption. */

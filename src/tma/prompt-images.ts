@@ -41,9 +41,10 @@ export function parseTmaImages(value: unknown): PromptImage[] {
 }
 
 /** Immutable fingerprint for idempotency across transient HTTP errors. */
-export function tmaPromptFingerprint(text: string, images: PromptImage[]): string {
+export function tmaPromptFingerprint(text: string, images: PromptImage[], extraParts: readonly string[] = []): string {
   const hash = createHash("sha256");
   hash.update(text);
   for (const image of images) hash.update(image.mimeType).update(image.data);
+  for (const part of extraParts) hash.update("\0").update(part);
   return hash.digest("hex");
 }

@@ -9,6 +9,8 @@ import { extractProgress } from "../render/progress.js";
 import type { HistoryEntry, HistoryRole } from "./types.js";
 
 const TAIL_WINDOWS = [256 * 1024, 1024 * 1024, 4 * 1024 * 1024]; // grow until entries found
+const MAX_TOOL_OUTPUT_CHARS = 12_000;
+const TOOL_OUTPUT_SUFFIX = "\n[вывод сокращён]";
 
 /**
  * One line of a Codex rollout `.jsonl`: `{ timestamp, type, payload }`.
@@ -143,14 +145,113 @@ export async function readConversationHistoryAsync(
   jsonlPath: string,
   maxEntries = 40,
   maxBytes = 32 * 1024 * 1024,
+  includeToolOutputs = false,
+  resolveParentPath?: (threadId: string) => Promise<string | undefined>,
 ): Promise<HistoryEntry[]> {
   if (maxEntries <= 0 || maxBytes <= 0) return [];
-  const size = jsonlSize(jsonlPath);
-  if (!size) return [];
+  if (!resolveParentPath) return (await readConversationFileAsync(jsonlPath, maxEntries, maxBytes, includeToolOutputs)).entries;
+
+  const sources = await conversationHistorySources(jsonlPath, resolveParentPath);
+
+  const chunks: HistoryEntry[][] = [];
+  let bytesLeft = maxBytes;
+  let entriesFound = 0;
+  // Read newest first so the shared memory budget always favors the currently
+  // open fork. Reverse the chunks before returning a chronological transcript.
+  for (const source of sources) {
+    if (bytesLeft <= 0 || entriesFound >= maxEntries) break;
+    const read = await readConversationFileAsync(source.path, maxEntries - entriesFound, bytesLeft,
+      includeToolOutputs, source.endByteOffset);
+    chunks.push(read.entries);
+    entriesFound += read.entries.length;
+    bytesLeft -= read.bytesRead;
+  }
+  return chunks.reverse().flat().slice(-maxEntries);
+}
+
+export interface ConversationHistorySource {
+  path: string;
+  threadId?: string;
+  endByteOffset?: number;
+}
+
+export const MAX_CONVERSATION_HISTORY_SOURCES = 9;
+
+/** Resolve the validated rollout chain and fork byte limits for one session. */
+export async function conversationHistorySources(
+  jsonlPath: string,
+  resolveParentPath: (threadId: string) => Promise<string | undefined>,
+): Promise<ConversationHistorySource[]> {
+
+  // Codex forks keep the earlier transcript in the parent rollout and record
+  // the exact byte boundary in the child's session_meta. Follow only parents
+  // that the caller explicitly resolves, and never read past that boundary.
+  const rootMeta = readHistoryBase(jsonlPath);
+  const sources: ConversationHistorySource[] = [{ path: jsonlPath, ...(rootMeta?.id ? { threadId: rootMeta.id } : {}) }];
+  const seenIds = new Set<string>();
+  const seenPaths = new Set<string>([jsonlPath]);
+  let currentPath = jsonlPath;
+  for (let depth = 0; depth < MAX_CONVERSATION_HISTORY_SOURCES - 1; depth++) {
+    const meta = readHistoryBase(currentPath);
+    if (!meta?.id || !meta.parentId || meta.endByteOffset === undefined) break;
+    seenIds.add(meta.id);
+    if (seenIds.has(meta.parentId)) break;
+    let parentPath: string | undefined;
+    try { parentPath = await resolveParentPath(meta.parentId); } catch { break; }
+    if (!parentPath || seenPaths.has(parentPath)) break;
+    sources.push({ path: parentPath, threadId: meta.parentId, endByteOffset: meta.endByteOffset });
+    seenPaths.add(parentPath);
+    currentPath = parentPath;
+  }
+  return sources;
+}
+
+function readHistoryBase(path: string): { id?: string; parentId?: string; endByteOffset?: number } | undefined {
+  const size = jsonlSize(path);
+  if (!size) return undefined;
+  const length = Math.min(size, 64 * 1024);
+  const fd = openSync(path, "r");
+  try {
+    const buffer = Buffer.alloc(length);
+    readSync(fd, buffer, 0, length, 0);
+    const line = buffer.toString("utf8").split("\n", 1)[0]?.trim();
+    if (!line) return undefined;
+    const event = JSON.parse(line) as Record<string, unknown>;
+    if (event.type !== "session_meta" || !event.payload || typeof event.payload !== "object") return undefined;
+    const payload = event.payload as Record<string, unknown>;
+    const id = typeof payload.id === "string" ? payload.id : undefined;
+    const base = payload.history_base;
+    if (!base || typeof base !== "object") return { id };
+    const historyBase = base as Record<string, unknown>;
+    const parentId = typeof historyBase.thread_id === "string" && /^[a-z0-9_-]{8,128}$/i.test(historyBase.thread_id)
+      ? historyBase.thread_id : undefined;
+    const endByteOffset = Number.isSafeInteger(historyBase.end_byte_offset) && (historyBase.end_byte_offset as number) >= 0
+      ? historyBase.end_byte_offset as number : undefined;
+    return { id, parentId, endByteOffset };
+  } catch {
+    return undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+async function readConversationFileAsync(
+  jsonlPath: string,
+  maxEntries: number,
+  maxBytes: number,
+  includeToolOutputs: boolean,
+  endByteOffset?: number,
+): Promise<{ entries: HistoryEntry[]; bytesRead: number }> {
+  if (maxEntries <= 0 || maxBytes <= 0) return { entries: [], bytesRead: 0 };
+  const fileSize = jsonlSize(jsonlPath);
+  const size = endByteOffset === undefined ? fileSize : Math.min(fileSize, endByteOffset);
+  if (!size) return { entries: [], bytesRead: 0 };
   const start = Math.max(0, size - maxBytes);
+  const bytesRead = size - start;
   const input = createReadStream(jsonlPath, { start, end: size - 1, highWaterMark: 64 * 1024 });
   const lines = createInterface({ input, crlfDelay: Infinity });
   const entries: HistoryEntry[] = [];
+  const toolNames = new Map<string, string>();
   let first = true;
   try {
     for await (const line of lines) {
@@ -161,17 +262,174 @@ export async function readConversationHistoryAsync(
       // The majority of a Codex rollout is tooling/reasoning; do not parse
       // giant outputs only to discard them. Retain the exact existing parser
       // for response_item records.
-      if (!/"type"\s*:\s*"response_item"/.test(line) || !/"role"\s*:/.test(line)) continue;
-      const entry = parseEventLine(line);
-      if (!entry || (entry.role !== "assistant" && entry.role !== "user")) continue;
+      if (!/"type"\s*:\s*"response_item"/.test(line)) continue;
+      const toolOutput = includeToolOutputs ? parseToolOutputLine(line, toolNames) : undefined;
+      if (!includeToolOutputs && !/"role"\s*:/.test(line)) continue;
+      if (includeToolOutputs && !toolOutput && !/"role"\s*:/.test(line)) continue;
+      const entry = toolOutput ?? parseEventLine(line);
+      if (!entry || (entry.role !== "assistant" && entry.role !== "user" && !(includeToolOutputs && entry.role === "tool"))) continue;
       entries.push(entry);
       if (entries.length > maxEntries) entries.shift();
     }
-    return entries;
+    return { entries, bytesRead };
   } finally {
     lines.close();
     input.destroy();
   }
+}
+
+export interface ConversationHistorySearch {
+  entries: HistoryEntry[];
+  total: number;
+  skippedLargeRecords: number;
+  startOffset: number;
+  nextOffset?: number;
+}
+
+const MAX_SEARCH_RECORD_BYTES = 16 * 1024 * 1024;
+const MAX_SEARCH_RESULT_CHARS = 8_000;
+
+/** Search the complete rollout without retaining it in memory. The first page
+ * contains the most recent matches; beforeOffset pages older matches. One
+ * malformed or unusually large record cannot grow the search buffer without
+ * bound. */
+export async function searchConversationHistoryAsync(
+  jsonlPath: string,
+  query: string,
+  includeToolOutputs = false,
+  maxResults = 100,
+  beforeOffset?: number,
+): Promise<ConversationHistorySearch> {
+  const needle = query.trim().toLowerCase();
+  if (needle.length < 2 || needle.length > 100) throw new Error("Поисковый запрос должен содержать от 2 до 100 символов");
+  if (!Number.isSafeInteger(maxResults) || maxResults < 1 || maxResults > 200) throw new Error("Неверный размер страницы поиска");
+  if (beforeOffset !== undefined && (!Number.isSafeInteger(beforeOffset) || beforeOffset < 0)) throw new Error("Неверное смещение страницы поиска");
+  const size = jsonlSize(jsonlPath);
+  if (!size) {
+    if (beforeOffset) throw new Error("История Codex изменилась. Повторите поиск.");
+    return { entries: [], total: 0, skippedLargeRecords: 0, startOffset: 0 };
+  }
+
+  const input = createReadStream(jsonlPath, { start: 0, end: size - 1, highWaterMark: 64 * 1024 });
+  const matches: HistoryEntry[] = [];
+  const toolNames = new Map<string, string>();
+  let total = 0;
+  let skippedLargeRecords = 0;
+  let pending = Buffer.alloc(0);
+  let discardingLargeRecord = false;
+  const pageStart = beforeOffset === undefined ? 0 : Math.max(beforeOffset - maxResults, 0);
+
+  const inspectLine = (bytes: Buffer) => {
+    if (bytes.length > MAX_SEARCH_RECORD_BYTES) { skippedLargeRecords++; return; }
+    if (bytes.at(-1) === 0x0d) bytes = bytes.subarray(0, -1);
+    const line = bytes.toString("utf8");
+    if (!line.includes("response_item")) return;
+    const toolOutput = includeToolOutputs ? parseToolOutputLine(line, toolNames) : undefined;
+    if (toolNames.size > 2_000) {
+      const oldest = toolNames.keys().next().value;
+      if (oldest) toolNames.delete(oldest);
+    }
+    if (!includeToolOutputs && !/"role"\s*:/.test(line)) return;
+    const entry = toolOutput ?? parseEventLine(line);
+    if (!entry || (entry.role !== "user" && entry.role !== "assistant" && !(includeToolOutputs && entry.role === "tool"))) return;
+    if (!entry.text.toLowerCase().includes(needle)) return;
+    const matchOffset = total++;
+    const text = entry.text.length <= MAX_SEARCH_RESULT_CHARS
+      ? entry.text
+      : searchExcerpt(entry.text, needle, MAX_SEARCH_RESULT_CHARS);
+    if (beforeOffset === undefined) {
+      matches.push({ ...entry, text });
+      if (matches.length > maxResults) matches.shift();
+    } else if (matchOffset >= pageStart && matchOffset < beforeOffset) {
+      matches.push({ ...entry, text });
+    }
+  };
+
+  try {
+    for await (const chunk of input) {
+      const data = pending.length ? Buffer.concat([pending, chunk as Buffer]) : chunk as Buffer;
+      let start = 0;
+      let newline: number;
+      while ((newline = data.indexOf(0x0a, start)) !== -1) {
+        const line = data.subarray(start, newline);
+        if (discardingLargeRecord) discardingLargeRecord = false;
+        else inspectLine(line);
+        start = newline + 1;
+      }
+      const tail = data.subarray(start);
+      if (discardingLargeRecord) {
+        pending = Buffer.alloc(0);
+      } else if (tail.length > MAX_SEARCH_RECORD_BYTES) {
+        skippedLargeRecords++;
+        discardingLargeRecord = true;
+        pending = Buffer.alloc(0);
+      } else {
+        pending = Buffer.from(tail);
+      }
+    }
+    if (pending.length && !discardingLargeRecord) inspectLine(pending);
+    if (beforeOffset !== undefined && beforeOffset > total) throw new Error("История Codex изменилась. Повторите поиск.");
+    const startOffset = beforeOffset === undefined ? Math.max(total - matches.length, 0) : pageStart;
+    return {
+      entries: matches,
+      total,
+      skippedLargeRecords,
+      startOffset,
+      ...(startOffset > 0 ? { nextOffset: startOffset } : {}),
+    };
+  } finally {
+    input.destroy();
+  }
+}
+
+function searchExcerpt(text: string, needle: string, limit: number): string {
+  const index = text.toLowerCase().indexOf(needle);
+  const start = Math.max(0, Math.min(index - Math.floor(limit / 3), text.length - limit));
+  const end = Math.min(text.length, start + limit);
+  return `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}\n[показан фрагмент совпавшего сообщения]`;
+}
+
+function parseToolOutputLine(line: string, toolNames: Map<string, string>): HistoryEntry | undefined {
+  let event: RolloutLine;
+  try { event = JSON.parse(line) as RolloutLine; } catch { return undefined; }
+  if (event.type !== "response_item" || !event.payload || typeof event.payload !== "object") return undefined;
+  const payload = event.payload as RolloutPayload & { call_id?: unknown; output?: unknown; stdout?: unknown; stderr?: unknown };
+  const type = String(payload.type ?? "");
+  const callId = typeof payload.call_id === "string" ? payload.call_id : "";
+  if (type === "function_call" || type === "local_shell_call" || type === "custom_tool_call") {
+    if (callId) toolNames.set(callId, str(payload.name) || str(payload.tool_name) || "Инструмент");
+    return undefined;
+  }
+  if (type !== "function_call_output") return undefined;
+  const tool = (callId && toolNames.get(callId)) || str(payload.name) || str(payload.tool_name) || "Результат инструмента";
+  const output = payload.output ?? (typeof payload.stdout === "string" || typeof payload.stderr === "string"
+    ? [payload.stdout, payload.stderr].filter((value) => typeof value === "string" && value.length > 0).join("\n")
+    : undefined);
+  let text = toolOutputText(output);
+  if (!text.trim()) return undefined;
+  if (text.length > MAX_TOOL_OUTPUT_CHARS) {
+    text = text.slice(0, MAX_TOOL_OUTPUT_CHARS - TOOL_OUTPUT_SUFFIX.length) + TOOL_OUTPUT_SUFFIX;
+  }
+  return { role: "tool", tool, text, timestamp: parseTs(event.timestamp) };
+}
+
+function toolOutputText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value.map((part) => {
+      if (typeof part === "string") return part;
+      if (!part || typeof part !== "object") return "";
+      const item = part as { text?: unknown; output_text?: unknown; type?: unknown };
+      return typeof item.text === "string" ? item.text : typeof item.output_text === "string" ? item.output_text : "";
+    }).filter(Boolean).join("\n");
+  }
+  if (value && typeof value === "object") {
+    const item = value as { text?: unknown; stdout?: unknown; stderr?: unknown; output?: unknown };
+    if (typeof item.text === "string") return item.text;
+    if (typeof item.output === "string") return item.output;
+    return [item.stdout, item.stderr].filter((part): part is string => typeof part === "string" && part.length > 0).join("\n");
+  }
+  return "";
 }
 
 function parseTail(jsonlPath: string, window: number, maxEntries: number): HistoryEntry[] {

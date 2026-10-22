@@ -185,7 +185,10 @@ async function route(req:IncomingMessage,res:ServerResponse,cfg:GatewayConfig,lo
     res.once("close",close);
     const push=(event:import("./live.js").LiveEvent)=>{
       if(stopped||res.destroyed||res.writableEnded)return;
-      if(!res.write("id: "+event.id+"\ndata: "+JSON.stringify(event)+"\n\n")){
+      const frame=event.kind==="sync"
+        ?"id: "+event.id+"\nevent: sync_required\ndata: {}\n\n"
+        :"id: "+event.id+"\ndata: "+JSON.stringify(event)+"\n\n";
+      if(!res.write(frame)){
         // A slow/suspended WebView must not accumulate unbounded buffered
         // events on the laptop. Reconnect and resume from the last received ID.
         end();

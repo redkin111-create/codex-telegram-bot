@@ -10,6 +10,7 @@ import type { AppConfig } from "../src/config.js";
 import type { RuntimeRegistry } from "../src/bot/registry.js";
 import type { TmaJob } from "../src/tma/protocol.js";
 import type { PromptInput } from "../src/app/types.js";
+import { MobileSubmissionRejectedError } from "../src/mobile/submission.js";
 
 test("same prompt request ID is executed exactly once across simultaneous and repeated retries",async()=>{
   const dir=mkdtempSync(join(tmpdir(),"tma-idempotency-"));
@@ -24,6 +25,7 @@ test("same prompt request ID is executed exactly once across simultaneous and re
     const controller={
       runtimeForSession:()=>({sessionId}),
       foreground:()=>({sessionId}),
+      switchTo:async(id:string)=>({sessionId:id}),
     };
     const registry={
       controller:()=>controller,
@@ -39,27 +41,121 @@ test("same prompt request ID is executed exactly once across simultaneous and re
       "shared-secret-more-than-thirty-two-characters");
     const photo=Buffer.from([255,216,255,224,0,16,74,70,73,70,0,1,2,3,4,5]);
     const image={mimeType:"image/jpeg",data:photo.toString("base64")};
+    const attachment={id:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",name:"notes.txt",mimeType:"text/plain",size:14,text:"safe file text"};
     const job:TmaJob={id:"abcdef0123456789abcdef01",op:"send",userId:101,
-      args:{sessionId,text:"Fix it",images:[image],requestId:"client_0123456789abcdef"}};
-    const [a,b]=await Promise.all([agent.execute(job),agent.execute(job)]);
-    const c=await agent.execute(job);
+      args:{sessionId,text:"Fix it",images:[image],attachmentIds:[attachment.id],requestId:"client_0123456789abcdef"}};
+    const [a,b]=await Promise.all([
+      agent.execute(job,[attachment],{surface:"mobile"}),
+      agent.execute(job,[attachment],{surface:"mobile"}),
+    ]);
+    const c=await agent.execute(job,[attachment],{surface:"mobile"});
     assert.deepEqual([a,b,c],[{result:"ran"},{result:"ran"},{result:"ran"}]);
     assert.equal(submits,1);
     // Simulate a bot process restart: the new agent must replay the same
     // acknowledgement from disk without submitting the Codex task again.
     const restarted=new MiniAppAgent({cfg,acp,registry},"http://127.0.0.1:3301",
       "shared-secret-more-than-thirty-two-characters");
-    assert.deepEqual(await restarted.execute(job),{result:"ran"});
+    assert.deepEqual(restarted.lookupMobileSend(101,job.args),{found:true,result:{result:"ran"}},
+      "the journal can identify the same attachment send without loading its expired upload data");
+    assert.throws(()=>restarted.lookupMobileSend(101,{...job.args,text:"Different text"}),/ID задания уже использован/);
+    assert.deepEqual(await restarted.execute(job,[attachment],{surface:"mobile"}),{result:"ran"});
     assert.equal(submits,1,"restarting the bot must not duplicate file edits");
     restarted.stop();
     assert.equal(submitted?.images.length,1);
     assert.equal(submitted?.images[0]?.mimeType,"image/jpeg");
-    await assert.rejects(()=>agent.execute({...job,args:{...job.args,text:"Different text"}}),
+    await assert.rejects(()=>agent.execute({...job,args:{...job.args,text:"Different text"}},[attachment],{surface:"mobile"}),
       /Нельзя переиспользовать/);
     const edited=Buffer.from(photo);edited[15]=7;
     await assert.rejects(()=>agent.execute({...job,args:{
       ...job.args,images:[{mimeType:"image/jpeg",data:edited.toString("base64")}],
-    }}),/Нельзя переиспользовать/);
+    }},[attachment],{surface:"mobile"}),/Нельзя переиспользовать/);
+    agent.stop();
+  }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+test("a mobile refusal before dispatch is confirmed and the same request can be retried",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"tma-idempotency-refused-"));
+  const sessionId="01234567-89ab-7cde-8123-456789abcdef";
+  try{
+    const acp=Object.assign(new EventEmitter(),{
+      listProjects:async()=>[{id:"p",name:"toy",roots:[dir]}],
+      listThreads:async()=>[{id:sessionId,cwd:dir,name:"Working thread",source:"cli",recencyAt:1}],
+    }) as AcpClient;
+    let refuseSelection=true;
+    let submits=0;
+    const controller={
+      runtimeForSession:()=>({sessionId}),
+      foreground:()=>({sessionId}),
+      switchTo:async(id:string)=>{
+        if(refuseSelection){refuseSelection=false;throw new Error("Сеанс ещё не готов к отправке");}
+        return {sessionId:id};
+      },
+    };
+    const registry={
+      controller:()=>controller,
+      submitPrompt:async()=>{submits++;return {kind:"submitted",outcome:"ran"};},
+    } as unknown as RuntimeRegistry;
+    const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101"])} as AppConfig;
+    const agent=new MiniAppAgent({cfg,acp,registry},"http://127.0.0.1:3301","shared-secret-more-than-thirty-two-characters");
+    const job:TmaJob={id:"abcdef0123456789abcdef01",op:"send",userId:101,
+      args:{sessionId,text:"Проверь тестовый файл",images:[],attachmentIds:["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],requestId:"client_before_dispatch_01"}};
+    const attachment={id:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",name:"notes.txt",mimeType:"text/plain",size:5,text:"hello"};
+
+    await assert.rejects(()=>agent.execute(job,[attachment],{surface:"mobile"}),error=>{
+      assert.equal(error instanceof MobileSubmissionRejectedError,true);
+      assert.match((error as Error).message,/Сеанс ещё не готов/);
+      return true;
+    });
+    assert.deepEqual(agent.lookupMobileSend(101,job.args),{found:false},
+      "a confirmed pre-dispatch refusal must clear its reserved journal entry");
+    assert.equal(submits,0);
+
+    assert.deepEqual(await agent.execute(job,[attachment],{surface:"mobile"}),{result:"ran"});
+    assert.equal(submits,1,"the original request ID can be retried after a confirmed refusal");
+    agent.stop();
+  }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+test("a lost acknowledgement after dispatch stays uncertain and never sends the same request twice",async()=>{
+  const dir=mkdtempSync(join(tmpdir(),"tma-idempotency-uncertain-"));
+  const sessionId="01234567-89ab-7cde-8123-456789abcdef";
+  try{
+    const acp=Object.assign(new EventEmitter(),{
+      listProjects:async()=>[{id:"p",name:"toy",roots:[dir]}],
+      listThreads:async()=>[{id:sessionId,cwd:dir,name:"Working thread",source:"cli",recencyAt:1}],
+    }) as AcpClient;
+    let dispatches=0;
+    const controller={
+      runtimeForSession:()=>({sessionId}),
+      foreground:()=>({sessionId}),
+      switchTo:async(id:string)=>({sessionId:id}),
+    };
+    const registry={
+      controller:()=>controller,
+      submitPrompt:async()=>{
+        dispatches++;
+        throw new Error("acknowledgement lost after dispatch");
+      },
+    } as unknown as RuntimeRegistry;
+    const cfg={sessionsDir:dir,dataDir:dir,workspace:dir,projectRoots:[dir],allowedUsers:new Set(["101"])} as AppConfig;
+    const agent=new MiniAppAgent({cfg,acp,registry},"http://127.0.0.1:3301","shared-secret-more-than-thirty-two-characters");
+    const job:TmaJob={id:"abcdef0123456789abcdef01",op:"send",userId:101,
+      args:{sessionId,text:"Run once",images:[],attachmentIds:["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],requestId:"client_uncertain_123456"}};
+    const attachment={id:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",name:"notes.txt",mimeType:"text/plain",size:5,text:"hello"};
+
+    await assert.rejects(()=>agent.execute(job,[attachment],{surface:"mobile"}),error=>{
+      assert.equal(error instanceof MobileSubmissionRejectedError,false,
+        "an error after dispatch must not be reported as a confirmed refusal");
+      assert.match((error as Error).message,/acknowledgement lost/);
+      return true;
+    });
+    await assert.rejects(()=>agent.execute(job,[attachment],{surface:"mobile"}),/acknowledgement lost/);
+    assert.equal(dispatches,1,"retrying the same request ID must not dispatch a second task");
+
+    const restarted=new MiniAppAgent({cfg,acp,registry},"http://127.0.0.1:3301","shared-secret-more-than-thirty-two-characters");
+    assert.throws(()=>restarted.lookupMobileSend(101,job.args),/Статус предыдущей отправки неизвестен/);
+    assert.equal(dispatches,1,"the durable journal must keep an uncertain dispatch from running again after restart");
+    restarted.stop();
     agent.stop();
   }finally{rmSync(dir,{recursive:true,force:true});}
 });

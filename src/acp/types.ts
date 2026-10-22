@@ -31,10 +31,16 @@ export type JsonRpcMessage = JsonRpcResponse & JsonRpcNotification & { method?: 
 
 /** A content block in a prompt or message. */
 export interface ContentBlock {
-  type: "text" | "image" | "resource";
+  type: "text" | "image" | "resource" | "skill" | "appMention";
   text?: string;
   data?: string;
   mimeType?: string;
+  /** Host-only image path recovered from Codex history; never supplied by the browser. */
+  localPath?: string;
+  /** Internal selected skill name. ACP resolves its path from Codex, never from browser input. */
+  name?: string;
+  /** Internal selected Codex App ID. ACP resolves its native app target from the live thread inventory. */
+  id?: string;
   [k: string]: unknown;
 }
 
@@ -101,6 +107,12 @@ export interface RequestPermissionParams {
   sessionId: string;
   toolCall?: { toolCallId?: string; title?: string; kind?: string; rawInput?: Record<string, unknown> };
   options: Array<{ optionId: string; name: string; kind?: string }>;
+  /** Extra choices shown only by the mobile approval UI. */
+  mobileOptions?: Array<{ optionId: string; name: string; kind?: string }>;
+  /** Exact, Codex-advertised choices for mobile; leaves Telegram options unchanged. */
+  mobileChoices?: Array<{ optionId: string; name: string; kind?: string }>;
+  /** Extra plain-text context shown only in the mobile approval card. */
+  mobileSummary?: string;
   /** Exact Codex permission profile for item/permissions/requestApproval. */
   permissions?: Record<string, unknown>;
   reason?: string;
