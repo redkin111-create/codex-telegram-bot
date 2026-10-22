@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { test } from "node:test";
 import type { ScreenshotRef } from "../apps/codex-mobile/src/types.js";
+import type { ReactApi, ReactServerApi, ComponentType } from "../apps/codex-mobile/tests/react-types.js";
 
 const appRequire = createRequire(new URL("../apps/codex-mobile/package.json", import.meta.url));
-const React = appRequire("react") as typeof import("react");
-const { renderToStaticMarkup } = appRequire("react-dom/server") as typeof import("react-dom/server");
+const React = appRequire("react") as ReactApi;
+const { renderToStaticMarkup } = appRequire("react-dom/server") as ReactServerApi;
 const { ScreenshotsGallery } = appRequire("./src/components/screenshots-gallery.tsx") as {
-  ScreenshotsGallery: import("react").ComponentType<any>;
+  ScreenshotsGallery: ComponentType<any>;
 };
 Object.assign(globalThis, { React, window: { location: { origin: "http://127.0.0.1" } } });
 

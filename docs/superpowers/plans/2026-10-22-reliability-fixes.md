@@ -14,3 +14,7 @@ Verification: 475 tests passed; backend typecheck and mobile production build
 (including its typecheck) passed. Independent review found two additional
 validation gaps; both were reproduced and fixed, and follow-up review found no
 remaining blocking issues. The mobile build retains its existing bundle-size warning.
+
+The first clean CI run exposed React type imports in the root screenshot-gallery
+test resolving against undeclared root dependencies. A type-only helper in the
+mobile app now resolves those types against the app's declared dependencies.
