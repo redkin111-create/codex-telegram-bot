@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MobileAuthStore } from "../src/mobile/auth.js";
@@ -13,6 +13,44 @@ async function withStore(run: (store: MobileAuthStore, dataDir: string) => Promi
     await rm(dataDir, { recursive: true, force: true });
   }
 }
+
+test("removing an owner from the allowlist denies their persisted device after restart", async () => {
+  await withStore(async (auth, dataDir) => {
+    const challenge = auth.beginPairing("Removed owner");
+    auth.approvePairing(challenge.code, 101);
+    const login = auth.completePairing(challenge.pairingCookie);
+    assert.ok(login?.status === "approved");
+    const restarted = new MobileAuthStore(dataDir, { allowedOwners: new Set(["202"]) });
+    assert.equal(restarted.authenticate(login.cookieValue), undefined);
+    assert.equal(restarted.isDeviceActive(101, login.device.id), false);
+    assert.equal(restarted.verifyCsrf(login.device.id, login.csrfToken), false);
+    assert.equal(auth.authenticate(login.cookieValue)?.ownerId, 101);
+  });
+});
+
+test("pairing cannot complete after its approved owner loses access", async () => {
+  await withStore(async (_auth, dataDir) => {
+    const owners = new Set(["101"]);
+    const auth = new MobileAuthStore(dataDir, { allowedOwners: owners });
+    const challenge = auth.beginPairing("Pending phone");
+    auth.approvePairing(challenge.code, 101);
+    owners.clear();
+    assert.equal(auth.completePairing(challenge.pairingCookie), undefined);
+    assert.equal(auth.listDevices(101).length, 0);
+  });
+});
+
+test("malformed persisted device data is rejected without overwriting the file", async () => {
+  await withStore(async (_auth, dataDir) => {
+    const path = join(dataDir, "mobile-devices.json");
+    for (const data of [null, [], {}, { devices: {} }, { devices: [null] }, { devices: [{ id: "broken" }] }]) {
+      const contents = JSON.stringify(data);
+      await writeFile(path, contents);
+      assert.throws(() => new MobileAuthStore(dataDir, { allowedOwners: new Set(["101"]) }), /invalid.*state/i);
+      assert.equal(await readFile(path, "utf8"), contents);
+    }
+  });
+});
 
 test("CLI-approved pairing creates a browser session without Telegram initData", async () => {
   await withStore(async (auth) => {

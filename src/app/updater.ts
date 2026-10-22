@@ -29,6 +29,14 @@ interface PendingUpdate {
   chats: number[];
 }
 
+function validPendingUpdate(value: unknown): boolean {
+  if (value === null) return true;
+  if (typeof value !== "object" || Array.isArray(value)) return false;
+  const pending = value as Partial<PendingUpdate>;
+  return typeof pending.from === "string" && typeof pending.to === "string" &&
+    Array.isArray(pending.chats) && pending.chats.every((id) => Number.isSafeInteger(id));
+}
+
 export interface UpdaterOptions {
   enabled: boolean;
   intervalMs: number;
@@ -53,7 +61,7 @@ export class Updater {
   private readonly tried = new Set<string>();
 
   constructor(private readonly opts: UpdaterOptions) {
-    this.state = new JsonStore<PendingUpdate | null>(join(opts.dataDir, "update-state.json"), null);
+    this.state = new JsonStore<PendingUpdate | null>(join(opts.dataDir, "update-state.json"), null, validPendingUpdate);
     this.current = readVersion(opts.projectRoot);
   }
 

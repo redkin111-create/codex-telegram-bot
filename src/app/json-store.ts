@@ -16,6 +16,7 @@ export class JsonStore<T> {
   constructor(
     private readonly path: string,
     private readonly fallback: T,
+    private readonly validate?: (value: unknown) => boolean,
   ) {
     this.data = this.read();
   }
@@ -47,9 +48,18 @@ export class JsonStore<T> {
       throw error;
     }
     try {
-      return JSON.parse(contents) as T;
+      const parsed: unknown = JSON.parse(contents);
+      // Nullable stores may intentionally persist either null or a value.
+      const sameRoot = this.fallback === null ||
+        (Array.isArray(this.fallback) ? Array.isArray(parsed) :
+          typeof this.fallback === "object" ? !!parsed && typeof parsed === "object" && !Array.isArray(parsed) :
+            typeof parsed === typeof this.fallback);
+      if (!sameRoot || (this.validate && !this.validate(parsed))) {
+        throw new Error("Invalid persisted state structure");
+      }
+      return parsed as T;
     } catch (error) {
-      log.error(`invalid JSON in persisted state ${this.path}; refusing to reset it:`, (error as Error).message);
+      log.error(`invalid persisted state ${this.path}; refusing to reset it:`, (error as Error).message);
       throw error;
     }
   }

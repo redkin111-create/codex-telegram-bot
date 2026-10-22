@@ -39,6 +39,8 @@ src/
 ## Conventions (must follow)
 
 - **`npm run typecheck` must pass** with no errors before any PR is merged.
+- Run **`npm test`** and **`npm run build --prefix apps/codex-mobile`** before
+  merging. CI checks the backend and builds the mobile app on Linux and Windows.
 - **Keep files focused and under ~500 lines.** Split logic into multiple modules
   rather than growing one big file.
 - **ESM imports with `.js` specifiers** (e.g. `import { x } from "./x.js"`),
@@ -69,17 +71,17 @@ release**. Do not commit feature work directly to `main`.
 
 ## Releasing a new version
 
-Releases are automated by `.github/workflows/release.yml`, triggered by pushing
-a `vX.Y.Z` tag. The workflow type-checks, builds a clean downloadable source zip
-(`git archive`, no `node_modules`/`.env`/logs/data), and publishes a GitHub
-Release whose notes are the matching `CHANGELOG.md` section.
+This fork currently has no `.github/workflows/release.yml`. Pushing a `vX.Y.Z`
+tag does **not** automatically publish a release. Validate the backend and mobile
+app, then explicitly publish a GitHub Release with the matching `CHANGELOG.md`
+section and a clean source archive (`git archive`, no secrets or runtime data).
 
 ```bash
 # 1. Update CHANGELOG.md: add a new "## [X.Y.Z] - DATE" section (features list).
 # 2. Bump the version (also creates a commit + tag):
 npm version minor          # patch | minor | major per SemVer
-# 3. Push the commit and the tag:
-git push --follow-tags     # the v* tag triggers the Release workflow
+# 3. Push the commit and the tag, then publish the release explicitly:
+git push --follow-tags
 ```
 
 See `docs/ops/RELEASE_CHECKLIST.md` for the full pre-release checklist.
@@ -91,4 +93,7 @@ npm install            # install deps
 npm run dev            # run with auto-reload (tsx watch)
 npm start              # run once
 npm run typecheck      # REQUIRED before merge/release
+npm test               # REQUIRED before merge/release
+npm ci --prefix apps/codex-mobile
+npm run build --prefix apps/codex-mobile
 ```

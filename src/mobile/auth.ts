@@ -23,6 +23,21 @@ interface StoredDevice extends MobileDeviceInfo {
 
 interface DeviceData { devices: StoredDevice[]; }
 
+function validDeviceData(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const devices = (value as Partial<DeviceData>).devices;
+  return Array.isArray(devices) && devices.every((device: unknown) => {
+    if (!device || typeof device !== "object") return false;
+    const entry = device as StoredDevice;
+    return typeof entry.id === "string" && entry.id.length > 0 &&
+      Number.isSafeInteger(entry.ownerId) && entry.ownerId > 0 && typeof entry.name === "string" &&
+      Number.isFinite(entry.createdAt) && Number.isFinite(entry.lastSeenAt) && Number.isFinite(entry.expiresAt) &&
+      (entry.revokedAt === undefined || Number.isFinite(entry.revokedAt)) &&
+      typeof entry.tokenHash === "string" && /^[a-f0-9]{64}$/.test(entry.tokenHash) &&
+      typeof entry.csrfHash === "string" && /^[a-f0-9]{64}$/.test(entry.csrfHash);
+  });
+}
+
 interface Pairing {
   id: string;
   codeHash: string;
@@ -80,7 +95,7 @@ export class MobileAuthStore {
   private readonly sessionTtlMs: number;
 
   constructor(dataDir: string, private readonly options: MobileAuthOptions) {
-    this.store = new JsonStore(join(dataDir, "mobile-devices.json"), { devices: [] });
+    this.store = new JsonStore<DeviceData>(join(dataDir, "mobile-devices.json"), { devices: [] }, validDeviceData);
     this.now = options.now ?? Date.now;
     this.pairingTtlMs = options.pairingTtlMs ?? 10 * 60 * 1000;
     this.sessionTtlMs = options.sessionTtlMs ?? SESSION_LIFETIME_MS;
@@ -132,6 +147,10 @@ export class MobileAuthStore {
       return undefined;
     }
     if (!pairing.ownerId) return { status: "pending" };
+    if (!this.options.allowedOwners.has(String(pairing.ownerId))) {
+      this.removePairing(pairing.id);
+      return undefined;
+    }
 
     const now = this.now();
     const cookieValue = randomBytes(32).toString("base64url");
@@ -150,7 +169,7 @@ export class MobileAuthStore {
     if (!cookieValue || !/^[A-Za-z0-9_-]{40,60}$/.test(cookieValue)) return undefined;
     const tokenHash = digest(cookieValue);
     const device = this.store.get().devices.find((entry) =>
-      !entry.revokedAt && entry.expiresAt > this.now() && constantTimeHexEqual(entry.tokenHash, tokenHash));
+      this.isActive(entry) && constantTimeHexEqual(entry.tokenHash, tokenHash));
     if (!device) return undefined;
     if (this.now() - device.lastSeenAt >= 60_000) {
       const lastSeenAt = this.now();
@@ -165,13 +184,13 @@ export class MobileAuthStore {
 
   isDeviceActive(ownerId: number, deviceId: string): boolean {
     return this.store.get().devices.some((device) =>
-      device.ownerId === ownerId && device.id === deviceId && !device.revokedAt && device.expiresAt > this.now());
+      device.ownerId === ownerId && device.id === deviceId && this.isActive(device));
   }
 
   verifyCsrf(deviceId: string, csrfToken: string | undefined): boolean {
     if (!csrfToken || !/^[A-Za-z0-9_-]{40,60}$/.test(csrfToken)) return false;
     const device = this.store.get().devices.find((entry) =>
-      entry.id === deviceId && !entry.revokedAt && entry.expiresAt > this.now());
+      entry.id === deviceId && this.isActive(entry));
     return !!device && constantTimeHexEqual(device.csrfHash, digest(csrfToken));
   }
 
@@ -200,6 +219,11 @@ export class MobileAuthStore {
     for (const pairing of this.pairings.values()) {
       if (pairing.expiresAt <= now) this.removePairing(pairing.id);
     }
+  }
+
+  private isActive(device: StoredDevice): boolean {
+    return this.options.allowedOwners.has(String(device.ownerId)) &&
+      device.revokedAt === undefined && device.expiresAt > this.now();
   }
 
   private removePairing(id: string): void {
